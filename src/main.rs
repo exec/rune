@@ -73,6 +73,7 @@ struct Editor {
     tab_width: usize,
     word_wrap: bool,
     search_buffer: String,
+    #[allow(dead_code)]
     replace_buffer: String,
     undo_stack: Vec<UndoState>,
     redo_stack: Vec<UndoState>,
@@ -86,6 +87,7 @@ enum InputMode {
     ConfirmQuit,
     OptionsMenu,
     Find,
+    #[allow(dead_code)]
     Replace,
     GoToLine,
 }
@@ -604,9 +606,9 @@ impl Editor {
             self.cursor_pos.0 = line_num - 1; // Convert to 0-based
             self.cursor_pos.1 = 0;
             self.clamp_cursor_to_line();
-            self.status_message = format!("Jumped to line {}", line_num);
+            self.status_message = format!("Jumped to line {line_num}");
         } else {
-            self.status_message = format!("Invalid line number: {}", line_num);
+            self.status_message = format!("Invalid line number: {line_num}");
         }
     }
 
@@ -965,17 +967,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         0
     };
 
-    // Adjust editor area for line numbers
-    let content_area = if editor.show_line_numbers {
-        Rect {
-            x: editor_area.x + line_num_width as u16,
-            y: editor_area.y,
-            width: editor_area.width.saturating_sub(line_num_width as u16),
-            height: editor_area.height,
-        }
-    } else {
-        editor_area
-    };
+    // Note: Line numbers are rendered inline with content, so no area adjustment needed
 
     // Draw editor content with lazy syntax highlighting
     let mut lines = vec![];
