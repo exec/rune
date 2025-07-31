@@ -517,7 +517,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     }
     
     // Handle visual mode
-    if editor.selection_start.is_some() && editor.selection_end.is_none() {
+    if editor.selection_start.is_some() {
         match key.code {
             KeyCode::Esc => {
                 editor.cancel_selection();
