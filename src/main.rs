@@ -13,7 +13,7 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, stdout},
+    io::{self, stdout, Write},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -308,6 +308,12 @@ impl Editor {
         // Move cursor forward by tab_width spaces
         self.cursor_pos.1 += self.tab_width;
         self.modified = true;
+        
+        // Critical: Force buffer flush on macOS to prevent cursor desync
+        #[cfg(target_os = "macos")]
+        {
+            let _ = stdout().flush();
+        }
     }
 
     fn delete_char(&mut self) {
@@ -779,7 +785,21 @@ fn run_editor(
     editor: &mut Editor,
 ) -> Result<()> {
     loop {
+        // Use synchronized output on macOS to reduce visual artifacts
+        #[cfg(target_os = "macos")]
+        {
+            use crossterm::{execute, terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate}};
+            let _ = execute!(stdout(), BeginSynchronizedUpdate);
+        }
+        
         terminal.draw(|f| draw_ui(f, editor))?;
+        
+        #[cfg(target_os = "macos")]
+        {
+            use crossterm::{execute, terminal::EndSynchronizedUpdate};
+            let _ = execute!(stdout(), EndSynchronizedUpdate);
+            let _ = stdout().flush();
+        }
         
         // Check if status message should timeout
         editor.check_status_message_timeout();
@@ -1127,7 +1147,22 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
 
         // Editing
         (_, KeyCode::Char(c)) => editor.insert_char(c),
-        (_, KeyCode::Tab) => editor.insert_tab(),
+        (_, KeyCode::Tab) => {
+            #[cfg(target_os = "macos")]
+            {
+                // Nuclear option for macOS: bypass complex insertion and use simple space insertion
+                editor.save_undo_state();
+                for _ in 0..editor.tab_width {
+                    editor.insert_char(' ');
+                }
+                // Force terminal synchronization
+                let _ = stdout().flush();
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                editor.insert_tab();
+            }
+        }
         (_, KeyCode::Enter) => editor.insert_newline(),
         (_, KeyCode::Backspace) => editor.delete_char(),
         (_, KeyCode::Esc) => {}, // Esc key - reserved for future use
