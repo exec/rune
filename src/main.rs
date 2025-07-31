@@ -61,8 +61,6 @@ struct Editor {
     file_path: Option<PathBuf>,
     modified: bool,
     status_message: String,
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
     highlighter: SyntaxHighlighter,
     syntax_name: Option<String>,
     input_mode: InputMode,
@@ -99,8 +97,6 @@ impl Editor {
             file_path: None,
             modified: false,
             status_message: String::new(),
-            selection_start: None,
-            selection_end: None,
             highlighter: SyntaxHighlighter::new(),
             syntax_name: None,
             input_mode: InputMode::Normal,
@@ -429,23 +425,10 @@ impl Editor {
                     self.cursor_pos.1 = clicked_col;
                     self.clamp_cursor_to_line();
 
-                    // Start selection
-                    self.selection_start = Some(self.cursor_pos);
-                    self.selection_end = None;
                 }
             }
             MouseEventKind::Drag(_) => {
-                if self.selection_start.is_some() {
-                    let clicked_line = self.viewport_offset.0 + event.row as usize;
-                    let clicked_col = event.column as usize;
-
-                    if clicked_line < self.rope.len_lines() {
-                        self.cursor_pos.0 = clicked_line;
-                        self.cursor_pos.1 = clicked_col;
-                        self.clamp_cursor_to_line();
-                        self.selection_end = Some(self.cursor_pos);
-                    }
-                }
+                // Mouse drag handling can be added here if needed
             }
             MouseEventKind::ScrollDown => {
                 if self.viewport_offset.0 < self.rope.len_lines().saturating_sub(terminal_height) {
@@ -459,23 +442,6 @@ impl Editor {
         }
     }
 
-    fn start_selection(&mut self) {
-        self.selection_start = Some(self.cursor_pos);
-        self.selection_end = None;
-        self.status_message = "-- VISUAL --".to_string();
-    }
-
-    fn update_selection(&mut self) {
-        if self.selection_start.is_some() {
-            self.selection_end = Some(self.cursor_pos);
-        }
-    }
-
-    fn cancel_selection(&mut self) {
-        self.selection_start = None;
-        self.selection_end = None;
-        self.status_message.clear();
-    }
 
     fn toggle_mouse_mode(&mut self) {
         self.mouse_enabled = !self.mouse_enabled;
@@ -652,23 +618,6 @@ impl Editor {
         }
     }
 
-    #[allow(dead_code)]
-    fn get_selected_text(&self) -> Option<String> {
-        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
-            let start_idx = self.line_col_to_char_idx(start.0, start.1);
-            let end_idx = self.line_col_to_char_idx(end.0, end.1);
-
-            let (start_idx, end_idx) = if start_idx <= end_idx {
-                (start_idx, end_idx)
-            } else {
-                (end_idx, start_idx)
-            };
-
-            Some(self.rope.slice(start_idx..end_idx).to_string())
-        } else {
-            None
-        }
-    }
 }
 
 fn main() -> Result<()> {
@@ -933,36 +882,6 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
-    // Handle visual mode
-    if editor.selection_start.is_some() {
-        match key.code {
-            KeyCode::Esc => {
-                editor.cancel_selection();
-                return Ok(false);
-            }
-            KeyCode::Up => {
-                editor.move_cursor_up();
-                editor.update_selection();
-                return Ok(false);
-            }
-            KeyCode::Down => {
-                editor.move_cursor_down();
-                editor.update_selection();
-                return Ok(false);
-            }
-            KeyCode::Left => {
-                editor.move_cursor_left();
-                editor.update_selection();
-                return Ok(false);
-            }
-            KeyCode::Right => {
-                editor.move_cursor_right();
-                editor.update_selection();
-                return Ok(false);
-            }
-            _ => {}
-        }
-    }
 
     // Handle normal mode
     match (key.modifiers, key.code) {
@@ -997,10 +916,6 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             editor.start_goto_line();
         }
         
-        // Alternative keybindings for visual selection and redo
-        (KeyModifiers::ALT, KeyCode::Char('v')) => {
-            editor.start_selection();
-        }
         (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
             editor.redo();
         }
@@ -1023,7 +938,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (_, KeyCode::Char(c)) => editor.insert_char(c),
         (_, KeyCode::Enter) => editor.insert_newline(),
         (_, KeyCode::Backspace) => editor.delete_char(),
-        (_, KeyCode::Esc) => editor.cancel_selection(),
+        (_, KeyCode::Esc) => {}, // Esc key - reserved for future use
 
         _ => {}
     }
@@ -1164,7 +1079,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         InputMode::Find => "Enter: Find | Esc: Cancel | Type search term",
         InputMode::Replace => "Enter: Next step | Esc: Cancel | Type find/replace text",
         InputMode::GoToLine => "Enter: Go | Esc: Cancel | Type line number",
-        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | Alt+V Visual | ^O Options",
+        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^T Visual | ^O Options",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
