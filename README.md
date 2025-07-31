@@ -6,13 +6,13 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 
 ### Core Philosophy
 - **Zero learning curve** - Works instantly without configuration
-- **Standard keybindings** - Familiar Ctrl+S, Ctrl+Q shortcuts
+- **Standard keybindings** - Familiar Ctrl+S save, Ctrl+X exit
 - **Terminal-native** - Built for CLI environments
 - **Fast startup** - Lightning-fast startup with lazy syntax highlighting
 
 ### Modern Conveniences
 - ✅ **Visual selection mode** (Ctrl+V) - Select text like in modern editors
-- ✅ **Full mouse support** - Click to position cursor, drag to select, scroll wheel
+- ✅ **Full mouse support** - Click to position cursor, drag to select, scroll wheel (toggle with Ctrl+M)
 - ✅ **Smart syntax highlighting** - Lazy, cached highlighting for all major languages
 - ✅ **Standard navigation** - Arrow keys, Home, End work as expected
 - ✅ **File operations** - Save with Ctrl+S, automatic change detection
@@ -71,10 +71,11 @@ rune
 ## Keybindings
 
 ### Essential Commands
-- **Ctrl+Q** - Quit editor (prompts to save if changes)
+- **Ctrl+Q** or **Ctrl+X** - Quit editor (prompts to save if changes)
 - **Ctrl+S** - Save file (prompts for filename if none)
 - **Ctrl+W** - Save As (save with new filename)
 - **Ctrl+V** - Enter visual selection mode
+- **Ctrl+M** - Toggle mouse mode on/off
 - **Esc** - Cancel selection/exit modes/cancel prompts
 
 ### Navigation

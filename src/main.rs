@@ -42,6 +42,7 @@ struct Editor {
     input_mode: InputMode,
     filename_buffer: String,
     quit_after_save: bool,
+    mouse_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +69,7 @@ impl Editor {
             input_mode: InputMode::Normal,
             filename_buffer: String::new(),
             quit_after_save: false,
+            mouse_enabled: true,
         }
     }
 
@@ -410,6 +412,15 @@ impl Editor {
         self.status_message.clear();
     }
 
+    fn toggle_mouse_mode(&mut self) {
+        self.mouse_enabled = !self.mouse_enabled;
+        self.status_message = if self.mouse_enabled {
+            "Mouse mode enabled".to_string()
+        } else {
+            "Mouse mode disabled".to_string()
+        };
+    }
+
     #[allow(dead_code)]
     fn get_selected_text(&self) -> Option<String> {
         if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
@@ -468,7 +479,9 @@ fn run_editor(
                     }
                 }
                 Event::Mouse(mouse) => {
-                    editor.handle_mouse_event(mouse, terminal.size()?.height as usize);
+                    if editor.mouse_enabled {
+                        editor.handle_mouse_event(mouse, terminal.size()?.height as usize);
+                    }
                 }
                 _ => {}
             }
@@ -562,6 +575,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     match (key.modifiers, key.code) {
         // Standard keybindings
         (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Ok(editor.try_quit()),
+        (KeyModifiers::CONTROL, KeyCode::Char('x')) => return Ok(editor.try_quit()), // nano compatibility
         (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
             editor.save_file()?;
         }
@@ -570,6 +584,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         }
         (KeyModifiers::CONTROL, KeyCode::Char('v')) => {
             editor.start_selection();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('m')) => {
+            editor.toggle_mouse_mode();
         }
 
         // Navigation
@@ -677,11 +694,12 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "[No Name]".to_string());
         format!(
-            "{} {} | Ln {}, Col {}",
+            "{} {} | Ln {}, Col {} | Mouse: {}",
             filename,
             modified_indicator,
             editor.cursor_pos.0 + 1,
-            editor.cursor_pos.1 + 1
+            editor.cursor_pos.1 + 1,
+            if editor.mouse_enabled { "ON" } else { "OFF" }
         )
     };
 
@@ -696,7 +714,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
             "Enter: Confirm | Esc: Cancel | Type filename"
         }
-        _ => "^Q Quit | ^S Save | ^W Save As | ^V Visual Mode | Mouse: Click/Drag/Scroll",
+        _ => "^Q/^X Quit | ^S Save | ^W Save As | ^V Visual | ^M Toggle Mouse",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
