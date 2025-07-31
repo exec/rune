@@ -1107,6 +1107,12 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
 
         // Editing
         (_, KeyCode::Char(c)) => editor.insert_char(c),
+        (_, KeyCode::Tab) => {
+            // Insert spaces according to tab width setting
+            for _ in 0..editor.tab_width {
+                editor.insert_char(' ');
+            }
+        }
         (_, KeyCode::Enter) => editor.insert_newline(),
         (_, KeyCode::Backspace) => editor.delete_char(),
         (_, KeyCode::Esc) => {}, // Esc key - reserved for future use
