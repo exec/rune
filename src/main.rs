@@ -73,7 +73,6 @@ struct Editor {
     tab_width: usize,
     word_wrap: bool,
     search_buffer: String,
-    #[allow(dead_code)]
     replace_buffer: String,
     undo_stack: Vec<UndoState>,
     redo_stack: Vec<UndoState>,
@@ -87,7 +86,6 @@ enum InputMode {
     ConfirmQuit,
     OptionsMenu,
     Find,
-    #[allow(dead_code)]
     Replace,
     GoToLine,
 }
@@ -567,6 +565,13 @@ impl Editor {
         self.status_message = "Find: ".to_string();
     }
 
+    fn start_replace(&mut self) {
+        self.input_mode = InputMode::Replace;
+        self.search_buffer.clear();
+        self.replace_buffer.clear();
+        self.status_message = "Find: ".to_string();
+    }
+
     fn start_goto_line(&mut self) {
         self.input_mode = InputMode::GoToLine;
         self.search_buffer.clear();
@@ -599,6 +604,26 @@ impl Editor {
         }
 
         None
+    }
+
+    fn perform_replace(&mut self, search_term: &str, replace_term: &str) -> usize {
+        if search_term.is_empty() {
+            return 0;
+        }
+
+        self.save_undo_state();
+        let text = self.rope.to_string();
+        let new_text = text.replace(search_term, replace_term);
+        let replacements = text.matches(search_term).count();
+        
+        if replacements > 0 {
+            self.rope = Rope::from_str(&new_text);
+            self.modified = true;
+            // Try to keep cursor in a reasonable position
+            self.clamp_cursor_to_line();
+        }
+        
+        replacements
     }
 
     fn goto_line(&mut self, line_num: usize) {
@@ -820,6 +845,51 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
+    // Handle replace mode
+    if editor.input_mode == InputMode::Replace {
+        match key.code {
+            KeyCode::Enter => {
+                if editor.status_message.starts_with("Find:") {
+                    // Switch to replace input
+                    editor.status_message = format!("Replace '{}' with: ", editor.search_buffer);
+                } else {
+                    // Perform replace
+                    let replacements = editor.perform_replace(&editor.search_buffer.clone(), &editor.replace_buffer.clone());
+                    if replacements > 0 {
+                        editor.status_message = format!("Replaced {} occurrence(s)", replacements);
+                    } else {
+                        editor.status_message = "No matches found".to_string();
+                    }
+                    editor.input_mode = InputMode::Normal;
+                }
+            }
+            KeyCode::Esc => {
+                editor.input_mode = InputMode::Normal;
+                editor.status_message = "Replace cancelled".to_string();
+            }
+            KeyCode::Backspace => {
+                if editor.status_message.starts_with("Find:") {
+                    editor.search_buffer.pop();
+                    editor.status_message = format!("Find: {}", editor.search_buffer);
+                } else {
+                    editor.replace_buffer.pop();
+                    editor.status_message = format!("Replace '{}' with: {}", editor.search_buffer, editor.replace_buffer);
+                }
+            }
+            KeyCode::Char(c) => {
+                if editor.status_message.starts_with("Find:") {
+                    editor.search_buffer.push(c);
+                    editor.status_message = format!("Find: {}", editor.search_buffer);
+                } else {
+                    editor.replace_buffer.push(c);
+                    editor.status_message = format!("Replace '{}' with: {}", editor.search_buffer, editor.replace_buffer);
+                }
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     // Handle go to line mode
     if editor.input_mode == InputMode::GoToLine {
         match key.code {
@@ -904,6 +974,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         }
         (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
             editor.start_find();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
+            editor.start_replace();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
             editor.start_goto_line();
@@ -1064,8 +1137,9 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         }
         InputMode::OptionsMenu => "M: Mouse | L: Line Numbers | W: Word Wrap | T: Tab Width | Esc: Back",
         InputMode::Find => "Enter: Find | Esc: Cancel | Type search term",
+        InputMode::Replace => "Enter: Next step | Esc: Cancel | Type find/replace text",
         InputMode::GoToLine => "Enter: Go | Esc: Cancel | Type line number",
-        _ => "^Q/^X Quit | ^S Save | ^F Find | ^G Go to Line | ^Z Undo | ^Y Redo | ^V Visual | ^O Options",
+        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^Y Redo | ^V Visual | ^O Options",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));

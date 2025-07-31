@@ -19,7 +19,7 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 - ✅ **Efficient text handling** - Uses rope data structure for large files
 
 ### Built for Developers
-- **Find functionality** - Ctrl+F to search, wraps around file
+- **Find/Replace** - Ctrl+F to search, Ctrl+H to replace all occurrences
 - **Go to line** - Ctrl+G to jump to specific lines
 - **Undo/Redo** - Ctrl+Z/Ctrl+Y with 100-action history
 - **Line numbers** - Toggle display in options menu
@@ -107,6 +107,7 @@ rune
 - **Ctrl+V** - Enter visual selection mode
 - **Ctrl+O** - Open options menu (configure settings)
 - **Ctrl+F** - Find text
+- **Ctrl+H** - Replace text (find and replace all)
 - **Ctrl+G** - Go to line number
 - **Ctrl+Z** - Undo last change
 - **Ctrl+Y** - Redo last undone change
