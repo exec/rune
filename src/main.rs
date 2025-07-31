@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use ropey::Rope;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{self, stdout},
@@ -20,6 +21,19 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod syntax;
 use syntax::SyntaxHighlighter;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Config {
+    mouse_enabled: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            mouse_enabled: true,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -51,11 +65,12 @@ enum InputMode {
     EnteringFilename,
     EnteringSaveAs,
     ConfirmQuit,
+    OptionsMenu,
 }
 
 impl Editor {
     fn new() -> Self {
-        Self {
+        let mut editor = Self {
             rope: Rope::new(),
             cursor_pos: (0, 0),
             viewport_offset: (0, 0),
@@ -70,7 +85,9 @@ impl Editor {
             filename_buffer: String::new(),
             quit_after_save: false,
             mouse_enabled: true,
-        }
+        };
+        editor.load_config();
+        editor
     }
 
     fn load_file(&mut self, path: PathBuf) -> Result<()> {
@@ -421,6 +438,40 @@ impl Editor {
         };
     }
 
+    fn open_options_menu(&mut self) {
+        self.input_mode = InputMode::OptionsMenu;
+        self.status_message = "Options Menu".to_string();
+    }
+
+    fn save_config(&self) {
+        let config = Config {
+            mouse_enabled: self.mouse_enabled,
+        };
+
+        if let Some(config_dir) = dirs::config_dir() {
+            let rune_config_dir = config_dir.join("rune");
+            if let Err(_) = fs::create_dir_all(&rune_config_dir) {
+                return; // Silently fail if we can't create the directory
+            }
+
+            let config_path = rune_config_dir.join("config.toml");
+            if let Ok(config_str) = toml::to_string(&config) {
+                let _ = fs::write(config_path, config_str); // Silently fail if we can't write
+            }
+        }
+    }
+
+    fn load_config(&mut self) {
+        if let Some(config_dir) = dirs::config_dir() {
+            let config_path = config_dir.join("rune").join("config.toml");
+            if let Ok(config_str) = fs::read_to_string(config_path) {
+                if let Ok(config) = toml::from_str::<Config>(&config_str) {
+                    self.mouse_enabled = config.mouse_enabled;
+                }
+            }
+        }
+    }
+
     #[allow(dead_code)]
     fn get_selected_text(&self) -> Option<String> {
         if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
@@ -516,6 +567,31 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
+    // Handle options menu
+    if editor.input_mode == InputMode::OptionsMenu {
+        match key.code {
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                editor.toggle_mouse_mode();
+                editor.input_mode = InputMode::Normal;
+                return Ok(false);
+            }
+            KeyCode::Esc => {
+                editor.save_config();
+                editor.input_mode = InputMode::Normal;
+                editor.status_message.clear();
+                return Ok(false);
+            }
+            _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
+                editor.save_config();
+                editor.input_mode = InputMode::Normal;
+                editor.status_message.clear();
+                return Ok(false);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     // Handle filename input modes
     if editor.input_mode == InputMode::EnteringFilename
         || editor.input_mode == InputMode::EnteringSaveAs
@@ -585,8 +661,8 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('v')) => {
             editor.start_selection();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('m')) => {
-            editor.toggle_mouse_mode();
+        (KeyModifiers::CONTROL, KeyCode::Char('o')) => {
+            editor.open_options_menu();
         }
 
         // Navigation
@@ -714,7 +790,8 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
             "Enter: Confirm | Esc: Cancel | Type filename"
         }
-        _ => "^Q/^X Quit | ^S Save | ^W Save As | ^V Visual | ^M Toggle Mouse",
+        InputMode::OptionsMenu => "M: Toggle Mouse | Esc: Back to editor",
+        _ => "^Q/^X Quit | ^S Save | ^W Save As | ^V Visual | ^O Options",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));

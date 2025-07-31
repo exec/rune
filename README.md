@@ -5,14 +5,14 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 ## Features
 
 ### Core Philosophy
-- **Zero learning curve** - Works instantly without configuration
+- **Smart defaults** - Works great out-of-the-box, customizable as needed
 - **Standard keybindings** - Familiar Ctrl+S save, Ctrl+X exit
 - **Terminal-native** - Built for CLI environments
 - **Fast startup** - Lightning-fast startup with lazy syntax highlighting
 
 ### Modern Conveniences
 - ✅ **Visual selection mode** (Ctrl+V) - Select text like in modern editors
-- ✅ **Full mouse support** - Click to position cursor, drag to select, scroll wheel (toggle with Ctrl+M)
+- ✅ **Full mouse support** - Click to position cursor, drag to select, scroll wheel (configurable)
 - ✅ **Smart syntax highlighting** - Lazy, cached highlighting for all major languages
 - ✅ **Standard navigation** - Arrow keys, Home, End work as expected
 - ✅ **File operations** - Save with Ctrl+S, automatic change detection
@@ -75,7 +75,7 @@ rune
 - **Ctrl+S** - Save file (prompts for filename if none)
 - **Ctrl+W** - Save As (save with new filename)
 - **Ctrl+V** - Enter visual selection mode
-- **Ctrl+M** - Toggle mouse mode on/off
+- **Ctrl+O** - Open options menu (configure settings)
 - **Esc** - Cancel selection/exit modes/cancel prompts
 
 ### Navigation
@@ -107,6 +107,19 @@ rune
   - **Y** - Save and quit (prompts for filename if needed)
   - **N** - Quit without saving
   - **Ctrl+C** or **Esc** - Cancel quit, return to editing
+
+## Configuration
+
+Press **Ctrl+O** to open the options menu for live configuration. Settings are automatically saved to `~/.config/rune/config.toml`.
+
+### Available Options
+- **M** - Toggle mouse mode on/off (allows terminal text selection when disabled)
+
+### Configuration File
+The config file supports:
+```toml
+mouse_enabled = true  # Enable/disable mouse support
+```
 - Works from any mode (editing, visual selection, filename input)
 
 ## Syntax Highlighting
