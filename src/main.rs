@@ -200,21 +200,21 @@ impl Editor {
                 // Has filename, save directly
                 self.save_file()?;
                 if !self.modified {
-                    return Ok(true); // Save succeeded, quit
+                    Ok(true) // Save succeeded, quit
                 } else {
                     // Save failed, don't quit
-                    return Ok(false);
+                    Ok(false)
                 }
             } else {
                 // No filename, need to prompt for one
                 self.quit_after_save = true;
                 self.start_filename_input();
                 // We'll quit after the save completes
-                return Ok(false);
+                Ok(false)
             }
         } else {
             // User chose not to save, quit anyway
-            return Ok(true);
+            Ok(true)
         }
     }
 
@@ -410,6 +410,7 @@ impl Editor {
         self.status_message.clear();
     }
 
+    #[allow(dead_code)]
     fn get_selected_text(&self) -> Option<String> {
         if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
             let start_idx = self.line_col_to_char_idx(start.0, start.1);
@@ -508,7 +509,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     {
         match key.code {
             KeyCode::Enter => {
-                return Ok(editor.finish_filename_input()?);
+                return editor.finish_filename_input();
             }
             KeyCode::Esc => {
                 editor.cancel_filename_input();

@@ -11,6 +11,7 @@ pub struct HighlightedLine {
 
 pub struct SyntaxHighlighter {
     syntax_set: SyntaxSet,
+    #[allow(dead_code)]
     theme_set: ThemeSet,
     // Cache for highlighted lines
     line_cache: HashMap<usize, HighlightedLine>,
@@ -111,6 +112,7 @@ impl SyntaxHighlighter {
                     '"' => {
                         let mut string_literal = String::from('"');
                         let mut escaped = false;
+                        #[allow(clippy::while_let_on_iterator)]
                         while let Some(next_ch) = chars.next() {
                             string_literal.push(next_ch);
                             if next_ch == '"' && !escaped {
@@ -123,6 +125,7 @@ impl SyntaxHighlighter {
                     '\'' => {
                         let mut char_literal = String::from('\'');
                         let mut escaped = false;
+                        #[allow(clippy::while_let_on_iterator)]
                         while let Some(next_ch) = chars.next() {
                             char_literal.push(next_ch);
                             if next_ch == '\'' && !escaped {
@@ -136,12 +139,12 @@ impl SyntaxHighlighter {
                     '/' if chars.peek() == Some(&'/') => {
                         chars.next(); // consume second '/'
                         let rest: String = chars.collect();
-                        result.push((Style::default().fg(Color::DarkGray), format!("//{}", rest)));
+                        result.push((Style::default().fg(Color::DarkGray), format!("//{rest}")));
                         break;
                     }
                     '#' => {
                         let rest: String = chars.collect();
-                        result.push((Style::default().fg(Color::DarkGray), format!("#{}", rest)));
+                        result.push((Style::default().fg(Color::DarkGray), format!("#{rest}")));
                         break;
                     }
                     // Numbers
@@ -204,10 +207,12 @@ impl SyntaxHighlighter {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_cache_size(&self) -> usize {
         self.line_cache.len()
     }
 
+    #[allow(dead_code)]
     pub fn clear_cache(&mut self) {
         self.line_cache.clear();
         self.file_version += 1;
