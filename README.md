@@ -18,7 +18,7 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 - ✅ **Efficient text handling** - Uses rope data structure for large files
 
 ### Built for Developers
-- **Find/Replace** - Ctrl+F to search, Ctrl+H to replace all occurrences
+- **Interactive Search** - Ctrl+F with live highlighting, arrow key navigation, real-time match count
 - **Go to line** - Ctrl+G to jump to specific lines
 - **Undo/Redo** - Ctrl+Z/Ctrl+Y with 100-action history
 - **Line numbers** - Toggle display in options menu
@@ -104,7 +104,7 @@ rune
 - **Ctrl+S** - Save file (prompts for filename if none)
 - **Ctrl+W** - Save As (save with new filename)
 - **Ctrl+O** - Open options menu (configure settings)
-- **Ctrl+F** - Find text
+- **Ctrl+F** - Find text (interactive search with live navigation)
 - **Ctrl+H** - Replace text (find and replace all)
 - **Ctrl+G** - Go to line number
 - **Ctrl+Z** - Undo last change
@@ -125,6 +125,14 @@ rune
 - **Backspace** - Delete character before cursor
 - **Regular typing** - Insert text at cursor
 
+### Interactive Search
+- **Ctrl+F** - Enter search mode
+- **Type search term** - See all matches highlighted in real-time
+- **Up/Down arrows** - Navigate between matches (shows "3/7 matches") 
+- **Enter** - Exit search mode, stay at current match
+- **Escape** - Cancel search, return to original position
+- **Backspace** - Modify search term with live results
+- Search automatically wraps around document boundaries
 
 ### File Operations
 - **Ctrl+S** on new file - Prompts for filename, then saves

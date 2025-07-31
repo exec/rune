@@ -15,7 +15,7 @@ use std::{
     fs,
     io::{self, stdout},
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -61,6 +61,8 @@ struct Editor {
     file_path: Option<PathBuf>,
     modified: bool,
     status_message: String,
+    status_message_time: Option<Instant>,
+    status_message_timeout: Duration,
     highlighter: SyntaxHighlighter,
     syntax_name: Option<String>,
     input_mode: InputMode,
@@ -72,6 +74,9 @@ struct Editor {
     word_wrap: bool,
     search_buffer: String,
     replace_buffer: String,
+    search_matches: Vec<(usize, usize)>,
+    current_match_index: Option<usize>,
+    search_start_pos: (usize, usize),
     undo_stack: Vec<UndoState>,
     redo_stack: Vec<UndoState>,
 }
@@ -97,6 +102,8 @@ impl Editor {
             file_path: None,
             modified: false,
             status_message: String::new(),
+            status_message_time: None,
+            status_message_timeout: Duration::from_secs(3),
             highlighter: SyntaxHighlighter::new(),
             syntax_name: None,
             input_mode: InputMode::Normal,
@@ -108,6 +115,9 @@ impl Editor {
             word_wrap: false,
             search_buffer: String::new(),
             replace_buffer: String::new(),
+            search_matches: Vec::new(),
+            current_match_index: None,
+            search_start_pos: (0, 0),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         };
@@ -180,10 +190,10 @@ impl Editor {
                 // Set the syntax in the highlighter
                 self.highlighter.set_syntax(self.syntax_name.as_deref());
 
-                self.status_message = format!("Saved: {}", path.display());
+                self.set_temporary_status_message(format!("Saved: {}", path.display()));
             }
             Err(e) => {
-                self.status_message = format!("Error saving file: {e}");
+                self.set_temporary_status_message(format!("Error saving file: {e}"));
             }
         }
         Ok(())
@@ -449,16 +459,35 @@ impl Editor {
         // Actually enable/disable mouse capture at terminal level
         if self.mouse_enabled {
             let _ = crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture);
-            self.status_message = "Mouse mode enabled".to_string();
+            self.set_temporary_status_message("Mouse mode enabled".to_string());
         } else {
             let _ = crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture);
-            self.status_message = "Mouse mode disabled".to_string();
+            self.set_temporary_status_message("Mouse mode disabled".to_string());
         }
     }
 
     fn open_options_menu(&mut self) {
         self.input_mode = InputMode::OptionsMenu;
         self.status_message = "Options Menu".to_string();
+    }
+
+    fn set_temporary_status_message(&mut self, message: String) {
+        self.status_message = message;
+        self.status_message_time = Some(Instant::now());
+    }
+
+    fn set_persistent_status_message(&mut self, message: String) {
+        self.status_message = message;
+        self.status_message_time = None;
+    }
+
+    fn check_status_message_timeout(&mut self) {
+        if let Some(time) = self.status_message_time {
+            if time.elapsed() >= self.status_message_timeout {
+                self.status_message.clear();
+                self.status_message_time = None;
+            }
+        }
     }
 
     fn save_config(&self) {
@@ -521,7 +550,7 @@ impl Editor {
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
             self.modified = true;
-            self.status_message = "Undo".to_string();
+            self.set_temporary_status_message("Undo".to_string());
         }
     }
 
@@ -536,7 +565,7 @@ impl Editor {
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
             self.modified = true;
-            self.status_message = "Redo".to_string();
+            self.set_temporary_status_message("Redo".to_string());
         }
     }
 
@@ -559,32 +588,108 @@ impl Editor {
         self.status_message = "Go to line: ".to_string();
     }
 
-    fn perform_find(&self, search_term: &str) -> Option<(usize, usize)> {
+    fn perform_find(&mut self, search_term: &str) -> bool {
         if search_term.is_empty() {
-            return None;
+            self.search_matches.clear();
+            self.current_match_index = None;
+            return false;
         }
 
+        // Store starting position to return to on cancel
+        self.search_start_pos = self.cursor_pos;
+        
+        // Find all matches in the document
+        self.search_matches = self.find_all_matches(search_term);
+        
+        if !self.search_matches.is_empty() {
+            // Find the match closest to cursor position (at or after cursor)
+            let cursor_char_idx = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
+            
+            self.current_match_index = self.search_matches
+                .iter()
+                .position(|(line, col)| {
+                    let match_char_idx = self.line_col_to_char_idx(*line, *col);
+                    match_char_idx >= cursor_char_idx
+                })
+                .or(Some(0)); // If no match at/after cursor, wrap to first match
+            
+            if let Some(index) = self.current_match_index {
+                let (line, col) = self.search_matches[index];
+                self.cursor_pos = (line, col);
+            }
+            
+            true
+        } else {
+            self.current_match_index = None;
+            false
+        }
+    }
+
+    fn find_all_matches(&self, search_term: &str) -> Vec<(usize, usize)> {
+        let mut matches = Vec::new();
         let text = self.rope.to_string();
-        let current_pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
-
-        // Search from current position forward
-        if let Some(found_idx) = text[current_pos..].find(search_term) {
-            let absolute_idx = current_pos + found_idx;
-            let line = self.rope.char_to_line(absolute_idx);
+        let mut start = 0;
+        
+        while let Some(pos) = text[start..].find(search_term) {
+            let absolute_pos = start + pos;
+            let line = self.rope.char_to_line(absolute_pos);
             let line_start = self.rope.line_to_char(line);
-            let col = absolute_idx - line_start;
-            return Some((line, col));
+            let col = absolute_pos - line_start;
+            matches.push((line, col));
+            start = absolute_pos + 1;
         }
+        
+        matches
+    }
 
-        // If not found forward, search from beginning
-        if let Some(found_idx) = text[..current_pos].find(search_term) {
-            let line = self.rope.char_to_line(found_idx);
-            let line_start = self.rope.line_to_char(line);
-            let col = found_idx - line_start;
-            return Some((line, col));
+    fn find_next_match(&mut self) -> bool {
+        if self.search_matches.is_empty() {
+            return false;
         }
+        
+        if let Some(current_index) = self.current_match_index {
+            let next_index = (current_index + 1) % self.search_matches.len();
+            self.current_match_index = Some(next_index);
+            let (line, col) = self.search_matches[next_index];
+            self.cursor_pos = (line, col);
+            true
+        } else {
+            false
+        }
+    }
 
-        None
+    fn find_previous_match(&mut self) -> bool {
+        if self.search_matches.is_empty() {
+            return false;
+        }
+        
+        if let Some(current_index) = self.current_match_index {
+            let prev_index = if current_index == 0 {
+                self.search_matches.len() - 1
+            } else {
+                current_index - 1
+            };
+            self.current_match_index = Some(prev_index);
+            let (line, col) = self.search_matches[prev_index];
+            self.cursor_pos = (line, col);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cancel_search(&mut self) {
+        self.cursor_pos = self.search_start_pos;
+        self.search_matches.clear();
+        self.current_match_index = None;
+    }
+
+
+    fn char_idx_to_line_col(&self, char_idx: usize) -> (usize, usize) {
+        let line = self.rope.char_to_line(char_idx);
+        let line_start = self.rope.line_to_char(line);
+        let col = char_idx - line_start;
+        (line, col)
     }
 
     fn perform_replace(&mut self, search_term: &str, replace_term: &str) -> usize {
@@ -612,9 +717,9 @@ impl Editor {
             self.cursor_pos.0 = line_num - 1; // Convert to 0-based
             self.cursor_pos.1 = 0;
             self.clamp_cursor_to_line();
-            self.status_message = format!("Jumped to line {line_num}");
+            self.set_temporary_status_message(format!("Jumped to line {line_num}"));
         } else {
-            self.status_message = format!("Invalid line number: {line_num}");
+            self.set_temporary_status_message(format!("Invalid line number: {line_num}"));
         }
     }
 
@@ -655,6 +760,9 @@ fn run_editor(
 ) -> Result<()> {
     loop {
         terminal.draw(|f| draw_ui(f, editor))?;
+        
+        // Check if status message should timeout
+        editor.check_status_message_timeout();
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
@@ -711,21 +819,21 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             }
             KeyCode::Char('l') | KeyCode::Char('L') => {
                 editor.show_line_numbers = !editor.show_line_numbers;
-                editor.status_message = format!(
+                editor.set_temporary_status_message(format!(
                     "Line numbers: {}",
                     if editor.show_line_numbers {
                         "ON"
                     } else {
                         "OFF"
                     }
-                );
+                ));
                 editor.input_mode = InputMode::Normal;
                 return Ok(false);
             }
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 editor.word_wrap = !editor.word_wrap;
-                editor.status_message =
-                    format!("Word wrap: {}", if editor.word_wrap { "ON" } else { "OFF" });
+                editor.set_temporary_status_message(
+                    format!("Word wrap: {}", if editor.word_wrap { "ON" } else { "OFF" }));
                 editor.input_mode = InputMode::Normal;
                 return Ok(false);
             }
@@ -735,7 +843,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     4 => 8,
                     _ => 2,
                 };
-                editor.status_message = format!("Tab width: {}", editor.tab_width);
+                editor.set_temporary_status_message(format!("Tab width: {}", editor.tab_width));
                 editor.input_mode = InputMode::Normal;
                 return Ok(false);
             }
@@ -784,25 +892,88 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     if editor.input_mode == InputMode::Find {
         match key.code {
             KeyCode::Enter => {
-                if let Some((line, col)) = editor.perform_find(&editor.search_buffer) {
-                    editor.cursor_pos = (line, col);
-                    editor.status_message = "Found".to_string();
+                if !editor.search_matches.is_empty() {
+                    // If we already have matches, exit find mode and stay at current position
+                    editor.input_mode = InputMode::Normal;
+                    editor.search_matches.clear();
+                    editor.current_match_index = None;
+                    editor.set_temporary_status_message("Search completed".to_string());
                 } else {
-                    editor.status_message = "Not found".to_string();
+                    // First time pressing enter - perform search
+                    let search_term = editor.search_buffer.clone();
+                    if editor.perform_find(&search_term) {
+                        let matches_count = editor.search_matches.len();
+                        let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
+                        editor.status_message = format!("Find: {} ({}/{} matches) - Use ↑↓ to navigate, Enter/Esc to exit", 
+                            search_term, current, matches_count);
+                    } else {
+                        editor.set_temporary_status_message("Not found".to_string());
+                        editor.input_mode = InputMode::Normal;
+                    }
                 }
-                editor.input_mode = InputMode::Normal;
             }
             KeyCode::Esc => {
+                editor.cancel_search();
                 editor.input_mode = InputMode::Normal;
-                editor.status_message = "Search cancelled".to_string();
+                editor.set_temporary_status_message("Search cancelled".to_string());
+            }
+            KeyCode::Up => {
+                if editor.search_matches.is_empty() {
+                    // If no current search, just move cursor
+                    editor.move_cursor_up();
+                } else {
+                    // Navigate to previous match
+                    editor.find_previous_match();
+                    let matches_count = editor.search_matches.len();
+                    let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
+                    editor.status_message = format!("Find: {} ({}/{} matches) - Use ↑↓ to navigate, Enter/Esc to exit", 
+                        editor.search_buffer, current, matches_count);
+                }
+            }
+            KeyCode::Down => {
+                if editor.search_matches.is_empty() {
+                    // If no current search, just move cursor
+                    editor.move_cursor_down();
+                } else {
+                    // Navigate to next match
+                    editor.find_next_match();
+                    let matches_count = editor.search_matches.len();
+                    let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
+                    editor.status_message = format!("Find: {} ({}/{} matches) - Use ↑↓ to navigate, Enter/Esc to exit", 
+                        editor.search_buffer, current, matches_count);
+                }
             }
             KeyCode::Backspace => {
                 editor.search_buffer.pop();
-                editor.status_message = format!("Find: {}", editor.search_buffer);
+                if !editor.search_buffer.is_empty() {
+                    // Re-search with updated term
+                    let search_term = editor.search_buffer.clone();
+                    if editor.perform_find(&search_term) {
+                        let matches_count = editor.search_matches.len();
+                        let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
+                        editor.status_message = format!("Find: {} ({}/{} matches) - Use ↑↓ to navigate, Enter/Esc to exit", 
+                            search_term, current, matches_count);
+                    } else {
+                        editor.status_message = format!("Find: {} (no matches)", editor.search_buffer);
+                    }
+                } else {
+                    editor.status_message = "Find: ".to_string();
+                    editor.search_matches.clear();
+                    editor.current_match_index = None;
+                }
             }
             KeyCode::Char(c) => {
                 editor.search_buffer.push(c);
-                editor.status_message = format!("Find: {}", editor.search_buffer);
+                // Re-search with updated term
+                let search_term = editor.search_buffer.clone();
+                if editor.perform_find(&search_term) {
+                    let matches_count = editor.search_matches.len();
+                    let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
+                    editor.status_message = format!("Find: {} ({}/{} matches) - Use ↑↓ to navigate, Enter/Esc to exit", 
+                        search_term, current, matches_count);
+                } else {
+                    editor.status_message = format!("Find: {} (no matches)", editor.search_buffer);
+                }
             }
             _ => {}
         }
@@ -820,9 +991,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     // Perform replace
                     let replacements = editor.perform_replace(&editor.search_buffer.clone(), &editor.replace_buffer.clone());
                     if replacements > 0 {
-                        editor.status_message = format!("Replaced {} occurrence(s)", replacements);
+                        editor.set_temporary_status_message(format!("Replaced {} occurrence(s)", replacements));
                     } else {
-                        editor.status_message = "No matches found".to_string();
+                        editor.set_temporary_status_message("No matches found".to_string());
                     }
                     editor.input_mode = InputMode::Normal;
                 }
@@ -861,7 +1032,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 if let Ok(line_num) = editor.search_buffer.parse::<usize>() {
                     editor.goto_line(line_num);
                 } else {
-                    editor.status_message = "Invalid line number".to_string();
+                    editor.set_temporary_status_message("Invalid line number".to_string());
                 }
                 editor.input_mode = InputMode::Normal;
             }
@@ -920,7 +1091,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             editor.redo();
         }
 
-        // Navigation
+// Navigation
         (_, KeyCode::Up) => editor.move_cursor_up(),
         (_, KeyCode::Down) => editor.move_cursor_down(),
         (_, KeyCode::Left) => editor.move_cursor_left(),
@@ -944,6 +1115,107 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     }
 
     Ok(false)
+}
+
+fn apply_search_highlighting(
+    syntax_spans: &[(Style, String)],
+    line_content: &str,
+    line_idx: usize,
+    search_term: &str,
+    search_matches: &[(usize, usize)],
+    current_match_index: Option<usize>,
+) -> Vec<Span<'static>> {
+    if search_term.is_empty() || search_matches.is_empty() {
+        // No search active - just apply syntax highlighting
+        return syntax_spans.iter().map(|(style, text)| {
+            let clean_text = text.trim_end_matches('\n').to_string();
+            Span::styled(clean_text, *style)
+        }).collect();
+    }
+
+    // Find matches on this line
+    let line_matches: Vec<usize> = search_matches
+        .iter()
+        .enumerate()
+        .filter_map(|(_match_idx, (match_line, match_col))| {
+            if *match_line == line_idx {
+                Some(*match_col)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if line_matches.is_empty() {
+        // No matches on this line - just apply syntax highlighting
+        return syntax_spans.iter().map(|(style, text)| {
+            let clean_text = text.trim_end_matches('\n').to_string();
+            Span::styled(clean_text, *style)
+        }).collect();
+    }
+
+    // Rebuild the line with search highlighting
+    let mut result_spans = Vec::new();
+    let mut current_pos = 0;
+    
+    // Find which match is currently selected on this line
+    let current_match_col = current_match_index
+        .and_then(|idx| search_matches.get(idx))
+        .filter(|(match_line, _)| *match_line == line_idx)
+        .map(|(_, match_col)| *match_col);
+
+    // Process each character position, applying both syntax and search highlighting
+    for &match_col in &line_matches {
+        // Add text before the match
+        if match_col > current_pos {
+            let before_text = &line_content[current_pos..match_col];
+            if !before_text.is_empty() {
+                // Apply syntax highlighting to the text before the match
+                result_spans.push(Span::styled(
+                    before_text.to_string(),
+                    get_syntax_style_at_position(syntax_spans, current_pos)
+                ));
+            }
+        }
+
+        // Add the highlighted match
+        let match_end = (match_col + search_term.len()).min(line_content.len());
+        let match_text = &line_content[match_col..match_end];
+        
+        let highlight_style = if Some(match_col) == current_match_col {
+            // Current match - bright red/orange background
+            Style::default().bg(Color::Red).fg(Color::White)
+        } else {
+            // Other matches - yellow background
+            Style::default().bg(Color::Yellow).fg(Color::Black)
+        };
+        
+        result_spans.push(Span::styled(match_text.to_string(), highlight_style));
+        current_pos = match_end;
+    }
+
+    // Add remaining text after the last match
+    if current_pos < line_content.len() {
+        let remaining_text = &line_content[current_pos..];
+        result_spans.push(Span::styled(
+            remaining_text.to_string(),
+            get_syntax_style_at_position(syntax_spans, current_pos)
+        ));
+    }
+
+    result_spans
+}
+
+fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usize) -> Style {
+    let mut current_pos = 0;
+    for (style, text) in syntax_spans {
+        let text_len = text.trim_end_matches('\n').len();
+        if position >= current_pos && position < current_pos + text_len {
+            return *style;
+        }
+        current_pos += text_len;
+    }
+    Style::default()
 }
 
 fn draw_ui(f: &mut Frame, editor: &mut Editor) {
@@ -1001,11 +1273,18 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
                     styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
                 }
 
-                // Add highlighted content
-                styled_spans.extend(highlighted_spans.into_iter().map(|(style, text)| {
-                    let clean_text = text.trim_end_matches('\n').to_string();
-                    Span::styled(clean_text, style)
-                }));
+                // Add highlighted content with search highlighting
+                let line_content = line_text.trim_end_matches('\n');
+                styled_spans.extend(
+                    apply_search_highlighting(
+                        &highlighted_spans,
+                        line_content,
+                        line_idx,
+                        &editor.search_buffer,
+                        &editor.search_matches,
+                        editor.current_match_index,
+                    )
+                );
 
                 lines.push(Line::from(styled_spans));
             }
@@ -1076,10 +1355,10 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             "Enter: Confirm | Esc: Cancel | Type filename"
         }
         InputMode::OptionsMenu => "M: Mouse | L: Line Numbers | W: Word Wrap | T: Tab Width | Esc: Back",
-        InputMode::Find => "Enter: Find | Esc: Cancel | Type search term",
+        InputMode::Find => "Enter: Search/Exit | Esc: Cancel | ↑↓: Navigate matches | Type search term",
         InputMode::Replace => "Enter: Next step | Esc: Cancel | Type find/replace text",
         InputMode::GoToLine => "Enter: Go | Esc: Cancel | Type line number",
-        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^T Visual | ^O Options",
+        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^O Options",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
