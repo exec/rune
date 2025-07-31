@@ -31,10 +31,30 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 
 ## Installation
 
-### Homebrew (macOS/Linux)
+### Package Managers
+
+#### Homebrew (macOS/Linux)
 ```bash
 brew tap exec/rune
 brew install rune
+```
+
+#### Arch Linux (AUR)
+```bash
+# Using an AUR helper like yay or paru:
+yay -S rune-editor
+# or
+paru -S rune-editor
+
+# Manual installation:
+git clone https://aur.archlinux.org/rune-editor.git
+cd rune-editor
+makepkg -si
+```
+
+#### Cargo
+```bash
+cargo install --git https://github.com/exec/rune
 ```
 
 ### Binary Releases
@@ -45,7 +65,17 @@ Download pre-built binaries from the [releases page](https://github.com/exec/run
 curl -L https://github.com/exec/rune/releases/latest/download/rune-linux-x86_64.tar.gz | tar xz
 sudo mv rune /usr/local/bin/
 
-# Other platforms available: linux-aarch64, linux-armv7, freebsd-x86_64, netbsd-x86_64
+# macOS Apple Silicon
+curl -L https://github.com/exec/rune/releases/latest/download/rune-macos-aarch64.tar.gz | tar xz
+xattr -d com.apple.quarantine rune  # Remove quarantine attribute
+sudo mv rune /usr/local/bin/
+
+# macOS Intel
+curl -L https://github.com/exec/rune/releases/latest/download/rune-macos-x86_64.tar.gz | tar xz
+xattr -d com.apple.quarantine rune  # Remove quarantine attribute
+sudo mv rune /usr/local/bin/
+
+# Other platforms: linux-aarch64, linux-armv7, freebsd-x86_64, netbsd-x86_64
 ```
 
 ### From Source
@@ -54,11 +84,6 @@ git clone https://github.com/exec/rune
 cd rune
 cargo build --release
 ./target/release/rune [filename]
-```
-
-### Cargo Install
-```bash
-cargo install --git https://github.com/exec/rune
 ```
 
 ### Usage
