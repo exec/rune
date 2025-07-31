@@ -19,7 +19,12 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 - ✅ **Efficient text handling** - Uses rope data structure for large files
 
 ### Built for Developers
-- Respects nano's simplicity while adding power user features
+- **Find functionality** - Ctrl+F to search, wraps around file
+- **Go to line** - Ctrl+G to jump to specific lines
+- **Undo/Redo** - Ctrl+Z/Ctrl+Y with 100-action history
+- **Line numbers** - Toggle display in options menu
+- **Tab width control** - Configure 2, 4, or 8 space tabs
+- **Word wrap** - Toggle line wrapping
 - No modal editing - what you see is what you get
 - Help bar always visible at bottom
 - Real-time status information (line/column, file status)
@@ -76,6 +81,10 @@ rune
 - **Ctrl+W** - Save As (save with new filename)
 - **Ctrl+V** - Enter visual selection mode
 - **Ctrl+O** - Open options menu (configure settings)
+- **Ctrl+F** - Find text
+- **Ctrl+G** - Go to line number
+- **Ctrl+Z** - Undo last change
+- **Ctrl+Y** - Redo last undone change
 - **Esc** - Cancel selection/exit modes/cancel prompts
 
 ### Navigation
@@ -114,11 +123,17 @@ Press **Ctrl+O** to open the options menu for live configuration. Settings are a
 
 ### Available Options
 - **M** - Toggle mouse mode on/off (allows terminal text selection when disabled)
+- **L** - Toggle line numbers on/off
+- **W** - Toggle word wrap on/off
+- **T** - Cycle tab width (2 → 4 → 8 → 2)
 
 ### Configuration File
 The config file supports:
 ```toml
-mouse_enabled = true  # Enable/disable mouse support
+mouse_enabled = true     # Enable/disable mouse support
+show_line_numbers = false # Show/hide line numbers
+tab_width = 4            # Tab width (2, 4, or 8)
+word_wrap = false        # Enable/disable word wrap
 ```
 - Works from any mode (editing, visual selection, filename input)
 
@@ -172,11 +187,15 @@ txt1 follows the "better nano" philosophy:
 
 | Feature | rune | nano | micro | vim |
 |---------|------|------|--------|-----|
-| Zero config | ✅ | ✅ | ✅ | ❌ |
+| Smart defaults | ✅ | ✅ | ✅ | ❌ |
 | Standard keys | ✅ | ❌ | ✅ | ❌ |
 | Visual selection | ✅ | ❌ | ✅ | ✅ |
 | Mouse support | ✅ | ❌ | ✅ | ✅ |
 | Syntax highlight | ✅ | ❌ | ✅ | ✅ |
+| Find/Search | ✅ | ✅ | ✅ | ✅ |
+| Go to line | ✅ | ✅ | ✅ | ✅ |
+| Undo/Redo | ✅ | ❌ | ✅ | ✅ |
+| Line numbers | ✅ | ❌ | ✅ | ✅ |
 | Learning curve | None | None | Minimal | Steep |
 | Performance | Fast | Fast | Fast | Fast |
 

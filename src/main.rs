@@ -22,15 +22,27 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 mod syntax;
 use syntax::SyntaxHighlighter;
 
+#[derive(Clone, Debug)]
+struct UndoState {
+    rope: Rope,
+    cursor_pos: (usize, usize),
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Config {
     mouse_enabled: bool,
+    show_line_numbers: bool,
+    tab_width: usize,
+    word_wrap: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             mouse_enabled: true,
+            show_line_numbers: false,
+            tab_width: 4,
+            word_wrap: false,
         }
     }
 }
@@ -57,6 +69,13 @@ struct Editor {
     filename_buffer: String,
     quit_after_save: bool,
     mouse_enabled: bool,
+    show_line_numbers: bool,
+    tab_width: usize,
+    word_wrap: bool,
+    search_buffer: String,
+    replace_buffer: String,
+    undo_stack: Vec<UndoState>,
+    redo_stack: Vec<UndoState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,6 +85,9 @@ enum InputMode {
     EnteringSaveAs,
     ConfirmQuit,
     OptionsMenu,
+    Find,
+    Replace,
+    GoToLine,
 }
 
 impl Editor {
@@ -85,6 +107,13 @@ impl Editor {
             filename_buffer: String::new(),
             quit_after_save: false,
             mouse_enabled: true,
+            show_line_numbers: false,
+            tab_width: 4,
+            word_wrap: false,
+            search_buffer: String::new(),
+            replace_buffer: String::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
         editor.load_config();
         editor
@@ -243,6 +272,7 @@ impl Editor {
     }
 
     fn insert_char(&mut self, c: char) {
+        self.save_undo_state();
         let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
         self.rope.insert_char(pos, c);
 
@@ -258,6 +288,7 @@ impl Editor {
         if self.cursor_pos.1 > 0 {
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
             if pos > 0 {
+                self.save_undo_state();
                 self.rope.remove(pos - 1..pos);
 
                 // Invalidate highlighting cache from current line
@@ -271,6 +302,7 @@ impl Editor {
             // Join with previous line
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, 0);
             if pos > 0 {
+                self.save_undo_state();
                 self.rope.remove(pos - 1..pos);
 
                 // Invalidate highlighting cache from previous line (since we're joining)
@@ -287,6 +319,7 @@ impl Editor {
     }
 
     fn insert_newline(&mut self) {
+        self.save_undo_state();
         let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
         self.rope.insert_char(pos, '\n');
 
@@ -431,7 +464,7 @@ impl Editor {
 
     fn toggle_mouse_mode(&mut self) {
         self.mouse_enabled = !self.mouse_enabled;
-        
+
         // Actually enable/disable mouse capture at terminal level
         if self.mouse_enabled {
             let _ = crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture);
@@ -450,6 +483,9 @@ impl Editor {
     fn save_config(&self) {
         let config = Config {
             mouse_enabled: self.mouse_enabled,
+            show_line_numbers: self.show_line_numbers,
+            tab_width: self.tab_width,
+            word_wrap: self.word_wrap,
         };
 
         if let Some(config_dir) = dirs::config_dir() {
@@ -471,8 +507,106 @@ impl Editor {
             if let Ok(config_str) = fs::read_to_string(config_path) {
                 if let Ok(config) = toml::from_str::<Config>(&config_str) {
                     self.mouse_enabled = config.mouse_enabled;
+                    self.show_line_numbers = config.show_line_numbers;
+                    self.tab_width = config.tab_width;
+                    self.word_wrap = config.word_wrap;
                 }
             }
+        }
+    }
+
+    fn save_undo_state(&mut self) {
+        let state = UndoState {
+            rope: self.rope.clone(),
+            cursor_pos: self.cursor_pos,
+        };
+        self.undo_stack.push(state);
+        self.redo_stack.clear(); // Clear redo stack when new action happens
+
+        // Limit undo stack size to prevent memory issues
+        if self.undo_stack.len() > 100 {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(state) = self.undo_stack.pop() {
+            let current_state = UndoState {
+                rope: self.rope.clone(),
+                cursor_pos: self.cursor_pos,
+            };
+            self.redo_stack.push(current_state);
+
+            self.rope = state.rope;
+            self.cursor_pos = state.cursor_pos;
+            self.modified = true;
+            self.status_message = "Undo".to_string();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(state) = self.redo_stack.pop() {
+            let current_state = UndoState {
+                rope: self.rope.clone(),
+                cursor_pos: self.cursor_pos,
+            };
+            self.undo_stack.push(current_state);
+
+            self.rope = state.rope;
+            self.cursor_pos = state.cursor_pos;
+            self.modified = true;
+            self.status_message = "Redo".to_string();
+        }
+    }
+
+    fn start_find(&mut self) {
+        self.input_mode = InputMode::Find;
+        self.search_buffer.clear();
+        self.status_message = "Find: ".to_string();
+    }
+
+    fn start_goto_line(&mut self) {
+        self.input_mode = InputMode::GoToLine;
+        self.search_buffer.clear();
+        self.status_message = "Go to line: ".to_string();
+    }
+
+    fn perform_find(&self, search_term: &str) -> Option<(usize, usize)> {
+        if search_term.is_empty() {
+            return None;
+        }
+
+        let text = self.rope.to_string();
+        let current_pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
+
+        // Search from current position forward
+        if let Some(found_idx) = text[current_pos..].find(search_term) {
+            let absolute_idx = current_pos + found_idx;
+            let line = self.rope.char_to_line(absolute_idx);
+            let line_start = self.rope.line_to_char(line);
+            let col = absolute_idx - line_start;
+            return Some((line, col));
+        }
+
+        // If not found forward, search from beginning
+        if let Some(found_idx) = text[..current_pos].find(search_term) {
+            let line = self.rope.char_to_line(found_idx);
+            let line_start = self.rope.line_to_char(line);
+            let col = found_idx - line_start;
+            return Some((line, col));
+        }
+
+        None
+    }
+
+    fn goto_line(&mut self, line_num: usize) {
+        if line_num > 0 && line_num <= self.rope.len_lines() {
+            self.cursor_pos.0 = line_num - 1; // Convert to 0-based
+            self.cursor_pos.1 = 0;
+            self.clamp_cursor_to_line();
+            self.status_message = format!("Jumped to line {}", line_num);
+        } else {
+            self.status_message = format!("Invalid line number: {}", line_num);
         }
     }
 
@@ -505,12 +639,12 @@ fn main() -> Result<()> {
     terminal.clear()?;
 
     let mut editor = Editor::new();
-    
+
     // Enable mouse capture only if configured to do so
     if editor.mouse_enabled {
         crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture)?;
     }
-    
+
     if let Some(file) = cli.file {
         editor.load_file(file)?;
     }
@@ -584,6 +718,36 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 editor.input_mode = InputMode::Normal;
                 return Ok(false);
             }
+            KeyCode::Char('l') | KeyCode::Char('L') => {
+                editor.show_line_numbers = !editor.show_line_numbers;
+                editor.status_message = format!(
+                    "Line numbers: {}",
+                    if editor.show_line_numbers {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                );
+                editor.input_mode = InputMode::Normal;
+                return Ok(false);
+            }
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                editor.word_wrap = !editor.word_wrap;
+                editor.status_message =
+                    format!("Word wrap: {}", if editor.word_wrap { "ON" } else { "OFF" });
+                editor.input_mode = InputMode::Normal;
+                return Ok(false);
+            }
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                editor.tab_width = match editor.tab_width {
+                    2 => 4,
+                    4 => 8,
+                    _ => 2,
+                };
+                editor.status_message = format!("Tab width: {}", editor.tab_width);
+                editor.input_mode = InputMode::Normal;
+                return Ok(false);
+            }
             KeyCode::Esc => {
                 editor.save_config();
                 editor.input_mode = InputMode::Normal;
@@ -619,6 +783,63 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             KeyCode::Char(c) => {
                 editor.filename_buffer.push(c);
                 editor.status_message = format!("File Name to Write: {}", editor.filename_buffer);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    // Handle find mode
+    if editor.input_mode == InputMode::Find {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some((line, col)) = editor.perform_find(&editor.search_buffer) {
+                    editor.cursor_pos = (line, col);
+                    editor.status_message = "Found".to_string();
+                } else {
+                    editor.status_message = "Not found".to_string();
+                }
+                editor.input_mode = InputMode::Normal;
+            }
+            KeyCode::Esc => {
+                editor.input_mode = InputMode::Normal;
+                editor.status_message = "Search cancelled".to_string();
+            }
+            KeyCode::Backspace => {
+                editor.search_buffer.pop();
+                editor.status_message = format!("Find: {}", editor.search_buffer);
+            }
+            KeyCode::Char(c) => {
+                editor.search_buffer.push(c);
+                editor.status_message = format!("Find: {}", editor.search_buffer);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    // Handle go to line mode
+    if editor.input_mode == InputMode::GoToLine {
+        match key.code {
+            KeyCode::Enter => {
+                if let Ok(line_num) = editor.search_buffer.parse::<usize>() {
+                    editor.goto_line(line_num);
+                } else {
+                    editor.status_message = "Invalid line number".to_string();
+                }
+                editor.input_mode = InputMode::Normal;
+            }
+            KeyCode::Esc => {
+                editor.input_mode = InputMode::Normal;
+                editor.status_message = "Go to line cancelled".to_string();
+            }
+            KeyCode::Backspace => {
+                editor.search_buffer.pop();
+                editor.status_message = format!("Go to line: {}", editor.search_buffer);
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                editor.search_buffer.push(c);
+                editor.status_message = format!("Go to line: {}", editor.search_buffer);
             }
             _ => {}
         }
@@ -673,6 +894,18 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('o')) => {
             editor.open_options_menu();
         }
+        (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+            editor.undo();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
+            editor.redo();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
+            editor.start_find();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
+            editor.start_goto_line();
+        }
 
         // Navigation
         (_, KeyCode::Up) => editor.move_cursor_up(),
@@ -725,6 +958,25 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         height: 1,
     };
 
+    // Calculate line number width if line numbers are enabled
+    let line_num_width = if editor.show_line_numbers {
+        editor.rope.len_lines().to_string().len() + 1 // +1 for space
+    } else {
+        0
+    };
+
+    // Adjust editor area for line numbers
+    let content_area = if editor.show_line_numbers {
+        Rect {
+            x: editor_area.x + line_num_width as u16,
+            y: editor_area.y,
+            width: editor_area.width.saturating_sub(line_num_width as u16),
+            height: editor_area.height,
+        }
+    } else {
+        editor_area
+    };
+
     // Draw editor content with lazy syntax highlighting
     let mut lines = vec![];
     let visible_lines = editor_area.height as usize;
@@ -736,20 +988,37 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
                 // Use lazy highlighting - only highlight visible lines
                 let highlighted_spans = editor.highlighter.highlight_line(line_idx, line_text);
 
-                let styled_spans: Vec<Span> = highlighted_spans
-                    .into_iter()
-                    .map(|(style, text)| {
-                        let clean_text = text.trim_end_matches('\n').to_string();
-                        Span::styled(clean_text, style)
-                    })
-                    .collect();
+                let mut styled_spans: Vec<Span> = vec![];
+
+                // Add line number if enabled
+                if editor.show_line_numbers {
+                    let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
+                    styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+                }
+
+                // Add highlighted content
+                styled_spans.extend(highlighted_spans.into_iter().map(|(style, text)| {
+                    let clean_text = text.trim_end_matches('\n').to_string();
+                    Span::styled(clean_text, style)
+                }));
+
                 lines.push(Line::from(styled_spans));
             }
         } else {
-            lines.push(Line::from(Span::styled(
-                "~",
-                Style::default().fg(Color::DarkGray),
-            )));
+            let mut styled_spans: Vec<Span> = vec![];
+
+            // Add line number space if enabled
+            if editor.show_line_numbers {
+                let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
+                styled_spans.push(Span::styled(
+                    empty_line_num,
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
+
+            lines.push(Line::from(styled_spans));
         }
     }
 
@@ -762,10 +1031,12 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     // Draw cursor
     let cursor_screen_y = editor.cursor_pos.0.saturating_sub(editor.viewport_offset.0);
     if cursor_screen_y < visible_lines {
-        f.set_cursor_position(Position::new(
-            editor.cursor_pos.1 as u16,
-            cursor_screen_y as u16,
-        ));
+        let cursor_x = if editor.show_line_numbers {
+            editor.cursor_pos.1 as u16 + line_num_width as u16
+        } else {
+            editor.cursor_pos.1 as u16
+        };
+        f.set_cursor_position(Position::new(cursor_x, cursor_screen_y as u16));
     }
 
     // Draw status bar
@@ -799,8 +1070,10 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
             "Enter: Confirm | Esc: Cancel | Type filename"
         }
-        InputMode::OptionsMenu => "M: Toggle Mouse | Esc: Back to editor",
-        _ => "^Q/^X Quit | ^S Save | ^W Save As | ^V Visual | ^O Options",
+        InputMode::OptionsMenu => "M: Mouse | L: Line Numbers | W: Word Wrap | T: Tab Width | Esc: Back",
+        InputMode::Find => "Enter: Find | Esc: Cancel | Type search term",
+        InputMode::GoToLine => "Enter: Go | Esc: Cancel | Type line number",
+        _ => "^Q/^X Quit | ^S Save | ^F Find | ^G Go to Line | ^Z Undo | ^Y Redo | ^V Visual | ^O Options",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
