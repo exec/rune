@@ -431,11 +431,15 @@ impl Editor {
 
     fn toggle_mouse_mode(&mut self) {
         self.mouse_enabled = !self.mouse_enabled;
-        self.status_message = if self.mouse_enabled {
-            "Mouse mode enabled".to_string()
+        
+        // Actually enable/disable mouse capture at terminal level
+        if self.mouse_enabled {
+            let _ = crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture);
+            self.status_message = "Mouse mode enabled".to_string();
         } else {
-            "Mouse mode disabled".to_string()
-        };
+            let _ = crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture);
+            self.status_message = "Mouse mode disabled".to_string();
+        }
     }
 
     fn open_options_menu(&mut self) {
@@ -496,12 +500,17 @@ fn main() -> Result<()> {
 
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
-    crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
 
     let mut editor = Editor::new();
+    
+    // Enable mouse capture only if configured to do so
+    if editor.mouse_enabled {
+        crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture)?;
+    }
+    
     if let Some(file) = cli.file {
         editor.load_file(file)?;
     }
