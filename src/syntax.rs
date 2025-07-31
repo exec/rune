@@ -1,10 +1,7 @@
 use ratatui::style::{Color, Style};
 use std::collections::HashMap;
 use std::path::Path;
-use syntect::{
-    highlighting::ThemeSet,
-    parsing::SyntaxSet,
-};
+use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
 #[derive(Clone)]
 pub struct HighlightedLine {
@@ -34,7 +31,11 @@ impl SyntaxHighlighter {
         }
     }
 
-    pub fn detect_syntax(&self, file_path: Option<&Path>, first_line: Option<&str>) -> Option<String> {
+    pub fn detect_syntax(
+        &self,
+        file_path: Option<&Path>,
+        first_line: Option<&str>,
+    ) -> Option<String> {
         if let Some(path) = file_path {
             if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
                 if let Some(syntax) = self.syntax_set.find_syntax_by_extension(extension) {
@@ -42,13 +43,13 @@ impl SyntaxHighlighter {
                 }
             }
         }
-        
+
         if let Some(line) = first_line {
             if let Some(syntax) = self.syntax_set.find_syntax_by_first_line(line) {
                 return Some(syntax.name.clone());
             }
         }
-        
+
         None
     }
 
@@ -76,10 +77,13 @@ impl SyntaxHighlighter {
         let spans = self.highlight_simple(line_text);
 
         // Cache the result
-        self.line_cache.insert(line_num, HighlightedLine {
-            spans: spans.clone(),
-            version: self.file_version,
-        });
+        self.line_cache.insert(
+            line_num,
+            HighlightedLine {
+                spans: spans.clone(),
+                version: self.file_version,
+            },
+        );
 
         spans
     }
@@ -89,7 +93,7 @@ impl SyntaxHighlighter {
         let mut result = Vec::new();
         let mut chars = line.chars().peekable();
         let mut current_word = String::new();
-        
+
         while let Some(ch) = chars.next() {
             if ch.is_alphanumeric() || ch == '_' {
                 current_word.push(ch);
@@ -100,7 +104,7 @@ impl SyntaxHighlighter {
                     result.push((style, current_word.clone()));
                     current_word.clear();
                 }
-                
+
                 // Handle special characters
                 match ch {
                     // String literals
@@ -144,7 +148,11 @@ impl SyntaxHighlighter {
                     c if c.is_ascii_digit() => {
                         let mut number = String::from(c);
                         while let Some(&next_ch) = chars.peek() {
-                            if next_ch.is_ascii_digit() || next_ch == '.' || next_ch == '_' || next_ch.is_ascii_hexdigit() {
+                            if next_ch.is_ascii_digit()
+                                || next_ch == '.'
+                                || next_ch == '_'
+                                || next_ch.is_ascii_hexdigit()
+                            {
                                 number.push(chars.next().unwrap());
                             } else {
                                 break;
@@ -159,39 +167,39 @@ impl SyntaxHighlighter {
                 }
             }
         }
-        
+
         // Handle final word
         if !current_word.is_empty() {
             let style = self.get_keyword_style(&current_word);
             result.push((style, current_word));
         }
-        
+
         result
     }
 
     fn get_keyword_style(&self, word: &str) -> Style {
         match word {
             // Rust keywords
-            "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait" | "use" | "mod" | 
-            "const" | "static" | "extern" | "crate" | "super" | "self" | "Self" | "where" | "async" | "await" => 
-                Style::default().fg(Color::Magenta),
-            
+            "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait" | "use" | "mod"
+            | "const" | "static" | "extern" | "crate" | "super" | "self" | "Self" | "where"
+            | "async" | "await" => Style::default().fg(Color::Magenta),
+
             // Control flow (avoid duplicate "let" and "const")
-            "if" | "else" | "match" | "for" | "while" | "loop" | "break" | "continue" | "return" |
-            "try" | "catch" | "finally" | "throw" | "raise" | "def" | "class" | "import" | "from" |
-            "function" | "var" => 
-                Style::default().fg(Color::Yellow),
-            
+            "if" | "else" | "match" | "for" | "while" | "loop" | "break" | "continue"
+            | "return" | "try" | "catch" | "finally" | "throw" | "raise" | "def" | "class"
+            | "import" | "from" | "function" | "var" => Style::default().fg(Color::Yellow),
+
             // Literals
-            "true" | "false" | "True" | "False" | "null" | "None" | "undefined" | "nil" => 
-                Style::default().fg(Color::Cyan),
-            
+            "true" | "false" | "True" | "False" | "null" | "None" | "undefined" | "nil" => {
+                Style::default().fg(Color::Cyan)
+            }
+
             // Types (common ones)
-            "String" | "Vec" | "Option" | "Result" | "HashMap" | "HashSet" | "i32" | "u32" | "i64" | "u64" |
-            "f32" | "f64" | "bool" | "char" | "usize" | "isize" | "str" | "int" | "float" | "list" | "dict" |
-            "tuple" | "set" | "Array" | "Object" | "Number" | "Boolean" => 
-                Style::default().fg(Color::Blue),
-            
+            "String" | "Vec" | "Option" | "Result" | "HashMap" | "HashSet" | "i32" | "u32"
+            | "i64" | "u64" | "f32" | "f64" | "bool" | "char" | "usize" | "isize" | "str"
+            | "int" | "float" | "list" | "dict" | "tuple" | "set" | "Array" | "Object"
+            | "Number" | "Boolean" => Style::default().fg(Color::Blue),
+
             _ => Style::default(),
         }
     }

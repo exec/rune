@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
-use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod syntax;
 use syntax::SyntaxHighlighter;
@@ -30,7 +30,7 @@ struct Cli {
 
 struct Editor {
     rope: Rope,
-    cursor_pos: (usize, usize), // (line, column)
+    cursor_pos: (usize, usize),      // (line, column)
     viewport_offset: (usize, usize), // (vertical, horizontal) scroll offset
     file_path: Option<PathBuf>,
     modified: bool,
@@ -74,14 +74,14 @@ impl Editor {
     fn load_file(&mut self, path: PathBuf) -> Result<()> {
         let content = fs::read_to_string(&path)?;
         self.rope = Rope::from_str(&content);
-        
+
         // Detect syntax for highlighting
         let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
         self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
-        
+
         // Set the syntax in the highlighter
         self.highlighter.set_syntax(self.syntax_name.as_deref());
-        
+
         self.file_path = Some(path);
         self.modified = false;
         Ok(())
@@ -109,7 +109,8 @@ impl Editor {
 
     fn start_save_as_input(&mut self) {
         self.input_mode = InputMode::EnteringSaveAs;
-        self.filename_buffer = self.file_path
+        self.filename_buffer = self
+            .file_path
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -127,14 +128,14 @@ impl Editor {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.modified = false;
-                
+
                 // Detect syntax for the new file
                 let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
                 self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
-                
+
                 // Set the syntax in the highlighter
                 self.highlighter.set_syntax(self.syntax_name.as_deref());
-                
+
                 self.status_message = format!("Saved: {}", path.display());
             }
             Err(e) => {
@@ -153,7 +154,7 @@ impl Editor {
         }
 
         let path = PathBuf::from(&self.filename_buffer);
-        
+
         // Check if file exists and warn user
         if path.exists() && self.input_mode == InputMode::EnteringFilename {
             // For now, just overwrite. Could add confirmation later.
@@ -162,7 +163,7 @@ impl Editor {
         self.perform_save(path)?;
         self.input_mode = InputMode::Normal;
         self.filename_buffer.clear();
-        
+
         // Check if we should quit after saving
         let should_quit = self.quit_after_save && !self.modified; // Only quit if save succeeded
         self.quit_after_save = false;
@@ -192,7 +193,7 @@ impl Editor {
 
     fn handle_quit_confirmation(&mut self, save: bool) -> Result<bool> {
         self.input_mode = InputMode::Normal;
-        
+
         if save {
             // Try to save before quitting
             if self.file_path.is_some() {
@@ -225,10 +226,11 @@ impl Editor {
     fn insert_char(&mut self, c: char) {
         let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
         self.rope.insert_char(pos, c);
-        
+
         // Invalidate highlighting cache from current line
-        self.highlighter.invalidate_cache_from_line(self.cursor_pos.0);
-        
+        self.highlighter
+            .invalidate_cache_from_line(self.cursor_pos.0);
+
         self.move_cursor_right();
         self.modified = true;
     }
@@ -238,10 +240,11 @@ impl Editor {
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
             if pos > 0 {
                 self.rope.remove(pos - 1..pos);
-                
+
                 // Invalidate highlighting cache from current line
-                self.highlighter.invalidate_cache_from_line(self.cursor_pos.0);
-                
+                self.highlighter
+                    .invalidate_cache_from_line(self.cursor_pos.0);
+
                 self.move_cursor_left();
                 self.modified = true;
             }
@@ -250,10 +253,11 @@ impl Editor {
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, 0);
             if pos > 0 {
                 self.rope.remove(pos - 1..pos);
-                
+
                 // Invalidate highlighting cache from previous line (since we're joining)
-                self.highlighter.invalidate_cache_from_line(self.cursor_pos.0 - 1);
-                
+                self.highlighter
+                    .invalidate_cache_from_line(self.cursor_pos.0 - 1);
+
                 self.cursor_pos.0 -= 1;
                 if let Some(line) = self.rope.line(self.cursor_pos.0).as_str() {
                     self.cursor_pos.1 = line.trim_end_matches('\n').width();
@@ -266,10 +270,11 @@ impl Editor {
     fn insert_newline(&mut self) {
         let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
         self.rope.insert_char(pos, '\n');
-        
+
         // Invalidate highlighting cache from current line
-        self.highlighter.invalidate_cache_from_line(self.cursor_pos.0);
-        
+        self.highlighter
+            .invalidate_cache_from_line(self.cursor_pos.0);
+
         self.cursor_pos.0 += 1;
         self.cursor_pos.1 = 0;
         self.modified = true;
@@ -351,12 +356,12 @@ impl Editor {
             MouseEventKind::Down(_) => {
                 let clicked_line = self.viewport_offset.0 + event.row as usize;
                 let clicked_col = event.column as usize;
-                
+
                 if clicked_line < self.rope.len_lines() {
                     self.cursor_pos.0 = clicked_line;
                     self.cursor_pos.1 = clicked_col;
                     self.clamp_cursor_to_line();
-                    
+
                     // Start selection
                     self.selection_start = Some(self.cursor_pos);
                     self.selection_end = None;
@@ -366,7 +371,7 @@ impl Editor {
                 if self.selection_start.is_some() {
                     let clicked_line = self.viewport_offset.0 + event.row as usize;
                     let clicked_col = event.column as usize;
-                    
+
                     if clicked_line < self.rope.len_lines() {
                         self.cursor_pos.0 = clicked_line;
                         self.cursor_pos.1 = clicked_col;
@@ -409,13 +414,13 @@ impl Editor {
         if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
             let start_idx = self.line_col_to_char_idx(start.0, start.1);
             let end_idx = self.line_col_to_char_idx(end.0, end.1);
-            
+
             let (start_idx, end_idx) = if start_idx <= end_idx {
                 (start_idx, end_idx)
             } else {
                 (end_idx, start_idx)
             };
-            
+
             Some(self.rope.slice(start_idx..end_idx).to_string())
         } else {
             None
@@ -425,32 +430,35 @@ impl Editor {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture)?;
-    
+
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
-    
+
     let mut editor = Editor::new();
     if let Some(file) = cli.file {
         editor.load_file(file)?;
     }
-    
+
     let result = run_editor(&mut terminal, &mut editor);
-    
+
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen)?;
     crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture)?;
-    
+
     result
 }
 
-fn run_editor(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, editor: &mut Editor) -> Result<()> {
+fn run_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    editor: &mut Editor,
+) -> Result<()> {
     loop {
         terminal.draw(|f| draw_ui(f, editor))?;
-        
+
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -464,10 +472,10 @@ fn run_editor(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, editor: &mu
                 _ => {}
             }
         }
-        
+
         editor.update_viewport(terminal.size()?.height as usize);
     }
-    
+
     Ok(())
 }
 
@@ -495,7 +503,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     }
 
     // Handle filename input modes
-    if editor.input_mode == InputMode::EnteringFilename || editor.input_mode == InputMode::EnteringSaveAs {
+    if editor.input_mode == InputMode::EnteringFilename
+        || editor.input_mode == InputMode::EnteringSaveAs
+    {
         match key.code {
             KeyCode::Enter => {
                 return Ok(editor.finish_filename_input()?);
@@ -515,7 +525,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         }
         return Ok(false);
     }
-    
+
     // Handle visual mode
     if editor.selection_start.is_some() {
         match key.code {
@@ -546,7 +556,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             _ => {}
         }
     }
-    
+
     // Handle normal mode
     match (key.modifiers, key.code) {
         // Standard keybindings
@@ -560,7 +570,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('v')) => {
             editor.start_selection();
         }
-        
+
         // Navigation
         (_, KeyCode::Up) => editor.move_cursor_up(),
         (_, KeyCode::Down) => editor.move_cursor_down(),
@@ -572,22 +582,22 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 editor.cursor_pos.1 = line.trim_end_matches('\n').width();
             }
         }
-        
+
         // Editing
         (_, KeyCode::Char(c)) => editor.insert_char(c),
         (_, KeyCode::Enter) => editor.insert_newline(),
         (_, KeyCode::Backspace) => editor.delete_char(),
         (_, KeyCode::Esc) => editor.cancel_selection(),
-        
+
         _ => {}
     }
-    
+
     Ok(false)
 }
 
 fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     let area = f.area();
-    
+
     // Main editor area
     let editor_area = Rect {
         x: area.x,
@@ -595,7 +605,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         width: area.width,
         height: area.height.saturating_sub(2),
     };
-    
+
     // Status bar area
     let status_area = Rect {
         x: area.x,
@@ -603,7 +613,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         width: area.width,
         height: 1,
     };
-    
+
     // Help bar area
     let help_area = Rect {
         x: area.x,
@@ -611,18 +621,18 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         width: area.width,
         height: 1,
     };
-    
+
     // Draw editor content with lazy syntax highlighting
     let mut lines = vec![];
     let visible_lines = editor_area.height as usize;
-    
+
     for i in 0..visible_lines {
         let line_idx = editor.viewport_offset.0 + i;
         if line_idx < editor.rope.len_lines() {
             if let Some(line_text) = editor.rope.line(line_idx).as_str() {
                 // Use lazy highlighting - only highlight visible lines
                 let highlighted_spans = editor.highlighter.highlight_line(line_idx, line_text);
-                
+
                 let styled_spans: Vec<Span> = highlighted_spans
                     .into_iter()
                     .map(|(style, text)| {
@@ -633,16 +643,19 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
                 lines.push(Line::from(styled_spans));
             }
         } else {
-            lines.push(Line::from(Span::styled("~", Style::default().fg(Color::DarkGray))));
+            lines.push(Line::from(Span::styled(
+                "~",
+                Style::default().fg(Color::DarkGray),
+            )));
         }
     }
-    
+
     let editor_widget = Paragraph::new(lines)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: false });
-    
+
     f.render_widget(editor_widget, editor_area);
-    
+
     // Draw cursor
     let cursor_screen_y = editor.cursor_pos.0.saturating_sub(editor.viewport_offset.0);
     if cursor_screen_y < visible_lines {
@@ -651,39 +664,41 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             cursor_screen_y as u16,
         ));
     }
-    
+
     // Draw status bar
     let status_text = if !editor.status_message.is_empty() {
         editor.status_message.clone()
     } else {
         let modified_indicator = if editor.modified { "[+]" } else { "" };
-        let filename = editor.file_path
+        let filename = editor
+            .file_path
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "[No Name]".to_string());
-        format!("{} {} | Ln {}, Col {}", 
-            filename, 
+        format!(
+            "{} {} | Ln {}, Col {}",
+            filename,
             modified_indicator,
-            editor.cursor_pos.0 + 1, 
+            editor.cursor_pos.0 + 1,
             editor.cursor_pos.1 + 1
         )
     };
-    
-    let status_widget = Paragraph::new(status_text)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
-    
+
+    let status_widget =
+        Paragraph::new(status_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+
     f.render_widget(status_widget, status_area);
-    
+
     // Draw help bar
     let help_text = match editor.input_mode {
-        InputMode::ConfirmQuit => 
-            "Y: Save and quit | N: Quit without saving | ^C/Esc: Cancel",
-        InputMode::EnteringFilename | InputMode::EnteringSaveAs => 
-            "Enter: Confirm | Esc: Cancel | Type filename",
+        InputMode::ConfirmQuit => "Y: Save and quit | N: Quit without saving | ^C/Esc: Cancel",
+        InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
+            "Enter: Confirm | Esc: Cancel | Type filename"
+        }
         _ => "^Q Quit | ^S Save | ^W Save As | ^V Visual Mode | Mouse: Click/Drag/Scroll",
     };
-    let help_widget = Paragraph::new(help_text)
-        .style(Style::default().bg(Color::Cyan).fg(Color::Black));
-    
+    let help_widget =
+        Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
+
     f.render_widget(help_widget, help_area);
 }
