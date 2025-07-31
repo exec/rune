@@ -29,4 +29,4 @@ homebrew-setup/
 # Build artifacts
 *.dSYM/
 *.exe
-*.pdb
+*.pdbaur-rune-editor/
