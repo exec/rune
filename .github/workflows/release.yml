@@ -125,7 +125,11 @@ jobs:
           ```
           
           ### Homebrew (macOS/Linux)
-          The homebrew formula will be updated shortly after this release.
+          The homebrew formula is automatically updated with each release:
+          ```bash
+          brew tap exec/rune
+          brew install rune
+          ```
         draft: false
         prerelease: false
       env:
@@ -141,10 +145,78 @@ jobs:
       id: version
       run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
       
-    - name: Update Homebrew formula
-      uses: peter-evans/repository-dispatch@v2
+    - name: Download release assets and calculate SHA256
+      id: calculate-sha
+      run: |
+        # Download the macOS and Linux binaries we need for Homebrew
+        curl -sL https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-macos-x86_64.tar.gz -o macos-x86_64.tar.gz
+        curl -sL https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-macos-aarch64.tar.gz -o macos-aarch64.tar.gz
+        curl -sL https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-linux-x86_64.tar.gz -o linux-x86_64.tar.gz
+        curl -sL https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-linux-aarch64.tar.gz -o linux-aarch64.tar.gz
+        
+        # Calculate SHA256 hashes
+        echo "MACOS_X86_64_SHA=$(shasum -a 256 macos-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+        echo "MACOS_AARCH64_SHA=$(shasum -a 256 macos-aarch64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+        echo "LINUX_X86_64_SHA=$(shasum -a 256 linux-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+        echo "LINUX_AARCH64_SHA=$(shasum -a 256 linux-aarch64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+        
+    - name: Checkout homebrew-rune repository
+      uses: actions/checkout@v4
       with:
-        token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         repository: exec/homebrew-rune
-        event-type: update-formula
-        client-payload: '{"version": "${{ steps.version.outputs.VERSION }}", "tag": "${{ github.ref_name }}"}'
+        token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        path: homebrew-rune
+        
+    - name: Update formula
+      run: |
+        cd homebrew-rune
+        cat > rune.rb << 'EOF'
+        class Rune < Formula
+          desc "A modern CLI text editor that bridges the gap between nano's simplicity and advanced features"
+          homepage "https://github.com/exec/rune"
+          version "${{ steps.version.outputs.VERSION }}"
+          
+          if OS.mac?
+            if Hardware::CPU.arm?
+              url "https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-macos-aarch64.tar.gz"
+              sha256 "${{ steps.calculate-sha.outputs.MACOS_AARCH64_SHA }}"
+            else
+              url "https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-macos-x86_64.tar.gz"
+              sha256 "${{ steps.calculate-sha.outputs.MACOS_X86_64_SHA }}"
+            end
+          elsif OS.linux?
+            if Hardware::CPU.arm?
+              url "https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-linux-aarch64.tar.gz"
+              sha256 "${{ steps.calculate-sha.outputs.LINUX_AARCH64_SHA }}"
+            else
+              url "https://github.com/exec/rune/releases/download/${{ github.ref_name }}/rune-linux-x86_64.tar.gz"
+              sha256 "${{ steps.calculate-sha.outputs.LINUX_X86_64_SHA }}"
+            end
+          end
+
+          def install
+            bin.install "rune"
+          end
+
+          test do
+            output = shell_output("#{bin}/rune --help")
+            assert_match "A modern CLI text editor", output
+          end
+        end
+        EOF
+        
+    - name: Commit and push changes
+      run: |
+        cd homebrew-rune
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add rune.rb
+        git commit -m "Update rune formula to ${{ steps.version.outputs.VERSION }}
+
+        Automated update from rune repository release ${{ github.ref_name }}
+        
+        - macOS x86_64: ${{ steps.calculate-sha.outputs.MACOS_X86_64_SHA }}
+        - macOS aarch64: ${{ steps.calculate-sha.outputs.MACOS_AARCH64_SHA }}
+        - Linux x86_64: ${{ steps.calculate-sha.outputs.LINUX_X86_64_SHA }}
+        - Linux aarch64: ${{ steps.calculate-sha.outputs.LINUX_AARCH64_SHA }}"
+        git push
