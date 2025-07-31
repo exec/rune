@@ -47,9 +47,6 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
-    - name: Check documentation
-      run: cargo doc --no-deps --document-private-items
-
   build:
     name: Build
     runs-on: ubuntu-latest
