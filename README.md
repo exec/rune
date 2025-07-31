@@ -8,12 +8,12 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 - **Zero learning curve** - Works instantly without configuration
 - **Standard keybindings** - Familiar Ctrl+S, Ctrl+Q shortcuts
 - **Terminal-native** - Built for CLI environments
-- **Fast startup** - Sub-100ms startup time for quick edits
+- **Fast startup** - Lightning-fast startup with lazy syntax highlighting
 
 ### Modern Conveniences
 - ✅ **Visual selection mode** (Ctrl+V) - Select text like in modern editors
 - ✅ **Full mouse support** - Click to position cursor, drag to select, scroll wheel
-- ✅ **Syntax highlighting** - Built-in support for Rust, Python, JavaScript, and more
+- ✅ **Smart syntax highlighting** - Lazy, cached highlighting for all major languages
 - ✅ **Standard navigation** - Arrow keys, Home, End work as expected
 - ✅ **File operations** - Save with Ctrl+S, automatic change detection
 - ✅ **Efficient text handling** - Uses rope data structure for large files
@@ -108,22 +108,33 @@ rune
   - **Ctrl+C** or **Esc** - Cancel quit, return to editing
 - Works from any mode (editing, visual selection, filename input)
 
-## Supported Languages
+## Syntax Highlighting
 
-Syntax highlighting is automatically detected by file extension:
+**Smart, lazy highlighting** with intelligent caching for optimal performance:
 
-- **Rust** (.rs) - Keywords, types, comments
-- **Python** (.py) - Keywords, builtins, comments  
-- **JavaScript/TypeScript** (.js, .ts) - Keywords, types, comments
-- **C/C++** (.c, .h, .cpp, .cc, .cxx) - Detected but basic highlighting
-- **Go** (.go) - File type detection
-- **Java** (.java) - File type detection
-- **HTML** (.html) - File type detection
-- **CSS** (.css) - File type detection
-- **JSON** (.json) - File type detection
-- **Markdown** (.md) - File type detection
-- **Shell** (.sh, .bash) - File type detection
-- **SQL** (.sql) - File type detection
+### Fully Highlighted Languages
+- **Rust** (.rs) - Keywords, types, strings, numbers, comments
+- **Python** (.py) - Keywords, builtins, strings, numbers, comments  
+- **JavaScript/TypeScript** (.js, .ts) - Keywords, types, strings, numbers, comments
+
+### Enhanced Features
+- **String literals** - Proper escape sequence handling
+- **Numeric literals** - Integers, floats, hex numbers
+- **Comments** - Line and block comments  
+- **Keywords** - Language-specific syntax
+- **Types** - Built-in and common types
+- **Lazy loading** - Only highlights visible lines
+- **Intelligent caching** - Remembers highlighted lines for speed
+
+### Additional Language Detection
+Auto-detects file types for syntax-aware editing:
+- C/C++, Go, Java, HTML, CSS, JSON, Markdown, Shell, SQL
+
+### Performance
+- **Lazy highlighting** - Only processes visible text
+- **Incremental updates** - Re-highlights only changed lines  
+- **Cached results** - Lightning-fast scrolling and navigation
+- **Zero startup cost** - Highlighting loads as needed
 
 ## Architecture
 

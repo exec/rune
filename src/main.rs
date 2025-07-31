@@ -79,6 +79,9 @@ impl Editor {
         let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
         self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
         
+        // Set the syntax in the highlighter
+        self.highlighter.set_syntax(self.syntax_name.as_deref());
+        
         self.file_path = Some(path);
         self.modified = false;
         Ok(())
@@ -128,6 +131,9 @@ impl Editor {
                 // Detect syntax for the new file
                 let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
                 self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
+                
+                // Set the syntax in the highlighter
+                self.highlighter.set_syntax(self.syntax_name.as_deref());
                 
                 self.status_message = format!("Saved: {}", path.display());
             }
@@ -219,6 +225,10 @@ impl Editor {
     fn insert_char(&mut self, c: char) {
         let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
         self.rope.insert_char(pos, c);
+        
+        // Invalidate highlighting cache from current line
+        self.highlighter.invalidate_cache_from_line(self.cursor_pos.0);
+        
         self.move_cursor_right();
         self.modified = true;
     }
@@ -228,6 +238,10 @@ impl Editor {
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
             if pos > 0 {
                 self.rope.remove(pos - 1..pos);
+                
+                // Invalidate highlighting cache from current line
+                self.highlighter.invalidate_cache_from_line(self.cursor_pos.0);
+                
                 self.move_cursor_left();
                 self.modified = true;
             }
@@ -236,6 +250,10 @@ impl Editor {
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, 0);
             if pos > 0 {
                 self.rope.remove(pos - 1..pos);
+                
+                // Invalidate highlighting cache from previous line (since we're joining)
+                self.highlighter.invalidate_cache_from_line(self.cursor_pos.0 - 1);
+                
                 self.cursor_pos.0 -= 1;
                 if let Some(line) = self.rope.line(self.cursor_pos.0).as_str() {
                     self.cursor_pos.1 = line.trim_end_matches('\n').width();
@@ -248,6 +266,10 @@ impl Editor {
     fn insert_newline(&mut self) {
         let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
         self.rope.insert_char(pos, '\n');
+        
+        // Invalidate highlighting cache from current line
+        self.highlighter.invalidate_cache_from_line(self.cursor_pos.0);
+        
         self.cursor_pos.0 += 1;
         self.cursor_pos.1 = 0;
         self.modified = true;
@@ -563,7 +585,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
-fn draw_ui(f: &mut Frame, editor: &Editor) {
+fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     let area = f.area();
     
     // Main editor area
@@ -590,41 +612,25 @@ fn draw_ui(f: &mut Frame, editor: &Editor) {
         height: 1,
     };
     
-    // Draw editor content with syntax highlighting
+    // Draw editor content with lazy syntax highlighting
     let mut lines = vec![];
     let visible_lines = editor_area.height as usize;
     
-    // Get visible text for highlighting
-    let mut visible_text = String::new();
     for i in 0..visible_lines {
         let line_idx = editor.viewport_offset.0 + i;
         if line_idx < editor.rope.len_lines() {
-            if let Some(line) = editor.rope.line(line_idx).as_str() {
-                visible_text.push_str(line);
-            }
-        }
-    }
-    
-    // Highlight the visible text
-    let highlighted_lines = if !visible_text.is_empty() {
-        editor.highlighter.highlight_text(&visible_text, editor.syntax_name.as_deref())
-    } else {
-        vec![]
-    };
-    
-    for i in 0..visible_lines {
-        let line_idx = editor.viewport_offset.0 + i;
-        if line_idx < editor.rope.len_lines() {
-            if i < highlighted_lines.len() {
-                // Use highlighted line
-                let styled_spans: Vec<Span> = highlighted_lines[i]
-                    .iter()
-                    .map(|(style, text)| Span::styled(text.trim_end_matches('\n'), *style))
+            if let Some(line_text) = editor.rope.line(line_idx).as_str() {
+                // Use lazy highlighting - only highlight visible lines
+                let highlighted_spans = editor.highlighter.highlight_line(line_idx, line_text);
+                
+                let styled_spans: Vec<Span> = highlighted_spans
+                    .into_iter()
+                    .map(|(style, text)| {
+                        let clean_text = text.trim_end_matches('\n').to_string();
+                        Span::styled(clean_text, style)
+                    })
                     .collect();
                 lines.push(Line::from(styled_spans));
-            } else if let Some(line) = editor.rope.line(line_idx).as_str() {
-                // Fallback to plain text
-                lines.push(Line::from(line.trim_end_matches('\n')));
             }
         } else {
             lines.push(Line::from(Span::styled("~", Style::default().fg(Color::DarkGray))));
