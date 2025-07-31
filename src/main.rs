@@ -291,8 +291,11 @@ impl Editor {
     }
 
     fn insert_tab(&mut self) {
+        // Use simple line_start + col approach to avoid complex width calculations
         self.save_undo_state();
-        let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
+        
+        let line_start = self.rope.line_to_char(self.cursor_pos.0);
+        let pos = line_start + self.cursor_pos.1;
         
         // Insert the spaces as a single operation
         let spaces = " ".repeat(self.tab_width);
@@ -304,9 +307,6 @@ impl Editor {
 
         // Move cursor forward by tab_width spaces
         self.cursor_pos.1 += self.tab_width;
-        
-        // Ensure cursor doesn't go beyond line boundaries
-        self.clamp_cursor_to_line();
         self.modified = true;
     }
 
