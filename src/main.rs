@@ -290,6 +290,23 @@ impl Editor {
         self.modified = true;
     }
 
+    fn insert_tab(&mut self) {
+        self.save_undo_state();
+        let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
+        
+        // Insert the spaces as a single operation
+        let spaces = " ".repeat(self.tab_width);
+        self.rope.insert(pos, &spaces);
+
+        // Invalidate highlighting cache from current line
+        self.highlighter
+            .invalidate_cache_from_line(self.cursor_pos.0);
+
+        // Move cursor forward by tab_width spaces
+        self.cursor_pos.1 += self.tab_width;
+        self.modified = true;
+    }
+
     fn delete_char(&mut self) {
         if self.cursor_pos.1 > 0 {
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
@@ -1107,12 +1124,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
 
         // Editing
         (_, KeyCode::Char(c)) => editor.insert_char(c),
-        (_, KeyCode::Tab) => {
-            // Insert spaces according to tab width setting
-            for _ in 0..editor.tab_width {
-                editor.insert_char(' ');
-            }
-        }
+        (_, KeyCode::Tab) => editor.insert_tab(),
         (_, KeyCode::Enter) => editor.insert_newline(),
         (_, KeyCode::Backspace) => editor.delete_char(),
         (_, KeyCode::Esc) => {}, // Esc key - reserved for future use
