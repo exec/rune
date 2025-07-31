@@ -24,6 +24,7 @@ Thumbs.db
 *.log
 test
 test.rs
+homebrew-setup/
 
 # Build artifacts
 *.dSYM/
