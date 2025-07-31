@@ -369,6 +369,21 @@ impl Editor {
         }
     }
 
+    fn page_up(&mut self) {
+        let terminal_height: usize = 24; // Approximate terminal height, could be made dynamic
+        let page_size = terminal_height.saturating_sub(4); // Leave room for status/help bars
+        self.cursor_pos.0 = self.cursor_pos.0.saturating_sub(page_size);
+        self.clamp_cursor_to_line();
+    }
+
+    fn page_down(&mut self) {
+        let terminal_height: usize = 24; // Approximate terminal height, could be made dynamic  
+        let page_size = terminal_height.saturating_sub(4); // Leave room for status/help bars
+        let max_line = self.rope.len_lines().saturating_sub(1);
+        self.cursor_pos.0 = (self.cursor_pos.0 + page_size).min(max_line);
+        self.clamp_cursor_to_line();
+    }
+
     fn clamp_cursor_to_line(&mut self) {
         if let Some(line) = self.rope.line(self.cursor_pos.0).as_str() {
             let line_len = line.trim_end_matches('\n').width();
@@ -961,7 +976,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             editor.save_as();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('v')) => {
-            editor.start_selection();
+            editor.page_down();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('o')) => {
             editor.open_options_menu();
@@ -970,7 +985,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             editor.undo();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
-            editor.redo();
+            editor.page_up();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
             editor.start_find();
@@ -981,12 +996,22 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
             editor.start_goto_line();
         }
+        
+        // Alternative keybindings for visual selection and redo
+        (KeyModifiers::ALT, KeyCode::Char('v')) => {
+            editor.start_selection();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
+            editor.redo();
+        }
 
         // Navigation
         (_, KeyCode::Up) => editor.move_cursor_up(),
         (_, KeyCode::Down) => editor.move_cursor_down(),
         (_, KeyCode::Left) => editor.move_cursor_left(),
         (_, KeyCode::Right) => editor.move_cursor_right(),
+        (_, KeyCode::PageUp) => editor.page_up(),
+        (_, KeyCode::PageDown) => editor.page_down(),
         (_, KeyCode::Home) => editor.cursor_pos.1 = 0,
         (_, KeyCode::End) => {
             if let Some(line) = editor.rope.line(editor.cursor_pos.0).as_str() {
@@ -1139,7 +1164,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         InputMode::Find => "Enter: Find | Esc: Cancel | Type search term",
         InputMode::Replace => "Enter: Next step | Esc: Cancel | Type find/replace text",
         InputMode::GoToLine => "Enter: Go | Esc: Cancel | Type line number",
-        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^Y Redo | ^V Visual | ^O Options",
+        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | Alt+V Visual | ^O Options",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));

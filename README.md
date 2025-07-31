@@ -11,7 +11,7 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 - **Fast startup** - Lightning-fast startup with lazy syntax highlighting
 
 ### Modern Conveniences
-- ✅ **Visual selection mode** (Ctrl+V) - Select text like in modern editors
+- ✅ **Visual selection mode** (Alt+V) - Select text like in modern editors
 - ✅ **Full mouse support** - Click to position cursor, drag to select, scroll wheel (configurable)
 - ✅ **Smart syntax highlighting** - Lazy, cached highlighting for all major languages
 - ✅ **Standard navigation** - Arrow keys, Home, End work as expected
@@ -104,13 +104,16 @@ rune
 - **Ctrl+Q** or **Ctrl+X** - Quit editor (prompts to save if changes)
 - **Ctrl+S** - Save file (prompts for filename if none)
 - **Ctrl+W** - Save As (save with new filename)
-- **Ctrl+V** - Enter visual selection mode
 - **Ctrl+O** - Open options menu (configure settings)
 - **Ctrl+F** - Find text
 - **Ctrl+H** - Replace text (find and replace all)
 - **Ctrl+G** - Go to line number
 - **Ctrl+Z** - Undo last change
-- **Ctrl+Y** - Redo last undone change
+- **Ctrl+R** - Redo last undone change
+- **Ctrl+V** - Page down (nano-compatible)
+- **Ctrl+Y** - Page up (nano-compatible)
+- **Alt+V** - Visual selection mode
+- **Page Up/Down** - Page navigation (if available)
 - **Esc** - Cancel selection/exit modes/cancel prompts
 
 ### Navigation
@@ -125,7 +128,7 @@ rune
 - **Regular typing** - Insert text at cursor
 
 ### Visual Mode
-- **Ctrl+V** - Start visual selection
+- **Alt+V** - Start visual selection
 - **Arrow keys** - Extend selection
 - **Esc** - Cancel selection
 
