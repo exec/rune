@@ -304,6 +304,9 @@ impl Editor {
 
         // Move cursor forward by tab_width spaces
         self.cursor_pos.1 += self.tab_width;
+        
+        // Ensure cursor doesn't go beyond line boundaries
+        self.clamp_cursor_to_line();
         self.modified = true;
     }
 
