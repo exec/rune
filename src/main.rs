@@ -450,7 +450,7 @@ impl Editor {
 
         if let Some(config_dir) = dirs::config_dir() {
             let rune_config_dir = config_dir.join("rune");
-            if let Err(_) = fs::create_dir_all(&rune_config_dir) {
+            if fs::create_dir_all(&rune_config_dir).is_err() {
                 return; // Silently fail if we can't create the directory
             }
 
