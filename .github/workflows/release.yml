@@ -42,6 +42,14 @@ jobs:
           - target: x86_64-unknown-netbsd
             os: ubuntu-latest
             name: rune-netbsd-x86_64
+            
+          # macOS (required for Homebrew)
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: rune-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: rune-macos-aarch64
 
     steps:
     - uses: actions/checkout@v4
