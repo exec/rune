@@ -128,7 +128,7 @@ jobs:
           The homebrew formula is automatically updated with each release:
           ```bash
           brew tap exec/rune
-          brew install rune
+          brew install rune-editor
           ```
         draft: false
         prerelease: false
@@ -170,8 +170,8 @@ jobs:
     - name: Update formula
       run: |
         cd homebrew-rune
-        cat > rune.rb << 'EOF'
-        class Rune < Formula
+        cat > rune-editor.rb << 'EOF'
+        class RuneEditor < Formula
           desc "A modern CLI text editor that bridges the gap between nano's simplicity and advanced features"
           homepage "https://github.com/exec/rune"
           version "${{ steps.version.outputs.VERSION }}"
@@ -210,8 +210,8 @@ jobs:
         cd homebrew-rune
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add rune.rb
-        git commit -m "Update rune formula to ${{ steps.version.outputs.VERSION }}
+        git add rune-editor.rb
+        git commit -m "Update rune-editor formula to ${{ steps.version.outputs.VERSION }}
 
         Automated update from rune repository release ${{ github.ref_name }}
         

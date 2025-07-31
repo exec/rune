@@ -35,7 +35,7 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 #### Homebrew (macOS/Linux)
 ```bash
 brew tap exec/rune
-brew install rune
+brew install rune-editor
 ```
 
 #### Arch Linux (AUR)
