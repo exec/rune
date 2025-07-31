@@ -60,17 +60,17 @@ jobs:
         targets: ${{ matrix.target }}
 
     - name: Install cross-compilation tools
-      if: matrix.target != 'x86_64-unknown-linux-gnu'
+      if: matrix.os == 'ubuntu-latest' && matrix.target != 'x86_64-unknown-linux-gnu'
       run: |
         cargo install cross --git https://github.com/cross-rs/cross
 
     - name: Build with cross
-      if: matrix.target != 'x86_64-unknown-linux-gnu'
+      if: matrix.os == 'ubuntu-latest' && matrix.target != 'x86_64-unknown-linux-gnu'
       run: |
         cross build --release --target ${{ matrix.target }}
 
     - name: Build native
-      if: matrix.target == 'x86_64-unknown-linux-gnu'
+      if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.os == 'macos-latest'
       run: |
         cargo build --release --target ${{ matrix.target }}
 
