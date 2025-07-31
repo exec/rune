@@ -139,7 +139,7 @@ impl Editor {
                 self.status_message = format!("Saved: {}", path.display());
             }
             Err(e) => {
-                self.status_message = format!("Error saving file: {}", e);
+                self.status_message = format!("Error saving file: {e}");
             }
         }
         Ok(())
