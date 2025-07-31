@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux targets
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: rune-linux-x86_64
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest  
+            name: rune-linux-x86_64-musl
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: rune-linux-aarch64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: rune-linux-aarch64-musl
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            name: rune-linux-armv7
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            name: rune-linux-i686
+          
+          # FreeBSD
+          - target: x86_64-unknown-freebsd
+            os: ubuntu-latest
+            name: rune-freebsd-x86_64
+            
+          # NetBSD
+          - target: x86_64-unknown-netbsd
+            os: ubuntu-latest
+            name: rune-netbsd-x86_64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross-compilation tools
+      if: matrix.target != 'x86_64-unknown-linux-gnu'
+      run: |
+        cargo install cross --git https://github.com/cross-rs/cross
+
+    - name: Build with cross
+      if: matrix.target != 'x86_64-unknown-linux-gnu'
+      run: |
+        cross build --release --target ${{ matrix.target }}
+
+    - name: Build native
+      if: matrix.target == 'x86_64-unknown-linux-gnu'
+      run: |
+        cargo build --release --target ${{ matrix.target }}
+
+    - name: Package binary
+      run: |
+        mkdir -p dist
+        cp target/${{ matrix.target }}/release/rune dist/
+        cd dist
+        tar -czf ${{ matrix.name }}.tar.gz rune
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }}
+        path: dist/${{ matrix.name }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/*/*.tar.gz
+        body: |
+          ## Changes
+          
+          See [CHANGELOG.md](CHANGELOG.md) for details.
+          
+          ## Installation
+          
+          ### Linux/Unix Binary
+          Download the appropriate binary for your platform and extract:
+          ```bash
+          tar -xzf rune-linux-x86_64.tar.gz
+          sudo mv rune /usr/local/bin/
+          ```
+          
+          ### From Source
+          ```bash
+          cargo install --git https://github.com/exec/rune
+          ```
+          
+          ### Homebrew (macOS/Linux)
+          The homebrew formula will be updated shortly after this release.
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Extract version
+      id: version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      
+    - name: Update Homebrew formula
+      uses: peter-evans/repository-dispatch@v2
+      with:
+        token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        repository: exec/homebrew-rune
+        event-type: update-formula
+        client-payload: '{"version": "${{ steps.version.outputs.VERSION }}", "tag": "${{ github.ref_name }}"}'

@@ -1,0 +1,22 @@
+[package]
+name = "rune"
+version = "0.1.0"
+authors = ["exec"]
+description = "A modern CLI text editor that bridges the gap between nano's simplicity and advanced features"
+license = "MIT"
+repository = "https://github.com/exec/rune"
+readme = "README.md"
+keywords = ["editor", "terminal", "cli", "text", "nano"]
+categories = ["command-line-utilities", "text-editors"]
+edition = "2021"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+ropey = "1.6"
+syntect = "5.2"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+unicode-width = "0.2"
