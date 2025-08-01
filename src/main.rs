@@ -384,6 +384,10 @@ impl Editor {
         // Invalidate highlighting cache from current line
         self.highlighter
             .invalidate_cache_from_line(self.cursor_pos.0);
+        
+        // Performance optimizations
+        self.invalidate_cache();
+        self.needs_redraw = true;
 
         self.cursor_pos.0 += 1;
         self.cursor_pos.1 = 0;
