@@ -290,31 +290,6 @@ impl Editor {
         self.modified = true;
     }
 
-    fn insert_tab(&mut self) {
-        // Use simple line_start + col approach to avoid complex width calculations
-        self.save_undo_state();
-        
-        let line_start = self.rope.line_to_char(self.cursor_pos.0);
-        let pos = line_start + self.cursor_pos.1;
-        
-        // Insert the spaces as a single operation
-        let spaces = " ".repeat(self.tab_width);
-        self.rope.insert(pos, &spaces);
-
-        // Invalidate highlighting cache from current line
-        self.highlighter
-            .invalidate_cache_from_line(self.cursor_pos.0);
-
-        // Move cursor forward by tab_width spaces
-        self.cursor_pos.1 += self.tab_width;
-        self.modified = true;
-        
-        // Critical: Force buffer flush on macOS to prevent cursor desync
-        #[cfg(target_os = "macos")]
-        {
-            let _ = stdout().flush();
-        }
-    }
 
     fn delete_char(&mut self) {
         if self.cursor_pos.1 > 0 {
@@ -1174,19 +1149,11 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         // Editing
         (_, KeyCode::Char(c)) => editor.insert_char(c),
         (_, KeyCode::Tab) => {
-            #[cfg(target_os = "macos")]
-            {
-                // Nuclear option for macOS: bypass complex insertion and use simple space insertion
-                editor.save_undo_state();
-                for _ in 0..editor.tab_width {
-                    editor.insert_char(' ');
-                }
-                // Force terminal synchronization
-                let _ = stdout().flush();
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                editor.insert_tab();
+            // Fix for phantom newlines: Insert spaces one by one using the same logic as regular characters
+            // This ensures proper character width calculations and cursor positioning
+            editor.save_undo_state();
+            for _ in 0..editor.tab_width {
+                editor.insert_char(' ');
             }
         }
         (_, KeyCode::Enter) => editor.insert_newline(),
