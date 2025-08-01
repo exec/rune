@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use regex::Regex;
 use crossterm::{
     event::{
         self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -99,6 +100,11 @@ struct Editor {
     needs_redraw: bool,
     cached_text: Option<String>, // Cache for search operations
     cache_valid: bool,
+    // Enhanced search features
+    use_regex: bool,
+    case_sensitive: bool,
+    search_history: Vec<String>,
+    search_history_index: Option<usize>,
 }
 
 /// Different input modes the editor can be in
@@ -145,6 +151,11 @@ impl Editor {
             needs_redraw: true,
             cached_text: None,
             cache_valid: false,
+            // Enhanced search features
+            use_regex: false,
+            case_sensitive: false,
+            search_history: Vec::new(),
+            search_history_index: None,
         };
         editor.load_config();
         editor
@@ -691,17 +702,61 @@ impl Editor {
             self.cached_text.as_ref().unwrap()
         };
         
-        let mut start = 0;
-        while let Some(pos) = text[start..].find(search_term) {
-            let absolute_pos = start + pos;
-            let line = self.rope.char_to_line(absolute_pos);
-            let line_start = self.rope.line_to_char(line);
-            let col = absolute_pos - line_start;
-            matches.push((line, col));
-            start = absolute_pos + 1;
+        if self.use_regex {
+            // Regex search
+            let flags = if self.case_sensitive { "" } else { "(?i)" };
+            let pattern = format!("{}{}", flags, search_term);
+            
+            match Regex::new(&pattern) {
+                Ok(re) => {
+                    for mat in re.find_iter(text) {
+                        let absolute_pos = mat.start();
+                        let line = self.rope.char_to_line(absolute_pos);
+                        let line_start = self.rope.line_to_char(line);
+                        let col = absolute_pos - line_start;
+                        matches.push((line, col));
+                    }
+                }
+                Err(_) => {
+                    // Invalid regex, fall back to literal search
+                    self.find_literal_matches(text, search_term, &mut matches);
+                }
+            }
+        } else {
+            // Literal search
+            self.find_literal_matches(text, search_term, &mut matches);
         }
 
         matches
+    }
+    
+    fn find_literal_matches(&self, text: &str, search_term: &str, matches: &mut Vec<(usize, usize)>) {
+        let search_term = if self.case_sensitive {
+            search_term.to_string()
+        } else {
+            search_term.to_lowercase()
+        };
+        
+        let mut start = 0;
+        while start < text.len() {
+            let remaining = &text[start..];
+            let pos = if self.case_sensitive {
+                remaining.find(&search_term)
+            } else {
+                remaining.to_lowercase().find(&search_term)
+            };
+            
+            if let Some(pos) = pos {
+                let absolute_pos = start + pos;
+                let line = self.rope.char_to_line(absolute_pos);
+                let line_start = self.rope.line_to_char(line);
+                let col = absolute_pos - line_start;
+                matches.push((line, col));
+                start = absolute_pos + 1;
+            } else {
+                break;
+            }
+        }
     }
     
     fn invalidate_cache(&mut self) {
@@ -797,6 +852,45 @@ impl Editor {
             self.set_temporary_status_message(format!("Jumped to line {line_num}"));
         } else {
             self.set_temporary_status_message(format!("Invalid line number: {line_num}"));
+        }
+    }
+    
+    fn toggle_regex_mode(&mut self) {
+        self.use_regex = !self.use_regex;
+        let mode = if self.use_regex { "Regex" } else { "Literal" };
+        self.set_temporary_status_message(format!("Search mode: {}", mode));
+        self.needs_redraw = true;
+        
+        // Re-search if we have an active search
+        if !self.search_buffer.is_empty() && self.input_mode == InputMode::Find {
+            let search_term = self.search_buffer.clone();
+            self.perform_find(&search_term);
+        }
+    }
+    
+    fn toggle_case_sensitive(&mut self) {
+        self.case_sensitive = !self.case_sensitive;
+        let mode = if self.case_sensitive { "Case sensitive" } else { "Case insensitive" };
+        self.set_temporary_status_message(format!("Search: {}", mode));
+        self.needs_redraw = true;
+        
+        // Re-search if we have an active search
+        if !self.search_buffer.is_empty() && self.input_mode == InputMode::Find {
+            let search_term = self.search_buffer.clone();
+            self.perform_find(&search_term);
+        }
+    }
+    
+    fn add_to_search_history(&mut self, search_term: &str) {
+        if !search_term.is_empty() {
+            // Remove duplicates
+            self.search_history.retain(|s| s != search_term);
+            // Add to history
+            self.search_history.push(search_term.to_string());
+            // Limit history size
+            if self.search_history.len() > 50 {
+                self.search_history.remove(0);
+            }
         }
     }
 }
@@ -994,7 +1088,18 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     // Handle find mode
     if editor.input_mode == InputMode::Find {
         match key.code {
+            KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.toggle_regex_mode();
+                return Ok(false);
+            }
+            KeyCode::Char('i') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.toggle_case_sensitive();
+                return Ok(false);
+            }
             KeyCode::Enter => {
+                // Add to search history
+                let search_term = editor.search_buffer.clone();
+                editor.add_to_search_history(&search_term);
                 if !editor.search_matches.is_empty() {
                     // If we already have matches, exit find mode and stay at current position
                     editor.input_mode = InputMode::Normal;
@@ -1462,13 +1567,23 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "[No Name]".to_string());
+        let search_modes = if editor.input_mode == InputMode::Find {
+            format!(" | Search: {} {}",
+                if editor.use_regex { "Regex" } else { "Literal" },
+                if editor.case_sensitive { "(Case)" } else { "(NoCase)" }
+            )
+        } else {
+            String::new()
+        };
+        
         format!(
-            "{} {} | Ln {}, Col {} | Mouse: {}",
+            "{} {} | Ln {}, Col {} | Mouse: {}{}",
             filename,
             modified_indicator,
             editor.cursor_pos.0 + 1,
             editor.cursor_pos.1 + 1,
-            if editor.mouse_enabled { "ON" } else { "OFF" }
+            if editor.mouse_enabled { "ON" } else { "OFF" },
+            search_modes
         )
     };
 
@@ -1484,7 +1599,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             "Enter: Confirm | Esc: Cancel | Type filename"
         }
         InputMode::OptionsMenu => "M: Mouse | L: Line Numbers | W: Word Wrap | T: Tab Width | Esc: Back",
-        InputMode::Find => "Enter: Search/Exit | Esc: Cancel | ↑↓: Navigate matches | Type search term",
+        InputMode::Find => "Enter: Search/Exit | Esc: Cancel | ↑↓: Navigate | ^R: Regex | ^I: Case | Type search term",
         InputMode::Replace => "Enter: Next step | Esc: Cancel | Type find/replace text",
         InputMode::GoToLine => "Enter: Go | Esc: Cancel | Type line number",
         _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^O Options",
