@@ -790,6 +790,7 @@ impl Editor {
             self.current_match_index = Some(next_index);
             if let Some(&(line, col)) = self.search_matches.get(next_index) {
                 self.cursor_pos = (line, col);
+                self.needs_redraw = true;
                 true
             } else {
                 // Index is invalid, reset search state
@@ -819,6 +820,7 @@ impl Editor {
             self.current_match_index = Some(prev_index);
             if let Some(&(line, col)) = self.search_matches.get(prev_index) {
                 self.cursor_pos = (line, col);
+                self.needs_redraw = true;
                 true
             } else {
                 // Index is invalid, reset search state
@@ -1156,6 +1158,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                         "Find: {} ({current}/{matches_count} matches) - Use ↑↓ to navigate, Enter/Esc to exit",
                         editor.search_buffer
                     );
+                    editor.needs_redraw = true;
                 }
             }
             KeyCode::Down => {
@@ -1171,6 +1174,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                         "Find: {} ({current}/{matches_count} matches) - Use ↑↓ to navigate, Enter/Esc to exit",
                         editor.search_buffer
                     );
+                    editor.needs_redraw = true;
                 }
             }
             KeyCode::Backspace => {
