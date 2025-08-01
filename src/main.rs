@@ -16,7 +16,7 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, stdout, Write},
+    io::{self, stdout},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -104,7 +104,7 @@ struct Editor {
     use_regex: bool,
     case_sensitive: bool,
     search_history: Vec<String>,
-    search_history_index: Option<usize>,
+    // search_history_index: Option<usize>, // TODO: Implement search history navigation
 }
 
 /// Different input modes the editor can be in
@@ -157,7 +157,7 @@ impl Editor {
             use_regex: false,
             case_sensitive: false,
             search_history: Vec::new(),
-            search_history_index: None,
+            // search_history_index: None, // TODO: Implement search history navigation
         };
         editor.load_config();
         editor
@@ -934,7 +934,10 @@ impl Editor {
     fn toggle_regex_mode(&mut self) {
         self.use_regex = !self.use_regex;
         let mode = if self.use_regex { "Regex" } else { "Literal" };
-        self.set_temporary_status_message(format!("Search mode: {}", mode));
+        self.set_temporary_status_message(format!("Search mode: {} ({})", 
+            mode,
+            if self.use_regex { "Pattern matching" } else { "Exact text" }
+        ));
         self.needs_redraw = true;
         
         // Re-search if we have an active search
@@ -1151,10 +1154,6 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 editor.toggle_regex_mode();
-                editor.set_temporary_status_message(format!(
-                    "Regex mode: {}",
-                    if editor.use_regex { "ON" } else { "OFF" }
-                ));
                 editor.input_mode = InputMode::Find;
                 return Ok(false);
             }
