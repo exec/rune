@@ -1138,6 +1138,11 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 editor.input_mode = InputMode::Normal;
                 editor.set_temporary_status_message("Search cancelled".to_string());
             }
+            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.cancel_search();
+                editor.input_mode = InputMode::Normal;
+                editor.set_temporary_status_message("Search cancelled".to_string());
+            }
             KeyCode::Up => {
                 if editor.search_matches.is_empty() {
                     // If no current search, just move cursor
@@ -1237,6 +1242,12 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             KeyCode::Esc => {
                 editor.input_mode = InputMode::Normal;
                 editor.status_message = "Replace cancelled".to_string();
+                editor.needs_redraw = true;
+            }
+            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.input_mode = InputMode::Normal;
+                editor.status_message = "Replace cancelled".to_string();
+                editor.needs_redraw = true;
             }
             KeyCode::Backspace => {
                 if editor.status_message.starts_with("Find:") {
@@ -1281,6 +1292,12 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             KeyCode::Esc => {
                 editor.input_mode = InputMode::Normal;
                 editor.status_message = "Go to line cancelled".to_string();
+                editor.needs_redraw = true;
+            }
+            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.input_mode = InputMode::Normal;
+                editor.status_message = "Go to line cancelled".to_string();
+                editor.needs_redraw = true;
             }
             KeyCode::Backspace => {
                 editor.search_buffer.pop();
@@ -1614,9 +1631,9 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             "Enter: Confirm | Esc: Cancel | Type filename"
         }
         InputMode::OptionsMenu => "M: Mouse | L: Line Numbers | W: Word Wrap | T: Tab Width | Esc: Back",
-        InputMode::Find => "Enter: Search/Exit | Esc: Cancel | ↑↓: Navigate | ^R: Regex | ^I: Case | Type search term",
-        InputMode::Replace => "Enter: Next step | Esc: Cancel | Type find/replace text",
-        InputMode::GoToLine => "Enter: Go | Esc: Cancel | Type line number",
+        InputMode::Find => "Enter: Search/Exit | Esc/^C: Cancel | ↑↓: Navigate | ^R: Regex | ^I: Case | Type search term",
+        InputMode::Replace => "Enter: Next step | Esc/^C: Cancel | Type find/replace text",
+        InputMode::GoToLine => "Enter: Go | Esc/^C: Cancel | Type line number",
         _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^O Options",
     };
     let help_widget =
