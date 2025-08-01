@@ -1,4 +1,0 @@
-Hello world
-This is a test file
-for testing the new features
-in the rune editor

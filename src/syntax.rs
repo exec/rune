@@ -156,7 +156,11 @@ impl SyntaxHighlighter {
                                 || next_ch == '_'
                                 || next_ch.is_ascii_hexdigit()
                             {
-                                number.push(chars.next().unwrap());
+                                if let Some(ch) = chars.next() {
+                                    number.push(ch);
+                                } else {
+                                    break;
+                                }
                             } else {
                                 break;
                             }

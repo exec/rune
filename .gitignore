@@ -29,4 +29,7 @@ homebrew-setup/
 # Build artifacts
 *.dSYM/
 *.exe
-*.pdbaur-rune-editor/
+*.pdb
+
+# AUR and packaging
+aur-rune-editor/

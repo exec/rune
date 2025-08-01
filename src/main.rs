@@ -13,11 +13,23 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, stdout, Write},
+    io::{self, stdout},
     path::PathBuf,
     time::{Duration, Instant},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+mod constants {
+    use std::time::Duration;
+    
+    pub const DEFAULT_TAB_WIDTH: usize = 4;
+    pub const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
+    pub const FALLBACK_TERMINAL_HEIGHT: usize = 24;
+    pub const UI_SCROLL_PADDING: usize = 3;
+    pub const UI_VIEWPORT_PADDING: usize = 4;
+    pub const MAX_UNDO_STACK_SIZE: usize = 100;
+    pub const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+}
 
 mod syntax;
 use syntax::SyntaxHighlighter;
@@ -28,6 +40,7 @@ struct UndoState {
     cursor_pos: (usize, usize),
 }
 
+/// Configuration settings for the editor
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Config {
     mouse_enabled: bool,
@@ -41,7 +54,7 @@ impl Default for Config {
         Self {
             mouse_enabled: true,
             show_line_numbers: false,
-            tab_width: 4,
+            tab_width: constants::DEFAULT_TAB_WIDTH,
             word_wrap: false,
         }
     }
@@ -54,6 +67,7 @@ struct Cli {
     file: Option<PathBuf>,
 }
 
+/// Main editor state containing document content, cursor position, and UI state
 struct Editor {
     rope: Rope,
     cursor_pos: (usize, usize),      // (line, column)
@@ -81,6 +95,7 @@ struct Editor {
     redo_stack: Vec<UndoState>,
 }
 
+/// Different input modes the editor can be in
 #[derive(Debug, Clone, PartialEq)]
 enum InputMode {
     Normal,
@@ -103,7 +118,7 @@ impl Editor {
             modified: false,
             status_message: String::new(),
             status_message_time: None,
-            status_message_timeout: Duration::from_secs(3),
+            status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
             highlighter: SyntaxHighlighter::new(),
             syntax_name: None,
             input_mode: InputMode::Normal,
@@ -306,20 +321,28 @@ impl Editor {
                 self.modified = true;
             }
         } else if self.cursor_pos.0 > 0 {
-            // Join with previous line
+            // Join with previous line - cursor should stay at junction point
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, 0);
             if pos > 0 {
                 self.save_undo_state();
+                
+                // Get the length of the previous line before joining
+                let prev_line = self.rope.line(self.cursor_pos.0 - 1);
+                let junction_col = if let Some(line_str) = prev_line.as_str() {
+                    line_str.trim_end_matches('\n').len()
+                } else {
+                    0
+                };
+                
                 self.rope.remove(pos - 1..pos);
 
                 // Invalidate highlighting cache from previous line (since we're joining)
                 self.highlighter
                     .invalidate_cache_from_line(self.cursor_pos.0 - 1);
 
+                // Move cursor to junction point, not end of combined line
                 self.cursor_pos.0 -= 1;
-                if let Some(line) = self.rope.line(self.cursor_pos.0).as_str() {
-                    self.cursor_pos.1 = line.trim_end_matches('\n').width();
-                }
+                self.cursor_pos.1 = junction_col;
                 self.modified = true;
             }
         }
@@ -377,14 +400,14 @@ impl Editor {
     }
 
     fn page_up(&mut self) {
-        let terminal_height: usize = 24; // Approximate terminal height, could be made dynamic
+        let terminal_height: usize = constants::FALLBACK_TERMINAL_HEIGHT; // Approximate terminal height
         let page_size = terminal_height.saturating_sub(4); // Leave room for status/help bars
         self.cursor_pos.0 = self.cursor_pos.0.saturating_sub(page_size);
         self.clamp_cursor_to_line();
     }
 
     fn page_down(&mut self) {
-        let terminal_height: usize = 24; // Approximate terminal height, could be made dynamic  
+        let terminal_height: usize = constants::FALLBACK_TERMINAL_HEIGHT; // Approximate terminal height  
         let page_size = terminal_height.saturating_sub(4); // Leave room for status/help bars
         let max_line = self.rope.len_lines().saturating_sub(1);
         self.cursor_pos.0 = (self.cursor_pos.0 + page_size).min(max_line);
@@ -420,8 +443,8 @@ impl Editor {
         // Vertical scrolling
         if self.cursor_pos.0 < self.viewport_offset.0 {
             self.viewport_offset.0 = self.cursor_pos.0;
-        } else if self.cursor_pos.0 >= self.viewport_offset.0 + terminal_height - 3 {
-            self.viewport_offset.0 = self.cursor_pos.0.saturating_sub(terminal_height - 4);
+        } else if self.cursor_pos.0 >= self.viewport_offset.0 + terminal_height - constants::UI_SCROLL_PADDING {
+            self.viewport_offset.0 = self.cursor_pos.0.saturating_sub(terminal_height - constants::UI_VIEWPORT_PADDING);
         }
     }
 
@@ -477,10 +500,6 @@ impl Editor {
         self.status_message_time = Some(Instant::now());
     }
 
-    fn set_persistent_status_message(&mut self, message: String) {
-        self.status_message = message;
-        self.status_message_time = None;
-    }
 
     fn check_status_message_timeout(&mut self) {
         if let Some(time) = self.status_message_time {
@@ -535,7 +554,7 @@ impl Editor {
         self.redo_stack.clear(); // Clear redo stack when new action happens
 
         // Limit undo stack size to prevent memory issues
-        if self.undo_stack.len() > 100 {
+        if self.undo_stack.len() > constants::MAX_UNDO_STACK_SIZE {
             self.undo_stack.remove(0);
         }
     }
@@ -708,12 +727,6 @@ impl Editor {
     }
 
 
-    fn char_idx_to_line_col(&self, char_idx: usize) -> (usize, usize) {
-        let line = self.rope.char_to_line(char_idx);
-        let line_start = self.rope.line_to_char(line);
-        let col = char_idx - line_start;
-        (line, col)
-    }
 
     fn perform_replace(&mut self, search_term: &str, replace_term: &str) -> usize {
         if search_term.is_empty() {
@@ -801,7 +814,7 @@ fn run_editor(
         // Check if status message should timeout
         editor.check_status_message_timeout();
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(constants::EVENT_POLL_INTERVAL)? {
             match event::read()? {
                 Event::Key(key) => {
                     // Only handle key press events to avoid double registration on Windows
@@ -881,7 +894,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 editor.tab_width = match editor.tab_width {
                     2 => 4,
-                    4 => 8,
+                    4 => 8, 
                     _ => 2,
                 };
                 editor.set_temporary_status_message(format!("Tab width: {}", editor.tab_width));

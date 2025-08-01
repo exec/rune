@@ -1,6 +1,6 @@
 [package]
 name = "rune"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["exec"]
 description = "A modern CLI text editor that bridges the gap between nano's simplicity and advanced features"
 license = "MIT"
@@ -9,6 +9,13 @@ readme = "README.md"
 keywords = ["editor", "terminal", "cli", "text", "nano"]
 categories = ["command-line-utilities", "text-editors"]
 edition = "2021"
+exclude = [
+    "homebrew-setup/",
+    "aur-rune-editor/",
+    "test.txt",
+    "*.tmp",
+    "*.temp"
+]
 
 [dependencies]
 ratatui = "0.29"
