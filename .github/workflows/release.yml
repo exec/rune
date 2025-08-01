@@ -238,13 +238,6 @@ jobs:
         curl -sL https://github.com/exec/rune/archive/refs/tags/${{ github.ref_name }}.tar.gz -o source.tar.gz
         echo "SOURCE_SHA=$(shasum -a 256 source.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
         
-    - name: Install makepkg for .SRCINFO generation
-      run: |
-        # Install makepkg-ubuntu package which provides makepkg on Ubuntu
-        wget -O makepkg.deb https://github.com/michaelx/makepkg-ubuntu/releases/download/v5.2.2-1/makepkg-ubuntu_5.2.2-1_all.deb
-        sudo dpkg -i makepkg.deb
-        sudo apt-get install -f
-        
     - name: Setup SSH for AUR
       run: |
         mkdir -p ~/.ssh
@@ -265,8 +258,26 @@ jobs:
         sed -i "s/pkgver=.*/pkgver=${{ steps.version.outputs.VERSION }}/" PKGBUILD
         sed -i "s/sha256sums=.*/sha256sums=('${{ steps.calculate-sha.outputs.SOURCE_SHA }}')/" PKGBUILD
         
-        # Generate new .SRCINFO
-        makepkg --printsrcinfo > .SRCINFO
+        # Generate new .SRCINFO manually (since we don't have makepkg on Ubuntu)
+        cat > .SRCINFO << 'EOF'
+        pkgbase = rune-editor
+        	pkgdesc = A modern CLI text editor that bridges the gap between nano's simplicity and advanced features
+        	pkgver = ${{ steps.version.outputs.VERSION }}
+        	pkgrel = 1
+        	url = https://github.com/exec/rune
+        	arch = x86_64
+        	license = MIT
+        	makedepends = rust
+        	makedepends = cargo
+        	makedepends = pkgconf
+        	depends = oniguruma
+        	provides = rune
+        	conflicts = rune-git
+        	source = rune-editor-${{ steps.version.outputs.VERSION }}.tar.gz::https://github.com/exec/rune/archive/refs/tags/v${{ steps.version.outputs.VERSION }}.tar.gz
+        	sha256sums = ${{ steps.calculate-sha.outputs.SOURCE_SHA }}
+
+        pkgname = rune-editor
+        EOF
         
     - name: Commit and push to AUR
       run: |
