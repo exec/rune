@@ -15,7 +15,7 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, stdout},
+    io::{self, stdout, Write},
     path::PathBuf,
     time::{Duration, Instant},
 };
