@@ -617,6 +617,14 @@ impl Editor {
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
             self.modified = true;
+            
+            // Performance optimizations
+            self.invalidate_cache();
+            self.needs_redraw = true;
+            
+            // Invalidate highlighting cache for entire document
+            self.highlighter.invalidate_cache_from_line(0);
+            
             self.set_temporary_status_message("Undo".to_string());
         }
     }
@@ -632,6 +640,14 @@ impl Editor {
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
             self.modified = true;
+            
+            // Performance optimizations
+            self.invalidate_cache();
+            self.needs_redraw = true;
+            
+            // Invalidate highlighting cache for entire document
+            self.highlighter.invalidate_cache_from_line(0);
+            
             self.set_temporary_status_message("Redo".to_string());
         }
     }
@@ -853,6 +869,13 @@ impl Editor {
             self.modified = true;
             // Try to keep cursor in a reasonable position
             self.clamp_cursor_to_line();
+            
+            // Performance optimizations
+            self.invalidate_cache();
+            self.needs_redraw = true;
+            
+            // Invalidate highlighting cache for entire document
+            self.highlighter.invalidate_cache_from_line(0);
         }
 
         replacements
