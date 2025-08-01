@@ -195,6 +195,7 @@ impl Editor {
         self.input_mode = InputMode::EnteringFilename;
         self.filename_buffer.clear();
         self.status_message = "File Name to Write: ".to_string();
+        self.needs_redraw = true;
     }
 
     fn start_save_as_input(&mut self) {
@@ -279,6 +280,7 @@ impl Editor {
     fn start_quit_confirmation(&mut self) {
         self.input_mode = InputMode::ConfirmQuit;
         self.status_message = "Save modified buffer? (Y/N/Ctrl+C)".to_string();
+        self.needs_redraw = true;
     }
 
     fn handle_quit_confirmation(&mut self, save: bool) -> Result<bool> {
@@ -311,6 +313,7 @@ impl Editor {
     fn cancel_quit_confirmation(&mut self) {
         self.input_mode = InputMode::Normal;
         self.status_message = "Cancelled".to_string();
+        self.needs_redraw = true;
     }
 
     fn insert_char(&mut self, c: char) {
@@ -539,6 +542,7 @@ impl Editor {
     fn set_temporary_status_message(&mut self, message: String) {
         self.status_message = message;
         self.status_message_time = Some(Instant::now());
+        self.needs_redraw = true;
     }
 
     fn check_status_message_timeout(&mut self) -> bool {
