@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rune Editor - Install</title>
+    <style>
+        body {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            margin: 0;
+            padding: 40px 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #58a6ff;
+            font-size: 3em;
+            margin-bottom: 0.2em;
+            text-align: center;
+        }
+        .subtitle {
+            text-align: center;
+            color: #8b949e;
+            font-size: 1.2em;
+            margin-bottom: 2em;
+        }
+        .install-box {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 24px;
+            margin: 2em 0;
+        }
+        .install-command {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            font-family: inherit;
+            color: #7ee787;
+            font-size: 16px;
+            margin: 16px 0;
+            word-break: break-all;
+            user-select: all;
+        }
+        .copy-btn {
+            background: #238636;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: inherit;
+            margin-left: 8px;
+        }
+        .copy-btn:hover {
+            background: #2ea043;
+        }
+        .platforms {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin: 2em 0;
+        }
+        .platform {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            text-align: center;
+        }
+        .github-link {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        .github-link:hover {
+            text-decoration: underline;
+        }
+        .warning {
+            background: #1e2124;
+            border-left: 4px solid #f85149;
+            padding: 16px;
+            margin: 16px 0;
+            border-radius: 0 6px 6px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Rune</h1>
+        <div class="subtitle">Modern CLI text editor</div>
+        
+        <div class="install-box">
+            <h2>Quick Install</h2>
+            <p>Install Rune Editor with a single command:</p>
+            <div style="display: flex; align-items: center;">
+                <code class="install-command" id="install-cmd">curl -fsSL https://exec.github.io/rune/install.sh | bash</code>
+                <button class="copy-btn" onclick="copyInstallCommand()">Copy</button>
+            </div>
+            
+            <div class="warning">
+                <strong>Always review scripts before running:</strong><br>
+                <a href="https://exec.github.io/rune/install.sh" class="github-link">View install.sh source</a>
+            </div>
+        </div>
+
+        <div class="install-box">
+            <h2>Supported Platforms</h2>
+            <div class="platforms">
+                <div class="platform">
+                    <strong>macOS</strong><br>
+                    Intel & Apple Silicon
+                </div>
+                <div class="platform">
+                    <strong>Linux</strong><br>
+                    x86_64 & ARM64
+                </div>
+                <div class="platform">
+                    <strong>Homebrew</strong><br>
+                    <code>brew install rune-editor</code>
+                </div>
+                <div class="platform">
+                    <strong>Arch Linux</strong><br>
+                    <code>yay -S rune-editor</code>
+                </div>
+            </div>
+        </div>
+
+        <div class="install-box">
+            <h2>Manual Installation</h2>
+            <p>Download the latest release directly:</p>
+            <p><a href="https://github.com/exec/rune/releases/latest" class="github-link">GitHub Releases</a></p>
+        </div>
+
+        <div style="text-align: center; margin-top: 3em; color: #8b949e;">
+            <p><a href="https://github.com/exec/rune" class="github-link">View on GitHub</a> | 
+               <a href="https://github.com/exec/rune/blob/master/README.md" class="github-link">Documentation</a></p>
+        </div>
+    </div>
+
+    <script>
+        function copyInstallCommand() {
+            const cmd = document.getElementById('install-cmd');
+            navigator.clipboard.writeText(cmd.textContent).then(() => {
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.style.background = '#2ea043';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.style.background = '#238636';
+                }, 2000);
+            });
+        }
+    </script>
+</body>
+</html>
