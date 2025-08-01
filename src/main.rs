@@ -447,6 +447,7 @@ impl Editor {
         let page_size = terminal_height.saturating_sub(4); // Leave room for status/help bars
         self.cursor_pos.0 = self.cursor_pos.0.saturating_sub(page_size);
         self.clamp_cursor_to_line();
+        self.needs_redraw = true;
     }
 
     fn page_down(&mut self) {
@@ -455,6 +456,7 @@ impl Editor {
         let max_line = self.rope.len_lines().saturating_sub(1);
         self.cursor_pos.0 = (self.cursor_pos.0 + page_size).min(max_line);
         self.clamp_cursor_to_line();
+        self.needs_redraw = true;
     }
 
     fn clamp_cursor_to_line(&mut self) {
