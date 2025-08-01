@@ -17,6 +17,8 @@ pub struct SyntaxHighlighter {
     line_cache: HashMap<usize, HighlightedLine>,
     // Current file version for cache invalidation
     file_version: u64,
+    // Current syntax for language-specific highlighting
+    current_syntax: Option<String>,
 }
 
 impl SyntaxHighlighter {
@@ -29,6 +31,7 @@ impl SyntaxHighlighter {
             theme_set,
             line_cache: HashMap::new(),
             file_version: 0,
+            current_syntax: None,
         }
     }
 
@@ -54,7 +57,8 @@ impl SyntaxHighlighter {
         None
     }
 
-    pub fn set_syntax(&mut self, _syntax_name: Option<&str>) {
+    pub fn set_syntax(&mut self, syntax_name: Option<&str>) {
+        self.current_syntax = syntax_name.map(|s| s.to_string());
         // Clear cache when syntax changes
         self.line_cache.clear();
         self.file_version += 1;
@@ -74,7 +78,7 @@ impl SyntaxHighlighter {
             }
         }
 
-        // Highlight the line using enhanced simple highlighting
+        // Highlight the line using language-aware highlighting
         let spans = self.highlight_simple(line_text);
 
         // Cache the result
@@ -185,27 +189,133 @@ impl SyntaxHighlighter {
     }
 
     fn get_keyword_style(&self, word: &str) -> Style {
+        // Language-specific highlighting based on current syntax
+        match self.current_syntax.as_deref() {
+            Some("Rust") => self.get_rust_keyword_style(word),
+            Some("Python") => self.get_python_keyword_style(word),
+            Some("JavaScript") | Some("TypeScript") => self.get_js_keyword_style(word),
+            Some("Go") => self.get_go_keyword_style(word),
+            Some("Shell Script (Bash)") | Some("Bourne Again Shell (bash)") => self.get_shell_keyword_style(word),
+            _ => self.get_generic_keyword_style(word),
+        }
+    }
+
+    fn get_rust_keyword_style(&self, word: &str) -> Style {
         match word {
             // Rust keywords
             "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait" | "use" | "mod"
             | "const" | "static" | "extern" | "crate" | "super" | "self" | "Self" | "where"
-            | "async" | "await" => Style::default().fg(Color::Magenta),
+            | "async" | "await" | "unsafe" | "dyn" | "ref" | "move" => Style::default().fg(Color::Magenta),
 
-            // Control flow (avoid duplicate "let" and "const")
+            // Control flow
             "if" | "else" | "match" | "for" | "while" | "loop" | "break" | "continue"
-            | "return" | "try" | "catch" | "finally" | "throw" | "raise" | "def" | "class"
-            | "import" | "from" | "function" | "var" => Style::default().fg(Color::Yellow),
+            | "return" => Style::default().fg(Color::Yellow),
 
             // Literals
-            "true" | "false" | "True" | "False" | "null" | "None" | "undefined" | "nil" => {
-                Style::default().fg(Color::Cyan)
-            }
+            "true" | "false" | "None" | "Some" => Style::default().fg(Color::Cyan),
 
-            // Types (common ones)
+            // Rust types
             "String" | "Vec" | "Option" | "Result" | "HashMap" | "HashSet" | "i32" | "u32"
             | "i64" | "u64" | "f32" | "f64" | "bool" | "char" | "usize" | "isize" | "str"
-            | "int" | "float" | "list" | "dict" | "tuple" | "set" | "Array" | "Object"
-            | "Number" | "Boolean" => Style::default().fg(Color::Blue),
+            | "Box" | "Rc" | "Arc" | "RefCell" | "Mutex" => Style::default().fg(Color::Blue),
+
+            _ => Style::default(),
+        }
+    }
+
+    fn get_python_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // Python keywords
+            "def" | "class" | "import" | "from" | "as" | "with" | "lambda" | "async" | "await"
+            | "global" | "nonlocal" | "yield" | "pass" | "del" => Style::default().fg(Color::Magenta),
+
+            // Control flow
+            "if" | "elif" | "else" | "for" | "while" | "break" | "continue" | "return"
+            | "try" | "except" | "finally" | "raise" | "assert" => Style::default().fg(Color::Yellow),
+
+            // Literals
+            "True" | "False" | "None" => Style::default().fg(Color::Cyan),
+
+            // Python built-ins
+            "str" | "int" | "float" | "bool" | "list" | "dict" | "tuple" | "set"
+            | "len" | "range" | "enumerate" | "zip" | "map" | "filter" | "print"
+            | "open" | "file" | "type" | "isinstance" | "hasattr" => Style::default().fg(Color::Blue),
+
+            _ => Style::default(),
+        }
+    }
+
+    fn get_js_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // JavaScript/TypeScript keywords
+            "function" | "var" | "let" | "const" | "class" | "extends" | "import" | "export"
+            | "async" | "await" | "yield" | "interface" | "type" | "enum"
+            | "namespace" | "module" | "declare" => Style::default().fg(Color::Magenta),
+
+            // Control flow
+            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return"
+            | "try" | "catch" | "finally" | "throw" | "switch" | "case" | "default" => Style::default().fg(Color::Yellow),
+
+            // Literals
+            "true" | "false" | "null" | "undefined" => Style::default().fg(Color::Cyan),
+
+            // JS/TS types
+            "string" | "number" | "boolean" | "object" | "Array" | "Object" | "Function"
+            | "Promise" | "Map" | "Set" | "WeakMap" | "WeakSet" | "Symbol" | "BigInt"
+            | "any" | "unknown" | "never" | "void" => Style::default().fg(Color::Blue),
+
+            _ => Style::default(),
+        }
+    }
+
+    fn get_go_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // Go keywords
+            "func" | "var" | "const" | "type" | "struct" | "interface" | "package" | "import"
+            | "go" | "defer" | "chan" | "select" | "range" | "map" | "make" | "new" => Style::default().fg(Color::Magenta),
+
+            // Control flow
+            "if" | "else" | "for" | "switch" | "case" | "default" | "break" | "continue"
+            | "return" | "goto" | "fallthrough" => Style::default().fg(Color::Yellow),
+
+            // Literals
+            "true" | "false" | "nil" => Style::default().fg(Color::Cyan),
+
+            // Go types
+            "string" | "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
+            | "uint16" | "uint32" | "uint64" | "bool" | "byte" | "rune" | "float32"
+            | "float64" | "complex64" | "complex128" | "error" => Style::default().fg(Color::Blue),
+
+            _ => Style::default(),
+        }
+    }
+
+    fn get_shell_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // Shell keywords
+            "if" | "then" | "else" | "elif" | "fi" | "case" | "esac" | "for" | "while"
+            | "until" | "do" | "done" | "function" | "select" | "time" | "in" => Style::default().fg(Color::Magenta),
+
+            // Shell commands
+            "echo" | "printf" | "cat" | "grep" | "awk" | "sed" | "sort" | "uniq" | "cut"
+            | "head" | "tail" | "find" | "xargs" | "ls" | "cd" | "pwd" | "mkdir" | "rm"
+            | "cp" | "mv" | "chmod" | "chown" | "export" | "alias" | "source" | "exec"
+            | "exit" | "return" | "break" | "continue" => Style::default().fg(Color::Yellow),
+
+            // Shell variables/operators
+            "true" | "false" => Style::default().fg(Color::Cyan),
+
+            _ => Style::default(),
+        }
+    }
+
+    fn get_generic_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // Generic control flow
+            "if" | "else" | "for" | "while" | "break" | "continue" | "return" => Style::default().fg(Color::Yellow),
+
+            // Generic literals
+            "true" | "false" | "null" | "None" | "undefined" | "nil" => Style::default().fg(Color::Cyan),
 
             _ => Style::default(),
         }
