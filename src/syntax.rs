@@ -146,9 +146,38 @@ impl SyntaxHighlighter {
                         result.push((Style::default().fg(Color::DarkGray), format!("//{rest}")));
                         break;
                     }
+                    '/' if chars.peek() == Some(&'*') => {
+                        chars.next(); // consume '*'
+                        let mut comment = String::from("/*");
+                        let mut found_end = false;
+                        
+                        while let Some(next_ch) = chars.next() {
+                            comment.push(next_ch);
+                            if next_ch == '*' && chars.peek() == Some(&'/') {
+                                chars.next(); // consume '/'
+                                comment.push('/');
+                                found_end = true;
+                                break;
+                            }
+                        }
+                        
+                        result.push((Style::default().fg(Color::DarkGray), comment));
+                        if found_end {
+                            // Continue processing if block comment ended on this line
+                            // (chars iterator is consumed, so this will exit the loop)
+                        }
+                        break; // End processing for this line
+                    }
                     '#' => {
                         let rest: String = chars.collect();
                         result.push((Style::default().fg(Color::DarkGray), format!("#{rest}")));
+                        break;
+                    }
+                    '-' if chars.peek() == Some(&'-') => {
+                        // SQL-style comments
+                        chars.next(); // consume second '-'
+                        let rest: String = chars.collect();
+                        result.push((Style::default().fg(Color::DarkGray), format!("--{rest}")));
                         break;
                     }
                     // Numbers
@@ -196,6 +225,10 @@ impl SyntaxHighlighter {
             Some("JavaScript") | Some("TypeScript") => self.get_js_keyword_style(word),
             Some("Go") => self.get_go_keyword_style(word),
             Some("Shell Script (Bash)") | Some("Bourne Again Shell (bash)") => self.get_shell_keyword_style(word),
+            Some("C") | Some("C++") => self.get_c_keyword_style(word),
+            Some("JSON") => self.get_json_keyword_style(word),
+            Some("YAML") => self.get_yaml_keyword_style(word),
+            Some("Dockerfile") => self.get_dockerfile_keyword_style(word),
             _ => self.get_generic_keyword_style(word),
         }
     }
@@ -305,6 +338,60 @@ impl SyntaxHighlighter {
             // Shell variables/operators
             "true" | "false" => Style::default().fg(Color::Cyan),
 
+            _ => Style::default(),
+        }
+    }
+
+    fn get_c_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // C/C++ keywords
+            "int" | "char" | "float" | "double" | "void" | "long" | "short" | "unsigned"
+            | "signed" | "const" | "static" | "extern" | "volatile" | "register"
+            | "struct" | "union" | "enum" | "typedef" | "sizeof" => Style::default().fg(Color::Magenta),
+
+            // C++ specific
+            "class" | "public" | "private" | "protected" | "virtual" | "override"
+            | "namespace" | "using" | "template" | "typename" | "new" | "delete"
+            | "this" | "friend" | "inline" | "explicit" | "operator" => Style::default().fg(Color::Magenta),
+
+            // Control flow
+            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return"
+            | "switch" | "case" | "default" | "goto" => Style::default().fg(Color::Yellow),
+
+            // Literals
+            "true" | "false" | "NULL" | "nullptr" => Style::default().fg(Color::Cyan),
+
+            // Standard types
+            "bool" | "size_t" | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t"
+            | "int8_t" | "int16_t" | "int32_t" | "int64_t" | "string" | "vector"
+            | "map" | "set" | "list" | "array" => Style::default().fg(Color::Blue),
+
+            _ => Style::default(),
+        }
+    }
+
+    fn get_json_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // JSON literals
+            "true" | "false" | "null" => Style::default().fg(Color::Cyan),
+            _ => Style::default(),
+        }
+    }
+
+    fn get_yaml_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // YAML literals
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" => Style::default().fg(Color::Cyan),
+            _ => Style::default(),
+        }
+    }
+
+    fn get_dockerfile_keyword_style(&self, word: &str) -> Style {
+        match word {
+            // Dockerfile keywords
+            "FROM" | "RUN" | "CMD" | "LABEL" | "MAINTAINER" | "EXPOSE" | "ENV" | "ADD"
+            | "COPY" | "ENTRYPOINT" | "VOLUME" | "USER" | "WORKDIR" | "ARG" | "ONBUILD"
+            | "STOPSIGNAL" | "HEALTHCHECK" | "SHELL" => Style::default().fg(Color::Magenta),
             _ => Style::default(),
         }
     }
