@@ -1089,10 +1089,12 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             KeyCode::Backspace => {
                 editor.filename_buffer.pop();
                 editor.status_message = format!("File Name to Write: {}", editor.filename_buffer);
+                editor.needs_redraw = true;
             }
             KeyCode::Char(c) => {
                 editor.filename_buffer.push(c);
                 editor.status_message = format!("File Name to Write: {}", editor.filename_buffer);
+                editor.needs_redraw = true;
             }
             _ => {}
         }
@@ -1227,6 +1229,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 if editor.status_message.starts_with("Find:") {
                     // Switch to replace input
                     editor.status_message = format!("Replace '{}' with: ", editor.search_buffer);
+                    editor.needs_redraw = true;
                 } else {
                     // Perform replace
                     let replacements = editor.perform_replace(
@@ -1257,24 +1260,28 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 if editor.status_message.starts_with("Find:") {
                     editor.search_buffer.pop();
                     editor.status_message = format!("Find: {}", editor.search_buffer);
+                    editor.needs_redraw = true;
                 } else {
                     editor.replace_buffer.pop();
                     editor.status_message = format!(
                         "Replace '{}' with: {}",
                         editor.search_buffer, editor.replace_buffer
                     );
+                    editor.needs_redraw = true;
                 }
             }
             KeyCode::Char(c) => {
                 if editor.status_message.starts_with("Find:") {
                     editor.search_buffer.push(c);
                     editor.status_message = format!("Find: {}", editor.search_buffer);
+                    editor.needs_redraw = true;
                 } else {
                     editor.replace_buffer.push(c);
                     editor.status_message = format!(
                         "Replace '{}' with: {}",
                         editor.search_buffer, editor.replace_buffer
                     );
+                    editor.needs_redraw = true;
                 }
             }
             _ => {}
@@ -1306,10 +1313,12 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             KeyCode::Backspace => {
                 editor.search_buffer.pop();
                 editor.status_message = format!("Go to line: {}", editor.search_buffer);
+                editor.needs_redraw = true;
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 editor.search_buffer.push(c);
                 editor.status_message = format!("Go to line: {}", editor.search_buffer);
+                editor.needs_redraw = true;
             }
             _ => {}
         }
