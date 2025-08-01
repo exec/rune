@@ -116,7 +116,9 @@ enum InputMode {
     ConfirmQuit,
     OptionsMenu,
     Find,
+    FindOptionsMenu,
     Replace,
+    ReplaceConfirm,
     GoToLine,
 }
 
@@ -880,6 +882,42 @@ impl Editor {
         replacements
     }
 
+    fn perform_replace_interactive(&mut self, search_term: &str, replace_term: &str) -> usize {
+        if search_term.is_empty() {
+            return 0;
+        }
+
+        self.save_undo_state();
+        let text = self.rope.to_string();
+        
+        // For interactive replace, only replace the first occurrence
+        if let Some(pos) = text.find(search_term) {
+            let mut new_text = text.clone();
+            new_text.replace_range(pos..pos + search_term.len(), replace_term);
+            
+            self.rope = Rope::from_str(&new_text);
+            self.modified = true;
+            
+            // Move cursor to the replaced text
+            let line = self.rope.char_to_line(pos);
+            let line_start = self.rope.line_to_char(line);
+            let col = pos - line_start;
+            self.cursor_pos = (line, col);
+            self.clamp_cursor_to_line();
+            
+            // Performance optimizations
+            self.invalidate_cache();
+            self.needs_redraw = true;
+            
+            // Invalidate highlighting cache for entire document
+            self.highlighter.invalidate_cache_from_line(0);
+            
+            return 1;
+        }
+        
+        0
+    }
+
     fn goto_line(&mut self, line_num: usize) {
         if line_num > 0 && line_num <= self.rope.len_lines() {
             self.cursor_pos.0 = line_num - 1; // Convert to 0-based
@@ -1097,6 +1135,40 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
+    // Handle find options menu
+    if editor.input_mode == InputMode::FindOptionsMenu {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                editor.toggle_case_sensitive();
+                editor.set_temporary_status_message(format!(
+                    "Case sensitivity: {}",
+                    if editor.case_sensitive { "ON" } else { "OFF" }
+                ));
+                editor.input_mode = InputMode::Find;
+                return Ok(false);
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                editor.toggle_regex_mode();
+                editor.set_temporary_status_message(format!(
+                    "Regex mode: {}",
+                    if editor.use_regex { "ON" } else { "OFF" }
+                ));
+                editor.input_mode = InputMode::Find;
+                return Ok(false);
+            }
+            KeyCode::Esc => {
+                editor.input_mode = InputMode::Find;
+                return Ok(false);
+            }
+            _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
+                editor.input_mode = InputMode::Find;
+                return Ok(false);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     // Handle filename input modes
     if editor.input_mode == InputMode::EnteringFilename
         || editor.input_mode == InputMode::EnteringSaveAs
@@ -1127,11 +1199,20 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     if editor.input_mode == InputMode::Find {
         match key.code {
             KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-                editor.toggle_regex_mode();
+                // Switch to replace mode from within find
+                if !editor.search_buffer.is_empty() {
+                    editor.input_mode = InputMode::Replace;
+                    editor.replace_buffer.clear();
+                    editor.status_message = format!("Replace '{}' with: ", editor.search_buffer);
+                    editor.needs_redraw = true;
+                } else {
+                    editor.toggle_regex_mode();
+                }
                 return Ok(false);
             }
-            KeyCode::Char('i') if key.modifiers == KeyModifiers::CONTROL => {
-                editor.toggle_case_sensitive();
+            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.input_mode = InputMode::FindOptionsMenu;
+                editor.needs_redraw = true;
                 return Ok(false);
             }
             KeyCode::Enter => {
@@ -1169,33 +1250,41 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 editor.input_mode = InputMode::Normal;
                 editor.set_temporary_status_message("Search cancelled".to_string());
             }
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Left => {
                 if editor.search_matches.is_empty() {
                     // If no current search, just move cursor
-                    editor.move_cursor_up();
+                    if key.code == KeyCode::Up {
+                        editor.move_cursor_up();
+                    } else {
+                        editor.move_cursor_left();
+                    }
                 } else {
                     // Navigate to previous match
                     editor.find_previous_match();
                     let matches_count = editor.search_matches.len();
                     let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
                     editor.status_message = format!(
-                        "Find: {} ({current}/{matches_count} matches) - Use ↑↓ to navigate, Enter/Esc to exit",
+                        "Find: {} ({current}/{matches_count} matches) - Use arrows to navigate, Enter/Esc to exit",
                         editor.search_buffer
                     );
                     editor.needs_redraw = true;
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Right => {
                 if editor.search_matches.is_empty() {
                     // If no current search, just move cursor
-                    editor.move_cursor_down();
+                    if key.code == KeyCode::Down {
+                        editor.move_cursor_down();
+                    } else {
+                        editor.move_cursor_right();
+                    }
                 } else {
                     // Navigate to next match
                     editor.find_next_match();
                     let matches_count = editor.search_matches.len();
                     let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
                     editor.status_message = format!(
-                        "Find: {} ({current}/{matches_count} matches) - Use ↑↓ to navigate, Enter/Esc to exit",
+                        "Find: {} ({current}/{matches_count} matches) - Use arrows to navigate, Enter/Esc to exit",
                         editor.search_buffer
                     );
                     editor.needs_redraw = true;
@@ -1247,25 +1336,24 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     // Handle replace mode
     if editor.input_mode == InputMode::Replace {
         match key.code {
+            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.input_mode = InputMode::FindOptionsMenu;
+                editor.needs_redraw = true;
+                return Ok(false);
+            }
             KeyCode::Enter => {
                 if editor.status_message.starts_with("Find:") {
                     // Switch to replace input
                     editor.status_message = format!("Replace '{}' with: ", editor.search_buffer);
                     editor.needs_redraw = true;
                 } else {
-                    // Perform replace
-                    let replacements = editor.perform_replace(
-                        &editor.search_buffer.clone(),
-                        &editor.replace_buffer.clone(),
+                    // Move to replace confirmation mode
+                    editor.input_mode = InputMode::ReplaceConfirm;
+                    editor.status_message = format!(
+                        "Replace '{}' with '{}'? Y: Replace This | N: Skip | A: Replace All | ^C: Cancel",
+                        editor.search_buffer, editor.replace_buffer
                     );
-                    if replacements > 0 {
-                        editor.set_temporary_status_message(format!(
-                            "Replaced {replacements} occurrence(s)"
-                        ));
-                    } else {
-                        editor.set_temporary_status_message("No matches found".to_string());
-                    }
-                    editor.input_mode = InputMode::Normal;
+                    editor.needs_redraw = true;
                 }
             }
             KeyCode::Esc => {
@@ -1305,6 +1393,64 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     );
                     editor.needs_redraw = true;
                 }
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    // Handle replace confirmation mode
+    if editor.input_mode == InputMode::ReplaceConfirm {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Replace this one and continue to next
+                let replacements = editor.perform_replace_interactive(
+                    &editor.search_buffer.clone(),
+                    &editor.replace_buffer.clone(),
+                );
+                if replacements > 0 {
+                    // Continue to next match - stay in ReplaceConfirm mode
+                    editor.status_message = format!(
+                        "Replaced 1. Continue? Y: Replace This | N: Skip | A: Replace All | ^C: Cancel"
+                    );
+                } else {
+                    editor.set_temporary_status_message("No more matches found".to_string());
+                    editor.input_mode = InputMode::Normal;
+                }
+                return Ok(false);
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                // Skip this one and continue to next
+                // For now, just end the replacement (we can enhance this later)
+                editor.input_mode = InputMode::Normal;
+                editor.set_temporary_status_message("Replace skipped".to_string());
+                return Ok(false);
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                // Replace all remaining
+                let replacements = editor.perform_replace(
+                    &editor.search_buffer.clone(),
+                    &editor.replace_buffer.clone(),
+                );
+                if replacements > 0 {
+                    editor.set_temporary_status_message(format!(
+                        "Replaced all {replacements} occurrence(s)"
+                    ));
+                } else {
+                    editor.set_temporary_status_message("No matches found".to_string());
+                }
+                editor.input_mode = InputMode::Normal;
+                return Ok(false);
+            }
+            KeyCode::Esc => {
+                editor.input_mode = InputMode::Normal;
+                editor.set_temporary_status_message("Replace cancelled".to_string());
+                return Ok(false);
+            }
+            _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
+                editor.input_mode = InputMode::Normal;
+                editor.set_temporary_status_message("Replace cancelled".to_string());
+                return Ok(false);
             }
             _ => {}
         }
@@ -1373,7 +1519,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
             editor.start_find();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('\\')) => {
             editor.start_replace();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
@@ -1666,10 +1812,12 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             "Enter: Confirm | Esc: Cancel | Type filename"
         }
         InputMode::OptionsMenu => "M: Mouse | L: Line Numbers | W: Word Wrap | T: Tab Width | Esc: Back",
-        InputMode::Find => "Enter: Search/Exit | Esc/^C: Cancel | ↑↓: Navigate | ^R: Regex | ^I: Case | Type search term",
-        InputMode::Replace => "Enter: Next step | Esc/^C: Cancel | Type find/replace text",
+        InputMode::Find => "Enter: Search/Exit | Esc/^C: Cancel | Arrows: Navigate | ^R: Replace | ^O: Options | Type search term",
+        InputMode::FindOptionsMenu => "C: Case sensitivity | R: Regex mode | Esc: Back to find",
+        InputMode::Replace => "Enter: Next step | Esc/^C: Cancel | ^O: Options | Type find/replace text",
+        InputMode::ReplaceConfirm => "Y: Replace This | N: Skip | A: Replace All | ^C: Cancel",
         InputMode::GoToLine => "Enter: Go | Esc/^C: Cancel | Type line number",
-        _ => "^Q/^X Quit | ^S Save | ^F Find | ^H Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^O Options",
+        _ => "^Q/^X Quit | ^S Save | ^F Find | ^\\ Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^O Options",
     };
     let help_widget =
         Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
