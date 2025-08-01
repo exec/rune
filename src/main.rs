@@ -7,7 +7,7 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
@@ -1149,8 +1149,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         // Editing
         (_, KeyCode::Char(c)) => editor.insert_char(c),
         (_, KeyCode::Tab) => {
-            // Fix for phantom newlines: Insert spaces one by one using the same logic as regular characters
-            // This ensures proper character width calculations and cursor positioning
+            // Insert spaces using the same method as insert_char to ensure consistency
             editor.save_undo_state();
             for _ in 0..editor.tab_width {
                 editor.insert_char(' ');
@@ -1356,8 +1355,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     }
 
     let editor_widget = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::NONE))
-        .wrap(Wrap { trim: false });
+        .block(Block::default().borders(Borders::NONE));
 
     f.render_widget(editor_widget, editor_area);
 
