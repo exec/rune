@@ -537,6 +537,7 @@ impl Editor {
     fn open_options_menu(&mut self) {
         self.input_mode = InputMode::OptionsMenu;
         self.status_message = "Options Menu".to_string();
+        self.needs_redraw = true;
     }
 
     fn set_temporary_status_message(&mut self, message: String) {
@@ -639,6 +640,7 @@ impl Editor {
         self.input_mode = InputMode::Find;
         self.search_buffer.clear();
         self.status_message = "Find: ".to_string();
+        self.needs_redraw = true;
     }
 
     fn start_replace(&mut self) {
@@ -646,12 +648,14 @@ impl Editor {
         self.search_buffer.clear();
         self.replace_buffer.clear();
         self.status_message = "Find: ".to_string();
+        self.needs_redraw = true;
     }
 
     fn start_goto_line(&mut self) {
         self.input_mode = InputMode::GoToLine;
         self.search_buffer.clear();
         self.status_message = "Go to line: ".to_string();
+        self.needs_redraw = true;
     }
 
     fn perform_find(&mut self, search_term: &str) -> bool {
@@ -1183,6 +1187,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     editor.status_message = "Find: ".to_string();
                     editor.search_matches.clear();
                     editor.current_match_index = None;
+                    editor.needs_redraw = true;
                 }
             }
             KeyCode::Char(c) => {
@@ -1195,8 +1200,10 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     editor.status_message = format!(
                         "Find: {search_term} ({current}/{matches_count} matches) - Use ↑↓ to navigate, Enter/Esc to exit"
                     );
+                    editor.needs_redraw = true;
                 } else {
                     editor.status_message = format!("Find: {} (no matches)", editor.search_buffer);
+                    editor.needs_redraw = true;
                 }
             }
             _ => {}
