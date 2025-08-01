@@ -95,6 +95,10 @@ struct Editor {
     search_start_pos: (usize, usize),
     undo_stack: Vec<UndoState>,
     redo_stack: Vec<UndoState>,
+    // Performance optimizations
+    needs_redraw: bool,
+    cached_text: Option<String>, // Cache for search operations
+    cache_valid: bool,
 }
 
 /// Different input modes the editor can be in
@@ -137,6 +141,10 @@ impl Editor {
             search_start_pos: (0, 0),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            // Performance optimizations
+            needs_redraw: true,
+            cached_text: None,
+            cache_valid: false,
         };
         editor.load_config();
         editor
@@ -302,6 +310,10 @@ impl Editor {
         // Invalidate highlighting cache from current line
         self.highlighter
             .invalidate_cache_from_line(self.cursor_pos.0);
+        
+        // Performance optimizations
+        self.invalidate_cache();
+        self.needs_redraw = true;
 
         self.move_cursor_right();
         self.modified = true;
@@ -317,6 +329,10 @@ impl Editor {
                 // Invalidate highlighting cache from current line
                 self.highlighter
                     .invalidate_cache_from_line(self.cursor_pos.0);
+                
+                // Performance optimizations
+                self.invalidate_cache();
+                self.needs_redraw = true;
 
                 self.move_cursor_left();
                 self.modified = true;
@@ -367,6 +383,7 @@ impl Editor {
         if self.cursor_pos.0 > 0 {
             self.cursor_pos.0 -= 1;
             self.clamp_cursor_to_line();
+            self.needs_redraw = true;
         }
     }
 
@@ -374,17 +391,20 @@ impl Editor {
         if self.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
             self.cursor_pos.0 += 1;
             self.clamp_cursor_to_line();
+            self.needs_redraw = true;
         }
     }
 
     fn move_cursor_left(&mut self) {
         if self.cursor_pos.1 > 0 {
             self.cursor_pos.1 -= 1;
+            self.needs_redraw = true;
         } else if self.cursor_pos.0 > 0 {
             self.cursor_pos.0 -= 1;
             if let Some(line) = self.rope.line(self.cursor_pos.0).as_str() {
                 self.cursor_pos.1 = line.trim_end_matches('\n').width();
             }
+            self.needs_redraw = true;
         }
     }
 
@@ -393,9 +413,11 @@ impl Editor {
             let line_len = line.trim_end_matches('\n').width();
             if self.cursor_pos.1 < line_len {
                 self.cursor_pos.1 += 1;
+                self.needs_redraw = true;
             } else if self.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
                 self.cursor_pos.0 += 1;
                 self.cursor_pos.1 = 0;
+                self.needs_redraw = true;
             }
         }
     }
@@ -504,13 +526,15 @@ impl Editor {
         self.status_message_time = Some(Instant::now());
     }
 
-    fn check_status_message_timeout(&mut self) {
+    fn check_status_message_timeout(&mut self) -> bool {
         if let Some(time) = self.status_message_time {
             if time.elapsed() >= self.status_message_timeout {
                 self.status_message.clear();
                 self.status_message_time = None;
+                return true; // Status changed, need redraw
             }
         }
+        false
     }
 
     fn save_config(&self) {
@@ -653,11 +677,21 @@ impl Editor {
         }
     }
 
-    fn find_all_matches(&self, search_term: &str) -> Vec<(usize, usize)> {
+    fn find_all_matches(&mut self, search_term: &str) -> Vec<(usize, usize)> {
         let mut matches = Vec::new();
-        let text = self.rope.to_string();
+        
+        // Use cached text if available and valid
+        let text = if self.cache_valid && self.cached_text.is_some() {
+            self.cached_text.as_ref().unwrap()
+        } else {
+            // Update cache
+            let new_text = self.rope.to_string();
+            self.cached_text = Some(new_text);
+            self.cache_valid = true;
+            self.cached_text.as_ref().unwrap()
+        };
+        
         let mut start = 0;
-
         while let Some(pos) = text[start..].find(search_term) {
             let absolute_pos = start + pos;
             let line = self.rope.char_to_line(absolute_pos);
@@ -668,6 +702,11 @@ impl Editor {
         }
 
         matches
+    }
+    
+    fn invalidate_cache(&mut self) {
+        self.cache_valid = false;
+        self.cached_text = None;
     }
 
     fn find_next_match(&mut self) -> bool {
@@ -796,25 +835,33 @@ fn run_editor(
     editor: &mut Editor,
 ) -> Result<()> {
     loop {
-        // Use synchronized output on macOS to reduce visual artifacts
-        #[cfg(target_os = "macos")]
-        {
-            use crossterm::{execute, terminal::BeginSynchronizedUpdate};
-            let _ = execute!(stdout(), BeginSynchronizedUpdate);
-        }
+        // Only redraw if something has changed
+        if editor.needs_redraw {
+            // Use synchronized output on macOS to reduce visual artifacts
+            #[cfg(target_os = "macos")]
+            {
+                use crossterm::{execute, terminal::BeginSynchronizedUpdate};
+                let _ = execute!(stdout(), BeginSynchronizedUpdate);
+            }
 
-        terminal.draw(|f| draw_ui(f, editor))?;
+            terminal.draw(|f| draw_ui(f, editor))?;
 
-        #[cfg(target_os = "macos")]
-        {
-            use crossterm::{execute, terminal::EndSynchronizedUpdate};
-            use std::io::Write;
-            let _ = execute!(stdout(), EndSynchronizedUpdate);
-            let _ = stdout().flush();
+            #[cfg(target_os = "macos")]
+            {
+                use crossterm::{execute, terminal::EndSynchronizedUpdate};
+                use std::io::Write;
+                let _ = execute!(stdout(), EndSynchronizedUpdate);
+                let _ = stdout().flush();
+            }
+            
+            editor.needs_redraw = false;
         }
 
         // Check if status message should timeout
-        editor.check_status_message_timeout();
+        let status_timeout = editor.check_status_message_timeout();
+        if status_timeout {
+            editor.needs_redraw = true;
+        }
 
         if event::poll(constants::EVENT_POLL_INTERVAL)? {
             match event::read()? {
