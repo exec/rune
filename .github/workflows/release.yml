@@ -238,6 +238,13 @@ jobs:
         curl -sL https://github.com/exec/rune/archive/refs/tags/${{ github.ref_name }}.tar.gz -o source.tar.gz
         echo "SOURCE_SHA=$(shasum -a 256 source.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
         
+    - name: Install makepkg for .SRCINFO generation
+      run: |
+        # Install makepkg-ubuntu package which provides makepkg on Ubuntu
+        wget -O makepkg.deb https://github.com/michaelx/makepkg-ubuntu/releases/download/v5.2.2-1/makepkg-ubuntu_5.2.2-1_all.deb
+        sudo dpkg -i makepkg.deb
+        sudo apt-get install -f
+        
     - name: Setup SSH for AUR
       run: |
         mkdir -p ~/.ssh
