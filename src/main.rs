@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -807,8 +807,12 @@ fn run_editor(
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) => {
-                    if handle_key_event(editor, key)? {
-                        break;
+                    // Only handle key press events to avoid double registration on Windows
+                    // and ensure consistent behavior across all platforms
+                    if key.kind == KeyEventKind::Press {
+                        if handle_key_event(editor, key)? {
+                            break;
+                        }
                     }
                 }
                 Event::Mouse(mouse) => {
