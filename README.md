@@ -222,10 +222,10 @@ rune follows the "better nano" philosophy:
 | Feature | rune | nano | micro | vim |
 |---------|------|------|--------|-----|
 | Smart defaults | ✅ | ✅ | ✅ | ❌ |
-| Standard keys | ✅ | ❌ | ✅ | ❌ |
+| Regex search | ✅ | ✅ | ✅ | ✅ |
 | Visual selection | ✅ | ❌ | ✅ | ✅ |
 | Mouse support | ✅ | ❌ | ✅ | ✅ |
-| Syntax highlight | ✅ | ❌ | ✅ | ✅ |
+| Syntax highlight | ✅ | ✅ | ✅ | ✅ |
 | Find/Search | ✅ | ✅ | ✅ | ✅ |
 | Go to line | ✅ | ✅ | ✅ | ✅ |
 | Undo/Redo | ✅ | ✅ | ✅ | ✅ |
