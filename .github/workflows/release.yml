@@ -268,8 +268,11 @@ jobs:
         git config user.name "Dylan"
         git config user.email "dylanh@aur.archlinux.org"
         git add PKGBUILD .SRCINFO
-        git commit -m "Update to ${{ steps.version.outputs.VERSION }}
+        git commit -m "$(cat <<'EOF'
+        Update to ${{ steps.version.outputs.VERSION }}
 
-Automated update from rune repository release ${{ github.ref_name }}
-Source SHA256: ${{ steps.calculate-sha.outputs.SOURCE_SHA }}"
+        Automated update from rune repository release ${{ github.ref_name }}
+        Source SHA256: ${{ steps.calculate-sha.outputs.SOURCE_SHA }}
+        EOF
+        )"
         git push
