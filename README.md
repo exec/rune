@@ -23,7 +23,7 @@ A nano-inspired text editor that feels familiar but adds the power you've always
 - **Interactive Replace** - Y/N/A confirmation exactly like nano, with "Replace All" option
 - **Go to line** - Ctrl+G to jump to specific lines
 - **Undo/Redo** - Ctrl+Z/Ctrl+R with 100-action history
-- **Options Menu** - Ctrl+O for organized settings (just like nano)
+- **Options Menu** - Ctrl+O for organized settings
 - No modal editing - what you see is what you get
 - Help bar always visible at bottom
 - Real-time status information (line/column, file status)
