@@ -22,7 +22,7 @@ A nano-inspired text editor that feels familiar but adds the power you've always
 - **Smart Search** - All arrow keys navigate results, instant visual feedback, case-sensitive toggle
 - **Interactive Replace** - Y/N/A confirmation exactly like nano, with "Replace All" option
 - **Go to line** - Ctrl+G to jump to specific lines
-- **Undo/Redo** - Ctrl+Z/Ctrl+Y with 100-action history
+- **Undo/Redo** - Ctrl+Z/Ctrl+R with 100-action history
 - **Options Menu** - Ctrl+O for organized settings (just like nano)
 - No modal editing - what you see is what you get
 - Help bar always visible at bottom
