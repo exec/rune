@@ -228,7 +228,7 @@ rune follows the "better nano" philosophy:
 | Syntax highlight | ✅ | ❌ | ✅ | ✅ |
 | Find/Search | ✅ | ✅ | ✅ | ✅ |
 | Go to line | ✅ | ✅ | ✅ | ✅ |
-| Undo/Redo | ✅ | ❌ | ✅ | ✅ |
+| Undo/Redo | ✅ | ✅ | ✅ | ✅ |
 | Line numbers | ✅ | ❌ | ✅ | ✅ |
 | Learning curve | None | None | Minimal | Steep |
 | Performance | Fast | Fast | Fast | Fast |
