@@ -640,8 +640,12 @@ impl Editor {
                 .or(Some(0)); // If no match at/after cursor, wrap to first match
             
             if let Some(index) = self.current_match_index {
-                let (line, col) = self.search_matches[index];
-                self.cursor_pos = (line, col);
+                if let Some(&(line, col)) = self.search_matches.get(index) {
+                    self.cursor_pos = (line, col);
+                } else {
+                    // Index is invalid, reset search state
+                    self.current_match_index = None;
+                }
             }
             
             true
@@ -674,11 +678,20 @@ impl Editor {
         }
         
         if let Some(current_index) = self.current_match_index {
+            if self.search_matches.is_empty() {
+                self.current_match_index = None;
+                return false;
+            }
             let next_index = (current_index + 1) % self.search_matches.len();
             self.current_match_index = Some(next_index);
-            let (line, col) = self.search_matches[next_index];
-            self.cursor_pos = (line, col);
-            true
+            if let Some(&(line, col)) = self.search_matches.get(next_index) {
+                self.cursor_pos = (line, col);
+                true
+            } else {
+                // Index is invalid, reset search state
+                self.current_match_index = None;
+                false
+            }
         } else {
             false
         }
@@ -690,15 +703,24 @@ impl Editor {
         }
         
         if let Some(current_index) = self.current_match_index {
+            if self.search_matches.is_empty() {
+                self.current_match_index = None;
+                return false;
+            }
             let prev_index = if current_index == 0 {
                 self.search_matches.len() - 1
             } else {
                 current_index - 1
             };
             self.current_match_index = Some(prev_index);
-            let (line, col) = self.search_matches[prev_index];
-            self.cursor_pos = (line, col);
-            true
+            if let Some(&(line, col)) = self.search_matches.get(prev_index) {
+                self.cursor_pos = (line, col);
+                true
+            } else {
+                // Index is invalid, reset search state
+                self.current_match_index = None;
+                false
+            }
         } else {
             false
         }
