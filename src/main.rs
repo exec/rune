@@ -105,6 +105,14 @@ struct Editor {
     case_sensitive: bool,
     search_history: Vec<String>,
     search_history_index: Option<usize>,
+    find_navigation_mode: FindNavigationMode,
+}
+
+/// Navigation mode within find functionality
+#[derive(Debug, Clone, PartialEq)]
+enum FindNavigationMode {
+    HistoryBrowsing,   // arrows navigate search history
+    ResultNavigation,  // arrows navigate search results
 }
 
 /// Different input modes the editor can be in
@@ -158,6 +166,7 @@ impl Editor {
             case_sensitive: false,
             search_history: Vec::new(),
             search_history_index: None,
+            find_navigation_mode: FindNavigationMode::HistoryBrowsing,
         };
         editor.load_config();
         editor
@@ -660,6 +669,7 @@ impl Editor {
         self.input_mode = InputMode::Find;
         self.search_buffer.clear();
         self.status_message = "Find: ".to_string();
+        self.find_navigation_mode = FindNavigationMode::HistoryBrowsing;
         self.needs_redraw = true;
     }
 
@@ -1281,16 +1291,18 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 // Add to search history
                 let search_term = editor.search_buffer.clone();
                 editor.add_to_search_history(&search_term);
-                if !editor.search_matches.is_empty() {
-                    // If we already have matches, exit find mode and stay at current position
+                
+                if editor.find_navigation_mode == FindNavigationMode::ResultNavigation && !editor.search_matches.is_empty() {
+                    // If we already have matches and are in result mode, exit find mode
                     editor.input_mode = InputMode::Normal;
                     editor.search_matches.clear();
                     editor.current_match_index = None;
                     editor.set_temporary_status_message("Search completed".to_string());
                 } else {
-                    // First time pressing enter - perform search
+                    // Perform search and switch to result navigation mode
                     let search_term = editor.search_buffer.clone();
                     if editor.perform_find(&search_term) {
+                        editor.find_navigation_mode = FindNavigationMode::ResultNavigation;
                         let matches_count = editor.search_matches.len();
                         let current = editor.current_match_index.map(|i| i + 1).unwrap_or(1);
                         editor.status_message = format!(
@@ -1313,23 +1325,19 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 editor.set_temporary_status_message("Search cancelled".to_string());
             }
             KeyCode::Up | KeyCode::Left => {
-                if editor.search_matches.is_empty() {
-                    // If no current search matches, try search history (up arrow only)
-                    if key.code == KeyCode::Up {
-                        if editor.navigate_search_history_up() {
-                            editor.needs_redraw = true;
-                            // Perform search with historical term
-                            if !editor.search_buffer.is_empty() {
-                                let search_term = editor.search_buffer.clone();
-                                editor.perform_find(&search_term);
-                            }
-                        } else {
-                            editor.move_cursor_up();
+                if key.code == KeyCode::Up && editor.find_navigation_mode == FindNavigationMode::HistoryBrowsing {
+                    // Navigate search history
+                    if editor.navigate_search_history_up() {
+                        editor.needs_redraw = true;
+                        // Perform search with historical term but stay in history mode
+                        if !editor.search_buffer.is_empty() {
+                            let search_term = editor.search_buffer.clone();
+                            editor.perform_find(&search_term);
                         }
                     } else {
-                        editor.move_cursor_left();
+                        editor.move_cursor_up();
                     }
-                } else {
+                } else if editor.find_navigation_mode == FindNavigationMode::ResultNavigation && !editor.search_matches.is_empty() {
                     // Navigate to previous match
                     editor.find_previous_match();
                     let matches_count = editor.search_matches.len();
@@ -1339,29 +1347,32 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                         editor.search_buffer
                     );
                     editor.needs_redraw = true;
+                } else {
+                    // Default cursor movement
+                    if key.code == KeyCode::Up {
+                        editor.move_cursor_up();
+                    } else {
+                        editor.move_cursor_left();
+                    }
                 }
             }
             KeyCode::Down | KeyCode::Right => {
-                if editor.search_matches.is_empty() {
-                    // If no current search matches, try search history (down arrow only)
-                    if key.code == KeyCode::Down {
-                        if editor.navigate_search_history_down() {
-                            editor.needs_redraw = true;
-                            // Perform search with historical term (or clear if now empty)
-                            if !editor.search_buffer.is_empty() {
-                                let search_term = editor.search_buffer.clone();
-                                editor.perform_find(&search_term);
-                            } else {
-                                editor.search_matches.clear();
-                                editor.current_match_index = None;
-                            }
+                if key.code == KeyCode::Down && editor.find_navigation_mode == FindNavigationMode::HistoryBrowsing {
+                    // Navigate search history
+                    if editor.navigate_search_history_down() {
+                        editor.needs_redraw = true;
+                        // Perform search with historical term (or clear if now empty)
+                        if !editor.search_buffer.is_empty() {
+                            let search_term = editor.search_buffer.clone();
+                            editor.perform_find(&search_term);
                         } else {
-                            editor.move_cursor_down();
+                            editor.search_matches.clear();
+                            editor.current_match_index = None;
                         }
                     } else {
-                        editor.move_cursor_right();
+                        editor.move_cursor_down();
                     }
-                } else {
+                } else if editor.find_navigation_mode == FindNavigationMode::ResultNavigation && !editor.search_matches.is_empty() {
                     // Navigate to next match
                     editor.find_next_match();
                     let matches_count = editor.search_matches.len();
@@ -1371,6 +1382,13 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                         editor.search_buffer
                     );
                     editor.needs_redraw = true;
+                } else {
+                    // Default cursor movement  
+                    if key.code == KeyCode::Down {
+                        editor.move_cursor_down();
+                    } else {
+                        editor.move_cursor_right();
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -1389,6 +1407,8 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                             format!("Find: {} (no matches)", editor.search_buffer);
                     }
                 } else {
+                    // Switch back to history browsing when buffer is empty
+                    editor.find_navigation_mode = FindNavigationMode::HistoryBrowsing;
                     editor.status_message = "Find: ".to_string();
                     editor.search_matches.clear();
                     editor.current_match_index = None;
@@ -1397,6 +1417,8 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             }
             KeyCode::Char(c) => {
                 editor.search_buffer.push(c);
+                // Switch to result navigation mode when user types
+                editor.find_navigation_mode = FindNavigationMode::ResultNavigation;
                 // Re-search with updated term
                 let search_term = editor.search_buffer.clone();
                 if editor.perform_find(&search_term) {
