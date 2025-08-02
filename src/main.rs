@@ -679,9 +679,17 @@ impl Editor {
     fn start_find(&mut self) {
         self.input_mode = InputMode::Find;
         self.search_buffer.clear();
+        // Clear any previous search matches to prevent ghost highlights
+        self.search_matches.clear();
+        self.current_match_index = None;
         self.status_message = "Find: ".to_string();
         self.find_navigation_mode = FindNavigationMode::HistoryBrowsing;
         self.needs_redraw = true;
+        
+        // Clear debug logs for fresh debugging session
+        let _ = std::fs::remove_file("/tmp/rune_search_debug.log");
+        let _ = std::fs::remove_file("/tmp/rune_highlight_debug.log");
+        let _ = std::fs::remove_file("/tmp/rune_render_debug.log");
     }
 
     fn start_replace(&mut self) {
@@ -711,6 +719,9 @@ impl Editor {
 
         // Find all matches in the document
         self.search_matches = self.find_all_matches(search_term);
+        
+        // Debug phantom matches if they occur
+        self.debug_search_issue(search_term, &self.search_matches);
 
         if !self.search_matches.is_empty() {
             // Find the match closest to cursor position (at or after cursor)
@@ -732,14 +743,10 @@ impl Editor {
                     self.clamp_cursor_to_line();
                     
                     // Handle viewport positioning for search results
-                    let terminal_size = crossterm::terminal::size().unwrap_or((80, 24));
-                    let editor_height = terminal_size.1.saturating_sub(2) as usize;
                     
-                    // If cursor is outside current viewport, position it correctly
-                    if line < self.viewport_offset.0 || line >= self.viewport_offset.0 + editor_height {
-                        // Position the found line exactly at the top of viewport
-                        self.viewport_offset.0 = line;
-                    }
+                    // Always position search results consistently at top of viewport
+                    // This prevents cursor offset issues when searching repeatedly
+                    self.viewport_offset.0 = line;
                     
                     self.needs_redraw = true;
                 } else {
@@ -758,82 +765,108 @@ impl Editor {
     fn find_all_matches(&mut self, search_term: &str) -> Vec<(usize, usize)> {
         let mut matches = Vec::new();
         
-        // Use cached text if available and valid
-        let text = if self.cache_valid && self.cached_text.is_some() {
-            self.cached_text.as_ref().expect("Cache should be valid")
-        } else {
-            // Update cache
-            let new_text = self.rope.to_string();
-            self.cached_text = Some(new_text);
-            self.cache_valid = true;
-            self.cached_text.as_ref().expect("Just set cache")
-        };
+        if search_term.is_empty() {
+            return matches;
+        }
         
-        if self.use_regex {
-            // Regex search
-            let flags = if self.case_sensitive { "" } else { "(?i)" };
-            let pattern = format!("{}{}", flags, search_term);
-            
-            match Regex::new(&pattern) {
-                Ok(re) => {
-                    for mat in re.find_iter(text) {
-                        let byte_pos = mat.start();
-                        // Convert byte position to character position
-                        let absolute_char_pos = text[..byte_pos].chars().count();
-                        
-                        if absolute_char_pos < self.rope.len_chars() {
-                            let line = self.rope.char_to_line(absolute_char_pos);
-                            let line_start = self.rope.line_to_char(line);
-                            let col = absolute_char_pos - line_start;
-                            matches.push((line, col));
-                        }
+        // BULLETPROOF: Search directly in rope line-by-line to avoid any text conversion issues
+        for line_idx in 0..self.rope.len_lines() {
+            if let Some(line_slice) = self.rope.line(line_idx).as_str() {
+                // Get the actual line content
+                let line_content = line_slice.trim_end_matches('\n');
+                
+                // Find all matches in this line with direct string validation
+                let line_matches = if self.case_sensitive {
+                    self.find_matches_in_line(line_content, search_term)
+                } else {
+                    self.find_matches_in_line(&line_content.to_lowercase(), &search_term.to_lowercase())
+                };
+                
+                // Add validated matches for this line
+                for col in line_matches {
+                    // CRITICAL: Double-validate each match against original content
+                    if self.validate_match_in_rope(line_idx, col, search_term) {
+                        matches.push((line_idx, col));
                     }
                 }
-                Err(_) => {
-                    // Invalid regex, fall back to literal search
-                    self.find_literal_matches(text, search_term, &mut matches);
-                }
             }
-        } else {
-            // Literal search
-            self.find_literal_matches(text, search_term, &mut matches);
         }
-
+        
+        // Sort matches by position for consistent navigation
+        matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         matches
     }
     
-    fn find_literal_matches(&self, text: &str, search_term: &str, matches: &mut Vec<(usize, usize)>) {
-        let search_term = if self.case_sensitive {
-            search_term.to_string()
-        } else {
-            search_term.to_lowercase()
-        };
+    // Find all occurrences of search_term in a single line
+    fn find_matches_in_line(&self, line_content: &str, search_term: &str) -> Vec<usize> {
+        let mut matches = Vec::new();
+        let mut start_pos = 0;
         
-        let mut char_pos = 0;
-        let chars: Vec<char> = text.chars().collect();
+        while let Some(pos) = line_content[start_pos..].find(search_term) {
+            let match_pos = start_pos + pos;
+            matches.push(match_pos);
+            start_pos = match_pos + 1; // Move past this match to find overlapping ones
+        }
         
-        while char_pos < chars.len() {
-            let remaining: String = chars[char_pos..].iter().collect();
-            let pos = if self.case_sensitive {
-                remaining.find(&search_term)
-            } else {
-                remaining.to_lowercase().find(&search_term)
-            };
+        matches
+    }
+    
+    // Validate that a match actually exists at the specified position in the rope
+    fn validate_match_in_rope(&self, line_idx: usize, col: usize, search_term: &str) -> bool {
+        // Get the actual line from rope
+        if let Some(line_slice) = self.rope.line(line_idx).as_str() {
+            let line_content = line_slice.trim_end_matches('\n');
+            let line_chars: Vec<char> = line_content.chars().collect();
+            let search_chars: Vec<char> = search_term.chars().collect();
             
-            if let Some(byte_pos) = pos {
-                // Convert byte position back to char position
-                let char_offset = remaining[..byte_pos].chars().count();
-                let absolute_char_pos = char_pos + char_offset;
-                
-                if absolute_char_pos < self.rope.len_chars() {
-                    let line = self.rope.char_to_line(absolute_char_pos);
-                    let line_start = self.rope.line_to_char(line);
-                    let col = absolute_char_pos - line_start;
-                    matches.push((line, col));
-                }
-                char_pos = absolute_char_pos + 1;
+            // Check bounds
+            if col + search_chars.len() > line_chars.len() {
+                return false;
+            }
+            
+            // Extract text at position and validate
+            let text_at_pos: String = line_chars[col..col + search_chars.len()].iter().collect();
+            
+            // Exact match validation
+            if self.case_sensitive {
+                text_at_pos == search_term
             } else {
-                break;
+                text_at_pos.to_lowercase() == search_term.to_lowercase()
+            }
+        } else {
+            false
+        }
+    }
+    
+    // Add comprehensive search debugging for troubleshooting phantom matches
+    fn debug_search_issue(&self, search_term: &str, found_matches: &[(usize, usize)]) {
+        // Only debug if we have suspicious matches
+        if !found_matches.is_empty() {
+            if let Ok(mut debug_file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/rune_search_debug.log")
+            {
+                use std::io::Write;
+                let _ = writeln!(debug_file, "\n=== SEARCH DEBUG for '{}' ===", search_term);
+                
+                for (line_idx, col) in found_matches {
+                    if let Some(line_slice) = self.rope.line(*line_idx).as_str() {
+                        let line_content = line_slice.trim_end_matches('\n');
+                        let _ = writeln!(debug_file, "Line {}: '{}'", line_idx, line_content);
+                        let _ = writeln!(debug_file, "  Match at col {}", col);
+                        
+                        // Show exactly what text is at that position
+                        let line_chars: Vec<char> = line_content.chars().collect();
+                        if *col < line_chars.len() {
+                            let end_col = (*col + search_term.chars().count()).min(line_chars.len());
+                            let text_at_pos: String = line_chars[*col..end_col].iter().collect();
+                            let _ = writeln!(debug_file, "  Text at position: '{}'", text_at_pos);
+                            let _ = writeln!(debug_file, "  Expected: '{}'", search_term);
+                            let _ = writeln!(debug_file, "  Match valid: {}", text_at_pos == search_term);
+                        }
+                    }
+                }
             }
         }
     }
@@ -855,7 +888,14 @@ impl Editor {
             let next_index = (current_index + 1) % self.search_matches.len();
             self.current_match_index = Some(next_index);
             if let Some(&(line, col)) = self.search_matches.get(next_index) {
-                self.set_cursor_position(line, col, "find_next_match");
+                // Set cursor position
+                self.cursor_pos = (line, col);
+                self.clamp_cursor_to_line();
+                
+                // Always position search results consistently at top of viewport
+                self.viewport_offset.0 = line;
+                
+                self.needs_redraw = true;
                 true
             } else {
                 // Index is invalid, reset search state
@@ -884,7 +924,14 @@ impl Editor {
             };
             self.current_match_index = Some(prev_index);
             if let Some(&(line, col)) = self.search_matches.get(prev_index) {
-                self.set_cursor_position(line, col, "find_previous_match");
+                // Set cursor position
+                self.cursor_pos = (line, col);
+                self.clamp_cursor_to_line();
+                
+                // Always position search results consistently at top of viewport
+                self.viewport_offset.0 = line;
+                
+                self.needs_redraw = true;
                 true
             } else {
                 // Index is invalid, reset search state
@@ -1847,20 +1894,19 @@ fn apply_search_highlighting(
             .collect();
     }
 
-    // Find matches on this line
-    let line_matches: Vec<usize> = search_matches
-        .iter()
-        .filter_map(|(match_line, match_col)| {
-            if *match_line == line_idx {
-                Some(*match_col)
-            } else {
-                None
+    // Find and validate all matches on this line with bulletproof checking
+    let mut validated_matches: Vec<usize> = Vec::new();
+    for (match_line, match_col) in search_matches {
+        if *match_line == line_idx {
+            // CRITICAL: Validate that there's actually a match at this position
+            if validate_match_at_position(line_content, *match_col, search_term) {
+                validated_matches.push(*match_col);
             }
-        })
-        .collect();
+        }
+    }
 
-    if line_matches.is_empty() {
-        // No matches on this line - just apply syntax highlighting
+    if validated_matches.is_empty() {
+        // No valid matches on this line - just apply syntax highlighting
         return syntax_spans
             .iter()
             .map(|(style, text)| {
@@ -1870,9 +1916,13 @@ fn apply_search_highlighting(
             .collect();
     }
 
-    // Rebuild the line with search highlighting
+    // Sort matches by position
+    validated_matches.sort_unstable();
+
     let mut result_spans = Vec::new();
-    let mut current_pos = 0;
+    let line_chars: Vec<char> = line_content.chars().collect();
+    let search_chars: Vec<char> = search_term.chars().collect();
+    let mut current_char_pos = 0;
 
     // Find which match is currently selected on this line
     let current_match_col = current_match_index
@@ -1880,46 +1930,92 @@ fn apply_search_highlighting(
         .filter(|(match_line, _)| *match_line == line_idx)
         .map(|(_, match_col)| *match_col);
 
-    // Process each character position, applying both syntax and search highlighting
-    for &match_col in &line_matches {
+    // Process each validated match with character-based indexing
+    for &match_char_pos in &validated_matches {
         // Add text before the match
-        if match_col > current_pos {
-            let before_text = &line_content[current_pos..match_col];
-            if !before_text.is_empty() {
-                // Apply syntax highlighting to the text before the match
+        if match_char_pos > current_char_pos {
+            let before_chars: String = line_chars[current_char_pos..match_char_pos].iter().collect();
+            if !before_chars.is_empty() {
                 result_spans.push(Span::styled(
-                    before_text.to_string(),
-                    get_syntax_style_at_position(syntax_spans, current_pos),
+                    before_chars,
+                    get_syntax_style_at_position(syntax_spans, current_char_pos),
                 ));
             }
         }
 
-        // Add the highlighted match
-        let match_end = (match_col + search_term.len()).min(line_content.len());
-        let match_text = &line_content[match_col..match_end];
+        // Add the highlighted match with character-based slicing
+        let match_end_char = (match_char_pos + search_chars.len()).min(line_chars.len());
+        let match_chars: String = line_chars[match_char_pos..match_end_char].iter().collect();
 
-        let highlight_style = if Some(match_col) == current_match_col {
-            // Current match - bright red/orange background
+        let highlight_style = if Some(match_char_pos) == current_match_col {
+            // Current match - bright red background
             Style::default().bg(Color::Red).fg(Color::White)
         } else {
             // Other matches - yellow background
             Style::default().bg(Color::Yellow).fg(Color::Black)
         };
 
-        result_spans.push(Span::styled(match_text.to_string(), highlight_style));
-        current_pos = match_end;
+        result_spans.push(Span::styled(match_chars, highlight_style));
+        current_char_pos = match_end_char;
     }
 
     // Add remaining text after the last match
-    if current_pos < line_content.len() {
-        let remaining_text = &line_content[current_pos..];
-        result_spans.push(Span::styled(
-            remaining_text.to_string(),
-            get_syntax_style_at_position(syntax_spans, current_pos),
-        ));
+    if current_char_pos < line_chars.len() {
+        let remaining_chars: String = line_chars[current_char_pos..].iter().collect();
+        if !remaining_chars.is_empty() {
+            result_spans.push(Span::styled(
+                remaining_chars,
+                get_syntax_style_at_position(syntax_spans, current_char_pos),
+            ));
+        }
     }
 
     result_spans
+}
+
+// Bulletproof match validation - ensures highlight only appears where text actually matches
+fn validate_match_at_position(line_content: &str, char_pos: usize, search_term: &str) -> bool {
+    let line_chars: Vec<char> = line_content.chars().collect();
+    let search_chars: Vec<char> = search_term.chars().collect();
+    
+    // Check bounds
+    if char_pos + search_chars.len() > line_chars.len() {
+        // Log rejected match due to bounds
+        if let Ok(mut debug_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/rune_highlight_debug.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(debug_file, "REJECTED: pos {} + {} > {} in line '{}'", 
+                char_pos, search_chars.len(), line_chars.len(), line_content);
+        }
+        return false;
+    }
+    
+    // Extract the text at this position
+    let text_at_pos: String = line_chars[char_pos..char_pos + search_chars.len()].iter().collect();
+    
+    // Validate it exactly matches the search term
+    let is_match = if text_at_pos == search_term {
+        true
+    } else if text_at_pos.to_lowercase() == search_term.to_lowercase() {
+        true
+    } else {
+        // Log failed validation
+        if let Ok(mut debug_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/rune_highlight_debug.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(debug_file, "MISMATCH: '{}' != '{}' at pos {} in line '{}'", 
+                text_at_pos, search_term, char_pos, line_content);
+        }
+        false
+    };
+    
+    is_match
 }
 
 fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usize) -> Style {
@@ -2009,6 +2105,20 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
 
                 // Add highlighted content with search highlighting
                 let line_content = line_text.trim_end_matches('\n');
+                // DIAGNOSTIC: Log every line being rendered and its search status
+                let has_search_matches = editor.search_matches.iter().any(|(line, _)| *line == line_idx);
+                if !editor.search_buffer.is_empty() && (has_search_matches || line_idx % 50 == 0) {
+                    if let Ok(mut debug_file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/rune_render_debug.log")
+                    {
+                        use std::io::Write;
+                        let _ = writeln!(debug_file, "RENDER Line {}: '{}' | viewport_offset: {} | has_matches: {}", 
+                            line_idx, line_content, editor.viewport_offset.0, has_search_matches);
+                    }
+                }
+                
                 styled_spans.extend(apply_search_highlighting(
                     &highlighted_spans,
                     line_content,
