@@ -517,18 +517,22 @@ impl Editor {
                     self.cursor_pos.0 = clicked_line;
                     self.cursor_pos.1 = clicked_col;
                     self.clamp_cursor_to_line();
+                    self.needs_redraw = true;
                 }
             }
             MouseEventKind::Drag(_) => {
                 // Mouse drag handling can be added here if needed
+                self.needs_redraw = true;
             }
             MouseEventKind::ScrollDown => {
                 if self.viewport_offset.0 < self.rope.len_lines().saturating_sub(terminal_height) {
                     self.viewport_offset.0 += 3;
+                    self.needs_redraw = true;
                 }
             }
             MouseEventKind::ScrollUp => {
                 self.viewport_offset.0 = self.viewport_offset.0.saturating_sub(3);
+                self.needs_redraw = true;
             }
             _ => {}
         }
