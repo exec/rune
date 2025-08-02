@@ -28,8 +28,6 @@ mod constants {
     pub const DEFAULT_TAB_WIDTH: usize = 4;
     pub const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
     pub const FALLBACK_TERMINAL_HEIGHT: usize = 24;
-    pub const UI_SCROLL_PADDING: usize = 3;
-    pub const UI_VIEWPORT_PADDING: usize = 4;
     pub const MAX_UNDO_STACK_SIZE: usize = 100;
     pub const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 }
@@ -611,7 +609,7 @@ impl Editor {
                 if let Ok(config) = toml::from_str::<Config>(&config_str) {
                     self.mouse_enabled = config.mouse_enabled;
                     self.show_line_numbers = config.show_line_numbers;
-                    self.tab_width = config.tab_width;
+                    self.tab_width = config.tab_width.max(1); // Ensure tab_width is at least 1
                     self.word_wrap = config.word_wrap;
                 }
             }
@@ -762,13 +760,13 @@ impl Editor {
         
         // Use cached text if available and valid
         let text = if self.cache_valid && self.cached_text.is_some() {
-            self.cached_text.as_ref().unwrap()
+            self.cached_text.as_ref().expect("Cache should be valid")
         } else {
             // Update cache
             let new_text = self.rope.to_string();
             self.cached_text = Some(new_text);
             self.cache_valid = true;
-            self.cached_text.as_ref().unwrap()
+            self.cached_text.as_ref().expect("Just set cache")
         };
         
         if self.use_regex {
@@ -1039,9 +1037,11 @@ impl Editor {
         }
         
         if let Some(index) = self.search_history_index {
-            self.search_buffer = self.search_history[index].clone();
-            self.status_message = format!("Find: {}", self.search_buffer);
-            return true;
+            if let Some(term) = self.search_history.get(index) {
+                self.search_buffer = term.clone();
+                self.status_message = format!("Find: {}", self.search_buffer);
+                return true;
+            }
         }
         false
     }
@@ -1050,7 +1050,11 @@ impl Editor {
         if let Some(current_index) = self.search_history_index {
             if current_index < self.search_history.len() - 1 {
                 self.search_history_index = Some(current_index + 1);
-                self.search_buffer = self.search_history[self.search_history_index.unwrap()].clone();
+                if let Some(index) = self.search_history_index {
+                    if let Some(term) = self.search_history.get(index) {
+                        self.search_buffer = term.clone();
+                    }
+                }
                 self.status_message = format!("Find: {}", self.search_buffer);
                 return true;
             } else {
@@ -1069,7 +1073,8 @@ impl Editor {
         
         // Calculate how many spaces to insert to reach the next tab stop
         let current_col = self.cursor_pos.1;
-        let spaces_to_next_tab = self.tab_width - (current_col % self.tab_width);
+        let tab_width = self.tab_width.max(1); // Ensure tab_width is at least 1
+        let spaces_to_next_tab = tab_width - (current_col % tab_width);
         
         // Insert the appropriate number of spaces
         for _ in 0..spaces_to_next_tab {
@@ -1929,39 +1934,6 @@ fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usiz
     Style::default()
 }
 
-fn wrap_help_text(text: &str, width: usize) -> String {
-    let commands: Vec<&str> = text.split("  ").collect();
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    
-    for command in commands {
-        // Check if adding this command would exceed the width
-        let proposed_length = if current_line.is_empty() {
-            command.len()
-        } else {
-            current_line.len() + 2 + command.len() // +2 for "  "
-        };
-        
-        if proposed_length <= width || current_line.is_empty() {
-            // Add to current line
-            if !current_line.is_empty() {
-                current_line.push_str("  ");
-            }
-            current_line.push_str(command);
-        } else {
-            // Start new line
-            lines.push(current_line);
-            current_line = command.to_string();
-        }
-    }
-    
-    // Don't forget the last line
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-    
-    lines.join("\n")
-}
 
 fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     let area = f.area();
