@@ -1050,6 +1050,10 @@ fn run_editor(
                         editor.handle_mouse_event(mouse, terminal.size()?.height as usize);
                     }
                 }
+                Event::Resize(_, _) => {
+                    // Terminal was resized, trigger a redraw
+                    editor.needs_redraw = true;
+                }
                 _ => {}
             }
         }
@@ -1670,6 +1674,40 @@ fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usiz
     Style::default()
 }
 
+fn wrap_help_text(text: &str, width: usize) -> String {
+    let commands: Vec<&str> = text.split("  ").collect();
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    
+    for command in commands {
+        // Check if adding this command would exceed the width
+        let proposed_length = if current_line.is_empty() {
+            command.len()
+        } else {
+            current_line.len() + 2 + command.len() // +2 for "  "
+        };
+        
+        if proposed_length <= width || current_line.is_empty() {
+            // Add to current line
+            if !current_line.is_empty() {
+                current_line.push_str("  ");
+            }
+            current_line.push_str(command);
+        } else {
+            // Start new line
+            lines.push(current_line);
+            current_line = command.to_string();
+        }
+    }
+    
+    // Don't forget the last line
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    
+    lines.join("\n")
+}
+
 fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     let area = f.area();
 
@@ -1808,20 +1846,22 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
 
     // Draw help bar
     let help_text = match editor.input_mode {
-        InputMode::ConfirmQuit => "Y: Save and quit | N: Quit without saving | ^C/Esc: Cancel",
+        InputMode::ConfirmQuit => "Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel",
         InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
-            "Enter: Confirm | Esc: Cancel | Type filename"
+            "Enter: Confirm  Esc: Cancel  Type filename"
         }
-        InputMode::OptionsMenu => "M: Mouse | L: Line Numbers | W: Word Wrap | T: Tab Width | Esc: Back",
-        InputMode::Find => "Enter: Search/Exit | Esc/^C: Cancel | Arrows: Navigate | ^R: Replace | ^O: Options | Type search term",
-        InputMode::FindOptionsMenu => "C: Case sensitivity | R: Regex mode | Esc: Back to find",
-        InputMode::Replace => "Enter: Next step | Esc/^C: Cancel | ^O: Options | Type find/replace text",
-        InputMode::ReplaceConfirm => "Y: Replace This | N: Skip | A: Replace All | ^C: Cancel",
-        InputMode::GoToLine => "Enter: Go | Esc/^C: Cancel | Type line number",
-        _ => "^Q/^X Quit | ^S Save | ^F Find | ^\\ Replace | ^G Go to Line | ^Z Undo | ^R Redo | ^V Page Down | ^Y Page Up | ^O Options",
+        InputMode::OptionsMenu => "M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  Esc: Back",
+        InputMode::Find => "Enter: Search/Exit  Esc/^C: Cancel  Arrows: Navigate  ^R: Replace  ^O: Options  Type search term",
+        InputMode::FindOptionsMenu => "C: Case sensitivity  R: Regex mode  Esc: Back to find",
+        InputMode::Replace => "Enter: Next step  Esc/^C: Cancel  ^O: Options  Type find/replace text",
+        InputMode::ReplaceConfirm => "Y: Replace This  N: Skip  A: Replace All  ^C: Cancel",
+        InputMode::GoToLine => "Enter: Go  Esc/^C: Cancel  Type line number",
+        _ => "^Q/^X Quit  ^S Save  ^F Find  ^\\ Replace  ^G Go to Line  ^Z Undo  ^R Redo  ^V Page Down  ^Y Page Up  ^O Options",
     };
+    // Wrap help text if window is too narrow
+    let wrapped_help_text = wrap_help_text(help_text, help_area.width as usize);
     let help_widget =
-        Paragraph::new(help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
+        Paragraph::new(wrapped_help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
 
     f.render_widget(help_widget, help_area);
 }
