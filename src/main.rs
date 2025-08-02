@@ -220,7 +220,8 @@ impl Editor {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        self.status_message = "File Name to Write: ".to_string();
+        self.status_message = format!("File Name to Write: {}", self.filename_buffer);
+        self.needs_redraw = true;
     }
 
     fn perform_save(&mut self, path: PathBuf) -> Result<()> {
