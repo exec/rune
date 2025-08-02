@@ -34,8 +34,11 @@ mod constants {
     pub const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 }
 
+/// Mathematical coordinate system for robust rendering
+
 mod syntax;
 use syntax::SyntaxHighlighter;
+// Removed unused coordinate validation system
 
 #[derive(Clone, Debug)]
 struct UndoState {
@@ -73,7 +76,7 @@ struct Cli {
 /// Main editor state containing document content, cursor position, and UI state
 struct Editor {
     rope: Rope,
-    cursor_pos: (usize, usize),      // (line, column)
+    cursor_pos: (usize, usize),      // (line, column) - legacy field for compatibility
     viewport_offset: (usize, usize), // (vertical, horizontal) scroll offset
     file_path: Option<PathBuf>,
     modified: bool,
@@ -128,6 +131,7 @@ enum InputMode {
     Replace,
     ReplaceConfirm,
     GoToLine,
+    Help,
 }
 
 impl Editor {
@@ -381,6 +385,10 @@ impl Editor {
                 // Invalidate highlighting cache from previous line (since we're joining)
                 self.highlighter
                     .invalidate_cache_from_line(self.cursor_pos.0 - 1);
+                
+                // Performance optimizations
+                self.invalidate_cache();
+                self.needs_redraw = true;
 
                 // Move cursor to junction point, not end of combined line
                 self.cursor_pos.0 -= 1;
@@ -493,17 +501,17 @@ impl Editor {
         }
     }
 
-    fn update_viewport(&mut self, terminal_height: usize) {
-        // Vertical scrolling
+    fn update_viewport(&mut self, _terminal_width: u16, terminal_height: u16) {
+        // Calculate available editor height (subtract 2 for status and help bars)
+        let editor_height = terminal_height.saturating_sub(2) as usize;
+        
+        // Simple, direct viewport calculation
         if self.cursor_pos.0 < self.viewport_offset.0 {
+            // Cursor above viewport - scroll up
             self.viewport_offset.0 = self.cursor_pos.0;
-        } else if self.cursor_pos.0
-            >= self.viewport_offset.0 + terminal_height - constants::UI_SCROLL_PADDING
-        {
-            self.viewport_offset.0 = self
-                .cursor_pos
-                .0
-                .saturating_sub(terminal_height - constants::UI_VIEWPORT_PADDING);
+        } else if self.cursor_pos.0 >= self.viewport_offset.0 + editor_height {
+            // Cursor below viewport - scroll down
+            self.viewport_offset.0 = self.cursor_pos.0.saturating_sub(editor_height.saturating_sub(1));
         }
     }
 
@@ -720,7 +728,21 @@ impl Editor {
 
             if let Some(index) = self.current_match_index {
                 if let Some(&(line, col)) = self.search_matches.get(index) {
+                    // Set cursor position
                     self.cursor_pos = (line, col);
+                    self.clamp_cursor_to_line();
+                    
+                    // Handle viewport positioning for search results
+                    let terminal_size = crossterm::terminal::size().unwrap_or((80, 24));
+                    let editor_height = terminal_size.1.saturating_sub(2) as usize;
+                    
+                    // If cursor is outside current viewport, position it correctly
+                    if line < self.viewport_offset.0 || line >= self.viewport_offset.0 + editor_height {
+                        // Position the found line exactly at the top of viewport
+                        self.viewport_offset.0 = line;
+                    }
+                    
+                    self.needs_redraw = true;
                 } else {
                     // Index is invalid, reset search state
                     self.current_match_index = None;
@@ -756,11 +778,16 @@ impl Editor {
             match Regex::new(&pattern) {
                 Ok(re) => {
                     for mat in re.find_iter(text) {
-                        let absolute_pos = mat.start();
-                        let line = self.rope.char_to_line(absolute_pos);
-                        let line_start = self.rope.line_to_char(line);
-                        let col = absolute_pos - line_start;
-                        matches.push((line, col));
+                        let byte_pos = mat.start();
+                        // Convert byte position to character position
+                        let absolute_char_pos = text[..byte_pos].chars().count();
+                        
+                        if absolute_char_pos < self.rope.len_chars() {
+                            let line = self.rope.char_to_line(absolute_char_pos);
+                            let line_start = self.rope.line_to_char(line);
+                            let col = absolute_char_pos - line_start;
+                            matches.push((line, col));
+                        }
                     }
                 }
                 Err(_) => {
@@ -783,22 +810,29 @@ impl Editor {
             search_term.to_lowercase()
         };
         
-        let mut start = 0;
-        while start < text.len() {
-            let remaining = &text[start..];
+        let mut char_pos = 0;
+        let chars: Vec<char> = text.chars().collect();
+        
+        while char_pos < chars.len() {
+            let remaining: String = chars[char_pos..].iter().collect();
             let pos = if self.case_sensitive {
                 remaining.find(&search_term)
             } else {
                 remaining.to_lowercase().find(&search_term)
             };
             
-            if let Some(pos) = pos {
-                let absolute_pos = start + pos;
-                let line = self.rope.char_to_line(absolute_pos);
-                let line_start = self.rope.line_to_char(line);
-                let col = absolute_pos - line_start;
-                matches.push((line, col));
-                start = absolute_pos + 1;
+            if let Some(byte_pos) = pos {
+                // Convert byte position back to char position
+                let char_offset = remaining[..byte_pos].chars().count();
+                let absolute_char_pos = char_pos + char_offset;
+                
+                if absolute_char_pos < self.rope.len_chars() {
+                    let line = self.rope.char_to_line(absolute_char_pos);
+                    let line_start = self.rope.line_to_char(line);
+                    let col = absolute_char_pos - line_start;
+                    matches.push((line, col));
+                }
+                char_pos = absolute_char_pos + 1;
             } else {
                 break;
             }
@@ -822,8 +856,7 @@ impl Editor {
             let next_index = (current_index + 1) % self.search_matches.len();
             self.current_match_index = Some(next_index);
             if let Some(&(line, col)) = self.search_matches.get(next_index) {
-                self.cursor_pos = (line, col);
-                self.needs_redraw = true;
+                self.set_cursor_position(line, col, "find_next_match");
                 true
             } else {
                 // Index is invalid, reset search state
@@ -852,8 +885,7 @@ impl Editor {
             };
             self.current_match_index = Some(prev_index);
             if let Some(&(line, col)) = self.search_matches.get(prev_index) {
-                self.cursor_pos = (line, col);
-                self.needs_redraw = true;
+                self.set_cursor_position(line, col, "find_previous_match");
                 true
             } else {
                 // Index is invalid, reset search state
@@ -1043,6 +1075,96 @@ impl Editor {
             self.insert_char(' ');
         }
     }
+
+    fn set_cursor_position(&mut self, line: usize, col: usize, _context: &str) {
+        self.cursor_pos = (line, col);
+        self.clamp_cursor_to_line();
+        self.needs_redraw = true;
+    }
+}
+
+
+fn draw_help_modal(f: &mut Frame, area: Rect) {
+    use ratatui::widgets::*;
+    
+    // Calculate modal size (fit content width)
+    let modal_width = 48u16; // Fixed width to match content
+    let modal_height = (area.height as f32 * 0.8) as u16;
+    let modal_x = (area.width - modal_width) / 2;
+    let modal_y = (area.height - modal_height) / 2;
+    
+    let modal_area = Rect {
+        x: modal_x,
+        y: modal_y,
+        width: modal_width,
+        height: modal_height,
+    };
+
+    // ASCII art logo and help content
+    let help_content = r#"
+ __________ ____ _____________________________
+ \______   \    |   \      \   \_   _____/
+  |       _/    |   /   |   \   |    __)_ 
+  |    |   \    |  /    |    \  |        \
+  |____|_  /______/\____|__  / /_______  /
+         \/                \/          \/ 
+            
+         A nano-inspired text editor
+
+─────────────────────────────────────────
+               FILE OPERATIONS
+─────────────────────────────────────────
+^Q / ^X  Quit editor
+^S       Save file  
+^W       Save as (write file)
+^O       Options menu
+
+─────────────────────────────────────────
+                 EDITING
+─────────────────────────────────────────
+^Z       Undo
+^R       Redo
+^K       Cut line
+^U       Paste
+
+─────────────────────────────────────────
+               NAVIGATION  
+─────────────────────────────────────────
+^F       Find text
+^\       Replace text
+^G       Go to line
+^V       Page down
+^Y       Page up
+Arrows   Move cursor
+
+─────────────────────────────────────────
+                OPTIONS
+─────────────────────────────────────────
+^O       Open options menu
+  M      Toggle mouse mode
+  L      Toggle line numbers  
+  W      Toggle word wrap
+  T      Set tab width
+
+─────────────────────────────────────────
+          Press ^H or Esc to close
+─────────────────────────────────────────"#;
+
+    // Clear the modal background
+    let clear = Clear;
+    f.render_widget(clear, modal_area);
+    
+    // Draw the modal
+    let help_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    
+    let help_paragraph = Paragraph::new(help_content)
+        .block(help_block)
+        .alignment(ratatui::layout::Alignment::Center);
+    
+    f.render_widget(help_paragraph, modal_area);
 }
 
 fn main() -> Result<()> {
@@ -1079,6 +1201,9 @@ fn run_editor(
     editor: &mut Editor,
 ) -> Result<()> {
     loop {
+        // Update viewport before drawing to ensure correct cursor positioning
+        editor.update_viewport(terminal.size()?.width, terminal.size()?.height);
+        
         // Only redraw if something has changed
         if editor.needs_redraw {
             // Use synchronized output on macOS to reduce visual artifacts
@@ -1128,8 +1253,6 @@ fn run_editor(
                 _ => {}
             }
         }
-
-        editor.update_viewport(terminal.size()?.height as usize);
     }
 
     Ok(())
@@ -1164,6 +1287,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 editor.toggle_mouse_mode();
                 editor.input_mode = InputMode::Normal;
+                editor.needs_redraw = true;
                 return Ok(false);
             }
             KeyCode::Char('l') | KeyCode::Char('L') => {
@@ -1177,6 +1301,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     }
                 ));
                 editor.input_mode = InputMode::Normal;
+                editor.needs_redraw = true;
                 return Ok(false);
             }
             KeyCode::Char('w') | KeyCode::Char('W') => {
@@ -1186,6 +1311,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     if editor.word_wrap { "ON" } else { "OFF" }
                 ));
                 editor.input_mode = InputMode::Normal;
+                editor.needs_redraw = true;
                 return Ok(false);
             }
             KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -1196,18 +1322,21 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 };
                 editor.set_temporary_status_message(format!("Tab width: {}", editor.tab_width));
                 editor.input_mode = InputMode::Normal;
+                editor.needs_redraw = true;
                 return Ok(false);
             }
             KeyCode::Esc => {
                 editor.save_config();
                 editor.input_mode = InputMode::Normal;
                 editor.status_message.clear();
+                editor.needs_redraw = true;
                 return Ok(false);
             }
             _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
                 editor.save_config();
                 editor.input_mode = InputMode::Normal;
                 editor.status_message.clear();
+                editor.needs_redraw = true;
                 return Ok(false);
             }
             _ => {}
@@ -1301,6 +1430,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     editor.input_mode = InputMode::Normal;
                     editor.search_matches.clear();
                     editor.current_match_index = None;
+                    editor.search_buffer.clear();
                     editor.set_temporary_status_message("Search completed".to_string());
                 } else {
                     // Perform search and switch to result navigation mode
@@ -1602,6 +1732,26 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
+    // Handle help mode
+    if editor.input_mode == InputMode::Help {
+        match key.code {
+            KeyCode::Esc => {
+                editor.input_mode = InputMode::Normal;
+                editor.needs_redraw = true;
+            }
+            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.input_mode = InputMode::Normal;
+                editor.needs_redraw = true;
+            }
+            KeyCode::Char('h') if key.modifiers == KeyModifiers::CONTROL => {
+                editor.input_mode = InputMode::Normal;
+                editor.needs_redraw = true;
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     // Handle normal mode
     match (key.modifiers, key.code) {
         // Standard keybindings
@@ -1618,6 +1768,10 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         }
         (KeyModifiers::CONTROL, KeyCode::Char('o')) => {
             editor.open_options_menu();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
+            editor.input_mode = InputMode::Help;
+            editor.needs_redraw = true;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
             editor.undo();
@@ -1811,28 +1965,45 @@ fn wrap_help_text(text: &str, width: usize) -> String {
 fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     let area = f.area();
 
-    // Main editor area
+    // Bottom bar content based on mode
+    let (help_left, help_right) = match editor.input_mode {
+        InputMode::ConfirmQuit => ("Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel".to_string(), String::new()),
+        InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
+            ("Enter: Confirm  Esc: Cancel  Type filename".to_string(), String::new())
+        }
+        InputMode::OptionsMenu => ("M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  Esc: Back".to_string(), String::new()),
+        InputMode::Find => ("Enter: Search/Exit  Esc/^C: Cancel  Arrows: Navigate  ^R: Replace  ^O: Options".to_string(), String::new()),
+        InputMode::FindOptionsMenu => ("C: Case sensitivity  R: Regex mode  Esc: Back to find".to_string(), String::new()),
+        InputMode::Replace => ("Enter: Next step  Esc/^C: Cancel  ^O: Options".to_string(), String::new()),
+        InputMode::ReplaceConfirm => ("Y: Replace This  N: Skip  A: Replace All  ^C: Cancel".to_string(), String::new()),
+        InputMode::GoToLine => ("Enter: Go  Esc/^C: Cancel  Type line number".to_string(), String::new()),
+        InputMode::Help => ("^H Help".to_string(), format!("Rune v{}", env!("CARGO_PKG_VERSION"))),
+        _ => ("^H Help".to_string(), format!("Rune v{}", env!("CARGO_PKG_VERSION"))),
+    };
+    let help_height = 1u16;
+
+    // Main editor area (adjusted for dynamic help bar height)
     let editor_area = Rect {
         x: area.x,
         y: area.y,
         width: area.width,
-        height: area.height.saturating_sub(2),
+        height: area.height.saturating_sub(1 + help_height),
     };
 
     // Status bar area
     let status_area = Rect {
         x: area.x,
-        y: area.y + area.height.saturating_sub(2),
+        y: area.y + area.height.saturating_sub(1 + help_height),
         width: area.width,
         height: 1,
     };
 
-    // Help bar area
+    // Help bar area (dynamic height)
     let help_area = Rect {
         x: area.x,
-        y: area.y + area.height.saturating_sub(1),
+        y: area.y + area.height.saturating_sub(help_height),
         width: area.width,
-        height: 1,
+        height: help_height,
     };
 
     // Calculate line number width if line numbers are enabled
@@ -1944,24 +2115,29 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
 
     f.render_widget(status_widget, status_area);
 
-    // Draw help bar
-    let help_text = match editor.input_mode {
-        InputMode::ConfirmQuit => "Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel",
-        InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
-            "Enter: Confirm  Esc: Cancel  Type filename"
-        }
-        InputMode::OptionsMenu => "M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  Esc: Back",
-        InputMode::Find => "Enter: Search/Exit  Esc/^C: Cancel  Arrows: Navigate  ^R: Replace  ^O: Options  Type search term",
-        InputMode::FindOptionsMenu => "C: Case sensitivity  R: Regex mode  Esc: Back to find",
-        InputMode::Replace => "Enter: Next step  Esc/^C: Cancel  ^O: Options  Type find/replace text",
-        InputMode::ReplaceConfirm => "Y: Replace This  N: Skip  A: Replace All  ^C: Cancel",
-        InputMode::GoToLine => "Enter: Go  Esc/^C: Cancel  Type line number",
-        _ => "^Q/^X Quit  ^S Save  ^F Find  ^\\ Replace  ^G Go to Line  ^Z Undo  ^R Redo  ^V Page Down  ^Y Page Up  ^O Options",
+    // Draw help bar (split left/right or full width)
+    use ratatui::text::{Line, Span};
+    let help_line = if help_right.is_empty() {
+        // Full width text for modes like options menu
+        Line::from(Span::raw(&help_left))
+    } else {
+        // Split layout for normal mode
+        let remaining_space = help_area.width as usize - help_left.len() - help_right.len();
+        let spaces = " ".repeat(remaining_space.max(1));
+        Line::from(vec![
+            Span::raw(&help_left),
+            Span::raw(spaces),
+            Span::raw(&help_right),
+        ])
     };
-    // Wrap help text if window is too narrow
-    let wrapped_help_text = wrap_help_text(help_text, help_area.width as usize);
-    let help_widget =
-        Paragraph::new(wrapped_help_text).style(Style::default().bg(Color::Cyan).fg(Color::Black));
+    
+    let help_widget = Paragraph::new(help_line)
+        .style(Style::default().bg(Color::Cyan).fg(Color::Black));
 
     f.render_widget(help_widget, help_area);
+
+    // Draw help modal if in help mode
+    if editor.input_mode == InputMode::Help {
+        draw_help_modal(f, area);
+    }
 }
