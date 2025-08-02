@@ -104,7 +104,7 @@ struct Editor {
     use_regex: bool,
     case_sensitive: bool,
     search_history: Vec<String>,
-    // search_history_index: Option<usize>, // TODO: Implement search history navigation
+    search_history_index: Option<usize>,
 }
 
 /// Different input modes the editor can be in
@@ -157,7 +157,7 @@ impl Editor {
             use_regex: false,
             case_sensitive: false,
             search_history: Vec::new(),
-            // search_history_index: None, // TODO: Implement search history navigation
+            search_history_index: None,
         };
         editor.load_config();
         editor
@@ -970,6 +970,63 @@ impl Editor {
             if self.search_history.len() > 50 {
                 self.search_history.remove(0);
             }
+            // Reset history index
+            self.search_history_index = None;
+        }
+    }
+
+    fn navigate_search_history_up(&mut self) -> bool {
+        if self.search_history.is_empty() {
+            return false;
+        }
+        
+        if let Some(current_index) = self.search_history_index {
+            if current_index > 0 {
+                self.search_history_index = Some(current_index - 1);
+            } else {
+                return false; // Already at oldest
+            }
+        } else {
+            // Start from most recent
+            self.search_history_index = Some(self.search_history.len() - 1);
+        }
+        
+        if let Some(index) = self.search_history_index {
+            self.search_buffer = self.search_history[index].clone();
+            self.status_message = format!("Find: {}", self.search_buffer);
+            return true;
+        }
+        false
+    }
+
+    fn navigate_search_history_down(&mut self) -> bool {
+        if let Some(current_index) = self.search_history_index {
+            if current_index < self.search_history.len() - 1 {
+                self.search_history_index = Some(current_index + 1);
+                self.search_buffer = self.search_history[self.search_history_index.unwrap()].clone();
+                self.status_message = format!("Find: {}", self.search_buffer);
+                return true;
+            } else {
+                // Go to empty search
+                self.search_history_index = None;
+                self.search_buffer.clear();
+                self.status_message = "Find: ".to_string();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn handle_tab_insertion(&mut self) {
+        self.save_undo_state();
+        
+        // Calculate how many spaces to insert to reach the next tab stop
+        let current_col = self.cursor_pos.1;
+        let spaces_to_next_tab = self.tab_width - (current_col % self.tab_width);
+        
+        // Insert the appropriate number of spaces
+        for _ in 0..spaces_to_next_tab {
+            self.insert_char(' ');
         }
     }
 }
@@ -1257,9 +1314,18 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             }
             KeyCode::Up | KeyCode::Left => {
                 if editor.search_matches.is_empty() {
-                    // If no current search, just move cursor
+                    // If no current search matches, try search history (up arrow only)
                     if key.code == KeyCode::Up {
-                        editor.move_cursor_up();
+                        if editor.navigate_search_history_up() {
+                            editor.needs_redraw = true;
+                            // Perform search with historical term
+                            if !editor.search_buffer.is_empty() {
+                                let search_term = editor.search_buffer.clone();
+                                editor.perform_find(&search_term);
+                            }
+                        } else {
+                            editor.move_cursor_up();
+                        }
                     } else {
                         editor.move_cursor_left();
                     }
@@ -1277,9 +1343,21 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             }
             KeyCode::Down | KeyCode::Right => {
                 if editor.search_matches.is_empty() {
-                    // If no current search, just move cursor
+                    // If no current search matches, try search history (down arrow only)
                     if key.code == KeyCode::Down {
-                        editor.move_cursor_down();
+                        if editor.navigate_search_history_down() {
+                            editor.needs_redraw = true;
+                            // Perform search with historical term (or clear if now empty)
+                            if !editor.search_buffer.is_empty() {
+                                let search_term = editor.search_buffer.clone();
+                                editor.perform_find(&search_term);
+                            } else {
+                                editor.search_matches.clear();
+                                editor.current_match_index = None;
+                            }
+                        } else {
+                            editor.move_cursor_down();
+                        }
                     } else {
                         editor.move_cursor_right();
                     }
@@ -1552,11 +1630,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         // Editing
         (_, KeyCode::Char(c)) => editor.insert_char(c),
         (_, KeyCode::Tab) => {
-            // Insert spaces using the same method as insert_char to ensure consistency
-            editor.save_undo_state();
-            for _ in 0..editor.tab_width {
-                editor.insert_char(' ');
-            }
+            editor.handle_tab_insertion();
         }
         (_, KeyCode::Enter) => editor.insert_newline(),
         (_, KeyCode::Backspace) => editor.delete_char(),
