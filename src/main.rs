@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::Parser;
-use regex::Regex;
 use crossterm::{
     event::{
         self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -685,11 +684,6 @@ impl Editor {
         self.status_message = "Find: ".to_string();
         self.find_navigation_mode = FindNavigationMode::HistoryBrowsing;
         self.needs_redraw = true;
-        
-        // Clear debug logs for fresh debugging session
-        let _ = std::fs::remove_file("/tmp/rune_search_debug.log");
-        let _ = std::fs::remove_file("/tmp/rune_highlight_debug.log");
-        let _ = std::fs::remove_file("/tmp/rune_render_debug.log");
     }
 
     fn start_replace(&mut self) {
@@ -719,9 +713,6 @@ impl Editor {
 
         // Find all matches in the document
         self.search_matches = self.find_all_matches(search_term);
-        
-        // Debug phantom matches if they occur
-        self.debug_search_issue(search_term, &self.search_matches);
 
         if !self.search_matches.is_empty() {
             // Find the match closest to cursor position (at or after cursor)
@@ -837,39 +828,7 @@ impl Editor {
             false
         }
     }
-    
-    // Add comprehensive search debugging for troubleshooting phantom matches
-    fn debug_search_issue(&self, search_term: &str, found_matches: &[(usize, usize)]) {
-        // Only debug if we have suspicious matches
-        if !found_matches.is_empty() {
-            if let Ok(mut debug_file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/rune_search_debug.log")
-            {
-                use std::io::Write;
-                let _ = writeln!(debug_file, "\n=== SEARCH DEBUG for '{}' ===", search_term);
-                
-                for (line_idx, col) in found_matches {
-                    if let Some(line_slice) = self.rope.line(*line_idx).as_str() {
-                        let line_content = line_slice.trim_end_matches('\n');
-                        let _ = writeln!(debug_file, "Line {}: '{}'", line_idx, line_content);
-                        let _ = writeln!(debug_file, "  Match at col {}", col);
-                        
-                        // Show exactly what text is at that position
-                        let line_chars: Vec<char> = line_content.chars().collect();
-                        if *col < line_chars.len() {
-                            let end_col = (*col + search_term.chars().count()).min(line_chars.len());
-                            let text_at_pos: String = line_chars[*col..end_col].iter().collect();
-                            let _ = writeln!(debug_file, "  Text at position: '{}'", text_at_pos);
-                            let _ = writeln!(debug_file, "  Expected: '{}'", search_term);
-                            let _ = writeln!(debug_file, "  Match valid: {}", text_at_pos == search_term);
-                        }
-                    }
-                }
-            }
-        }
-    }
+
     fn invalidate_cache(&mut self) {
         self.cache_valid = false;
         self.cached_text = None;
@@ -1127,12 +1086,6 @@ impl Editor {
         for _ in 0..spaces_to_next_tab {
             self.insert_char(' ');
         }
-    }
-
-    fn set_cursor_position(&mut self, line: usize, col: usize, _context: &str) {
-        self.cursor_pos = (line, col);
-        self.clamp_cursor_to_line();
-        self.needs_redraw = true;
     }
 }
 
@@ -1977,45 +1930,17 @@ fn apply_search_highlighting(
 fn validate_match_at_position(line_content: &str, char_pos: usize, search_term: &str) -> bool {
     let line_chars: Vec<char> = line_content.chars().collect();
     let search_chars: Vec<char> = search_term.chars().collect();
-    
+
     // Check bounds
     if char_pos + search_chars.len() > line_chars.len() {
-        // Log rejected match due to bounds
-        if let Ok(mut debug_file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/rune_highlight_debug.log")
-        {
-            use std::io::Write;
-            let _ = writeln!(debug_file, "REJECTED: pos {} + {} > {} in line '{}'", 
-                char_pos, search_chars.len(), line_chars.len(), line_content);
-        }
         return false;
     }
-    
+
     // Extract the text at this position
     let text_at_pos: String = line_chars[char_pos..char_pos + search_chars.len()].iter().collect();
-    
+
     // Validate it exactly matches the search term
-    let is_match = if text_at_pos == search_term {
-        true
-    } else if text_at_pos.to_lowercase() == search_term.to_lowercase() {
-        true
-    } else {
-        // Log failed validation
-        if let Ok(mut debug_file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/rune_highlight_debug.log")
-        {
-            use std::io::Write;
-            let _ = writeln!(debug_file, "MISMATCH: '{}' != '{}' at pos {} in line '{}'", 
-                text_at_pos, search_term, char_pos, line_content);
-        }
-        false
-    };
-    
-    is_match
+    text_at_pos == search_term || text_at_pos.to_lowercase() == search_term.to_lowercase()
 }
 
 fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usize) -> Style {
@@ -2105,20 +2030,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
 
                 // Add highlighted content with search highlighting
                 let line_content = line_text.trim_end_matches('\n');
-                // DIAGNOSTIC: Log every line being rendered and its search status
-                let has_search_matches = editor.search_matches.iter().any(|(line, _)| *line == line_idx);
-                if !editor.search_buffer.is_empty() && (has_search_matches || line_idx % 50 == 0) {
-                    if let Ok(mut debug_file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/rune_render_debug.log")
-                    {
-                        use std::io::Write;
-                        let _ = writeln!(debug_file, "RENDER Line {}: '{}' | viewport_offset: {} | has_matches: {}", 
-                            line_idx, line_content, editor.viewport_offset.0, has_search_matches);
-                    }
-                }
-                
+
                 styled_spans.extend(apply_search_highlighting(
                     &highlighted_spans,
                     line_content,
