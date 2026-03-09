@@ -1678,9 +1678,8 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 );
                 if replacements > 0 {
                     // Continue to next match - stay in ReplaceConfirm mode
-                    editor.status_message = format!(
-                        "Replaced 1. Continue? Y: Replace This | N: Skip | A: Replace All | ^C: Cancel"
-                    );
+                    editor.status_message =
+                        "Replaced 1. Continue? Y: Replace This | N: Skip | A: Replace All | ^C: Cancel".to_string();
                 } else {
                     editor.set_temporary_status_message("No more matches found".to_string());
                     editor.input_mode = InputMode::Normal;
