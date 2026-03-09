@@ -150,7 +150,7 @@ impl SyntaxHighlighter {
                         chars.next(); // consume '*'
                         let mut comment = String::from("/*");
                         let mut found_end = false;
-                        
+
                         while let Some(next_ch) = chars.next() {
                             comment.push(next_ch);
                             if next_ch == '*' && chars.peek() == Some(&'/') {
@@ -160,7 +160,7 @@ impl SyntaxHighlighter {
                                 break;
                             }
                         }
-                        
+
                         result.push((Style::default().fg(Color::DarkGray), comment));
                         if found_end {
                             // Continue processing if block comment ended on this line
@@ -224,7 +224,9 @@ impl SyntaxHighlighter {
             Some("Python") => self.get_python_keyword_style(word),
             Some("JavaScript") | Some("TypeScript") => self.get_js_keyword_style(word),
             Some("Go") => self.get_go_keyword_style(word),
-            Some("Shell Script (Bash)") | Some("Bourne Again Shell (bash)") => self.get_shell_keyword_style(word),
+            Some("Shell Script (Bash)") | Some("Bourne Again Shell (bash)") => {
+                self.get_shell_keyword_style(word)
+            }
             Some("C") | Some("C++") => self.get_c_keyword_style(word),
             Some("JSON") => self.get_json_keyword_style(word),
             Some("YAML") => self.get_yaml_keyword_style(word),
@@ -238,7 +240,9 @@ impl SyntaxHighlighter {
             // Rust keywords
             "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait" | "use" | "mod"
             | "const" | "static" | "extern" | "crate" | "super" | "self" | "Self" | "where"
-            | "async" | "await" | "unsafe" | "dyn" | "ref" | "move" => Style::default().fg(Color::Magenta),
+            | "async" | "await" | "unsafe" | "dyn" | "ref" | "move" => {
+                Style::default().fg(Color::Magenta)
+            }
 
             // Control flow
             "if" | "else" | "match" | "for" | "while" | "loop" | "break" | "continue"
@@ -260,19 +264,21 @@ impl SyntaxHighlighter {
         match word {
             // Python keywords
             "def" | "class" | "import" | "from" | "as" | "with" | "lambda" | "async" | "await"
-            | "global" | "nonlocal" | "yield" | "pass" | "del" => Style::default().fg(Color::Magenta),
+            | "global" | "nonlocal" | "yield" | "pass" | "del" => {
+                Style::default().fg(Color::Magenta)
+            }
 
             // Control flow
-            "if" | "elif" | "else" | "for" | "while" | "break" | "continue" | "return"
-            | "try" | "except" | "finally" | "raise" | "assert" => Style::default().fg(Color::Yellow),
+            "if" | "elif" | "else" | "for" | "while" | "break" | "continue" | "return" | "try"
+            | "except" | "finally" | "raise" | "assert" => Style::default().fg(Color::Yellow),
 
             // Literals
             "True" | "False" | "None" => Style::default().fg(Color::Cyan),
 
             // Python built-ins
-            "str" | "int" | "float" | "bool" | "list" | "dict" | "tuple" | "set"
-            | "len" | "range" | "enumerate" | "zip" | "map" | "filter" | "print"
-            | "open" | "file" | "type" | "isinstance" | "hasattr" => Style::default().fg(Color::Blue),
+            "str" | "int" | "float" | "bool" | "list" | "dict" | "tuple" | "set" | "len"
+            | "range" | "enumerate" | "zip" | "map" | "filter" | "print" | "open" | "file"
+            | "type" | "isinstance" | "hasattr" => Style::default().fg(Color::Blue),
 
             _ => Style::default(),
         }
@@ -282,20 +288,22 @@ impl SyntaxHighlighter {
         match word {
             // JavaScript/TypeScript keywords
             "function" | "var" | "let" | "const" | "class" | "extends" | "import" | "export"
-            | "async" | "await" | "yield" | "interface" | "type" | "enum"
-            | "namespace" | "module" | "declare" => Style::default().fg(Color::Magenta),
+            | "async" | "await" | "yield" | "interface" | "type" | "enum" | "namespace"
+            | "module" | "declare" => Style::default().fg(Color::Magenta),
 
             // Control flow
-            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return"
-            | "try" | "catch" | "finally" | "throw" | "switch" | "case" | "default" => Style::default().fg(Color::Yellow),
+            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return" | "try"
+            | "catch" | "finally" | "throw" | "switch" | "case" | "default" => {
+                Style::default().fg(Color::Yellow)
+            }
 
             // Literals
             "true" | "false" | "null" | "undefined" => Style::default().fg(Color::Cyan),
 
             // JS/TS types
             "string" | "number" | "boolean" | "object" | "Array" | "Object" | "Function"
-            | "Promise" | "Map" | "Set" | "WeakMap" | "WeakSet" | "Symbol" | "BigInt"
-            | "any" | "unknown" | "never" | "void" => Style::default().fg(Color::Blue),
+            | "Promise" | "Map" | "Set" | "WeakMap" | "WeakSet" | "Symbol" | "BigInt" | "any"
+            | "unknown" | "never" | "void" => Style::default().fg(Color::Blue),
 
             _ => Style::default(),
         }
@@ -305,7 +313,9 @@ impl SyntaxHighlighter {
         match word {
             // Go keywords
             "func" | "var" | "const" | "type" | "struct" | "interface" | "package" | "import"
-            | "go" | "defer" | "chan" | "select" | "range" | "map" | "make" | "new" => Style::default().fg(Color::Magenta),
+            | "go" | "defer" | "chan" | "select" | "range" | "map" | "make" | "new" => {
+                Style::default().fg(Color::Magenta)
+            }
 
             // Control flow
             "if" | "else" | "for" | "switch" | "case" | "default" | "break" | "continue"
@@ -316,8 +326,8 @@ impl SyntaxHighlighter {
 
             // Go types
             "string" | "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
-            | "uint16" | "uint32" | "uint64" | "bool" | "byte" | "rune" | "float32"
-            | "float64" | "complex64" | "complex128" | "error" => Style::default().fg(Color::Blue),
+            | "uint16" | "uint32" | "uint64" | "bool" | "byte" | "rune" | "float32" | "float64"
+            | "complex64" | "complex128" | "error" => Style::default().fg(Color::Blue),
 
             _ => Style::default(),
         }
@@ -327,13 +337,15 @@ impl SyntaxHighlighter {
         match word {
             // Shell keywords
             "if" | "then" | "else" | "elif" | "fi" | "case" | "esac" | "for" | "while"
-            | "until" | "do" | "done" | "function" | "select" | "time" | "in" => Style::default().fg(Color::Magenta),
+            | "until" | "do" | "done" | "function" | "select" | "time" | "in" => {
+                Style::default().fg(Color::Magenta)
+            }
 
             // Shell commands
             "echo" | "printf" | "cat" | "grep" | "awk" | "sed" | "sort" | "uniq" | "cut"
-            | "head" | "tail" | "find" | "xargs" | "ls" | "cd" | "pwd" | "mkdir" | "rm"
-            | "cp" | "mv" | "chmod" | "chown" | "export" | "alias" | "source" | "exec"
-            | "exit" | "return" | "break" | "continue" => Style::default().fg(Color::Yellow),
+            | "head" | "tail" | "find" | "xargs" | "ls" | "cd" | "pwd" | "mkdir" | "rm" | "cp"
+            | "mv" | "chmod" | "chown" | "export" | "alias" | "source" | "exec" | "exit"
+            | "return" | "break" | "continue" => Style::default().fg(Color::Yellow),
 
             // Shell variables/operators
             "true" | "false" => Style::default().fg(Color::Cyan),
@@ -346,25 +358,25 @@ impl SyntaxHighlighter {
         match word {
             // C/C++ keywords
             "int" | "char" | "float" | "double" | "void" | "long" | "short" | "unsigned"
-            | "signed" | "const" | "static" | "extern" | "volatile" | "register"
-            | "struct" | "union" | "enum" | "typedef" | "sizeof" => Style::default().fg(Color::Magenta),
+            | "signed" | "const" | "static" | "extern" | "volatile" | "register" | "struct"
+            | "union" | "enum" | "typedef" | "sizeof" => Style::default().fg(Color::Magenta),
 
             // C++ specific
-            "class" | "public" | "private" | "protected" | "virtual" | "override"
-            | "namespace" | "using" | "template" | "typename" | "new" | "delete"
-            | "this" | "friend" | "inline" | "explicit" | "operator" => Style::default().fg(Color::Magenta),
+            "class" | "public" | "private" | "protected" | "virtual" | "override" | "namespace"
+            | "using" | "template" | "typename" | "new" | "delete" | "this" | "friend"
+            | "inline" | "explicit" | "operator" => Style::default().fg(Color::Magenta),
 
             // Control flow
-            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return"
-            | "switch" | "case" | "default" | "goto" => Style::default().fg(Color::Yellow),
+            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return" | "switch"
+            | "case" | "default" | "goto" => Style::default().fg(Color::Yellow),
 
             // Literals
             "true" | "false" | "NULL" | "nullptr" => Style::default().fg(Color::Cyan),
 
             // Standard types
-            "bool" | "size_t" | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t"
-            | "int8_t" | "int16_t" | "int32_t" | "int64_t" | "string" | "vector"
-            | "map" | "set" | "list" | "array" => Style::default().fg(Color::Blue),
+            "bool" | "size_t" | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "int8_t"
+            | "int16_t" | "int32_t" | "int64_t" | "string" | "vector" | "map" | "set" | "list"
+            | "array" => Style::default().fg(Color::Blue),
 
             _ => Style::default(),
         }
@@ -381,7 +393,9 @@ impl SyntaxHighlighter {
     fn get_yaml_keyword_style(&self, word: &str) -> Style {
         match word {
             // YAML literals
-            "true" | "false" | "null" | "yes" | "no" | "on" | "off" => Style::default().fg(Color::Cyan),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" => {
+                Style::default().fg(Color::Cyan)
+            }
             _ => Style::default(),
         }
     }
@@ -389,9 +403,9 @@ impl SyntaxHighlighter {
     fn get_dockerfile_keyword_style(&self, word: &str) -> Style {
         match word {
             // Dockerfile keywords
-            "FROM" | "RUN" | "CMD" | "LABEL" | "MAINTAINER" | "EXPOSE" | "ENV" | "ADD"
-            | "COPY" | "ENTRYPOINT" | "VOLUME" | "USER" | "WORKDIR" | "ARG" | "ONBUILD"
-            | "STOPSIGNAL" | "HEALTHCHECK" | "SHELL" => Style::default().fg(Color::Magenta),
+            "FROM" | "RUN" | "CMD" | "LABEL" | "MAINTAINER" | "EXPOSE" | "ENV" | "ADD" | "COPY"
+            | "ENTRYPOINT" | "VOLUME" | "USER" | "WORKDIR" | "ARG" | "ONBUILD" | "STOPSIGNAL"
+            | "HEALTHCHECK" | "SHELL" => Style::default().fg(Color::Magenta),
             _ => Style::default(),
         }
     }
@@ -399,10 +413,14 @@ impl SyntaxHighlighter {
     fn get_generic_keyword_style(&self, word: &str) -> Style {
         match word {
             // Generic control flow
-            "if" | "else" | "for" | "while" | "break" | "continue" | "return" => Style::default().fg(Color::Yellow),
+            "if" | "else" | "for" | "while" | "break" | "continue" | "return" => {
+                Style::default().fg(Color::Yellow)
+            }
 
             // Generic literals
-            "true" | "false" | "null" | "None" | "undefined" | "nil" => Style::default().fg(Color::Cyan),
+            "true" | "false" | "null" | "None" | "undefined" | "nil" => {
+                Style::default().fg(Color::Cyan)
+            }
 
             _ => Style::default(),
         }

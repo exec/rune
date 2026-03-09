@@ -32,7 +32,6 @@ mod constants {
 }
 
 /// Mathematical coordinate system for robust rendering
-
 mod syntax;
 use syntax::SyntaxHighlighter;
 // Removed unused coordinate validation system
@@ -73,7 +72,7 @@ struct Cli {
 /// Main editor state containing document content, cursor position, and UI state
 struct Editor {
     rope: Rope,
-    cursor_pos: (usize, usize),      // (line, column) - legacy field for compatibility
+    cursor_pos: (usize, usize), // (line, column) - legacy field for compatibility
     viewport_offset: (usize, usize), // (vertical, horizontal) scroll offset
     file_path: Option<PathBuf>,
     modified: bool,
@@ -111,8 +110,8 @@ struct Editor {
 /// Navigation mode within find functionality
 #[derive(Debug, Clone, PartialEq)]
 enum FindNavigationMode {
-    HistoryBrowsing,   // arrows navigate search history
-    ResultNavigation,  // arrows navigate search results
+    HistoryBrowsing,  // arrows navigate search history
+    ResultNavigation, // arrows navigate search results
 }
 
 /// Different input modes the editor can be in
@@ -337,7 +336,7 @@ impl Editor {
         // Invalidate highlighting cache from current line
         self.highlighter
             .invalidate_cache_from_line(self.cursor_pos.0);
-        
+
         // Performance optimizations
         self.invalidate_cache();
         self.needs_redraw = true;
@@ -356,7 +355,7 @@ impl Editor {
                 // Invalidate highlighting cache from current line
                 self.highlighter
                     .invalidate_cache_from_line(self.cursor_pos.0);
-                
+
                 // Performance optimizations
                 self.invalidate_cache();
                 self.needs_redraw = true;
@@ -383,7 +382,7 @@ impl Editor {
                 // Invalidate highlighting cache from previous line (since we're joining)
                 self.highlighter
                     .invalidate_cache_from_line(self.cursor_pos.0 - 1);
-                
+
                 // Performance optimizations
                 self.invalidate_cache();
                 self.needs_redraw = true;
@@ -404,7 +403,7 @@ impl Editor {
         // Invalidate highlighting cache from current line
         self.highlighter
             .invalidate_cache_from_line(self.cursor_pos.0);
-        
+
         // Performance optimizations
         self.invalidate_cache();
         self.needs_redraw = true;
@@ -502,14 +501,17 @@ impl Editor {
     fn update_viewport(&mut self, _terminal_width: u16, terminal_height: u16) {
         // Calculate available editor height (subtract 2 for status and help bars)
         let editor_height = terminal_height.saturating_sub(2) as usize;
-        
+
         // Simple, direct viewport calculation
         if self.cursor_pos.0 < self.viewport_offset.0 {
             // Cursor above viewport - scroll up
             self.viewport_offset.0 = self.cursor_pos.0;
         } else if self.cursor_pos.0 >= self.viewport_offset.0 + editor_height {
             // Cursor below viewport - scroll down
-            self.viewport_offset.0 = self.cursor_pos.0.saturating_sub(editor_height.saturating_sub(1));
+            self.viewport_offset.0 = self
+                .cursor_pos
+                .0
+                .saturating_sub(editor_height.saturating_sub(1));
         }
     }
 
@@ -640,14 +642,14 @@ impl Editor {
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
             self.modified = true;
-            
+
             // Performance optimizations
             self.invalidate_cache();
             self.needs_redraw = true;
-            
+
             // Invalidate highlighting cache for entire document
             self.highlighter.invalidate_cache_from_line(0);
-            
+
             self.set_temporary_status_message("Undo".to_string());
         }
     }
@@ -663,14 +665,14 @@ impl Editor {
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
             self.modified = true;
-            
+
             // Performance optimizations
             self.invalidate_cache();
             self.needs_redraw = true;
-            
+
             // Invalidate highlighting cache for entire document
             self.highlighter.invalidate_cache_from_line(0);
-            
+
             self.set_temporary_status_message("Redo".to_string());
         }
     }
@@ -732,13 +734,13 @@ impl Editor {
                     // Set cursor position
                     self.cursor_pos = (line, col);
                     self.clamp_cursor_to_line();
-                    
+
                     // Handle viewport positioning for search results
-                    
+
                     // Always position search results consistently at top of viewport
                     // This prevents cursor offset issues when searching repeatedly
                     self.viewport_offset.0 = line;
-                    
+
                     self.needs_redraw = true;
                 } else {
                     // Index is invalid, reset search state
@@ -755,24 +757,27 @@ impl Editor {
 
     fn find_all_matches(&mut self, search_term: &str) -> Vec<(usize, usize)> {
         let mut matches = Vec::new();
-        
+
         if search_term.is_empty() {
             return matches;
         }
-        
+
         // BULLETPROOF: Search directly in rope line-by-line to avoid any text conversion issues
         for line_idx in 0..self.rope.len_lines() {
             if let Some(line_slice) = self.rope.line(line_idx).as_str() {
                 // Get the actual line content
                 let line_content = line_slice.trim_end_matches('\n');
-                
+
                 // Find all matches in this line with direct string validation
                 let line_matches = if self.case_sensitive {
                     self.find_matches_in_line(line_content, search_term)
                 } else {
-                    self.find_matches_in_line(&line_content.to_lowercase(), &search_term.to_lowercase())
+                    self.find_matches_in_line(
+                        &line_content.to_lowercase(),
+                        &search_term.to_lowercase(),
+                    )
                 };
-                
+
                 // Add validated matches for this line
                 for col in line_matches {
                     // CRITICAL: Double-validate each match against original content
@@ -782,26 +787,26 @@ impl Editor {
                 }
             }
         }
-        
+
         // Sort matches by position for consistent navigation
         matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         matches
     }
-    
+
     // Find all occurrences of search_term in a single line
     fn find_matches_in_line(&self, line_content: &str, search_term: &str) -> Vec<usize> {
         let mut matches = Vec::new();
         let mut start_pos = 0;
-        
+
         while let Some(pos) = line_content[start_pos..].find(search_term) {
             let match_pos = start_pos + pos;
             matches.push(match_pos);
             start_pos = match_pos + 1; // Move past this match to find overlapping ones
         }
-        
+
         matches
     }
-    
+
     // Validate that a match actually exists at the specified position in the rope
     fn validate_match_in_rope(&self, line_idx: usize, col: usize, search_term: &str) -> bool {
         // Get the actual line from rope
@@ -809,15 +814,15 @@ impl Editor {
             let line_content = line_slice.trim_end_matches('\n');
             let line_chars: Vec<char> = line_content.chars().collect();
             let search_chars: Vec<char> = search_term.chars().collect();
-            
+
             // Check bounds
             if col + search_chars.len() > line_chars.len() {
                 return false;
             }
-            
+
             // Extract text at position and validate
             let text_at_pos: String = line_chars[col..col + search_chars.len()].iter().collect();
-            
+
             // Exact match validation
             if self.case_sensitive {
                 text_at_pos == search_term
@@ -850,10 +855,10 @@ impl Editor {
                 // Set cursor position
                 self.cursor_pos = (line, col);
                 self.clamp_cursor_to_line();
-                
+
                 // Always position search results consistently at top of viewport
                 self.viewport_offset.0 = line;
-                
+
                 self.needs_redraw = true;
                 true
             } else {
@@ -886,10 +891,10 @@ impl Editor {
                 // Set cursor position
                 self.cursor_pos = (line, col);
                 self.clamp_cursor_to_line();
-                
+
                 // Always position search results consistently at top of viewport
                 self.viewport_offset.0 = line;
-                
+
                 self.needs_redraw = true;
                 true
             } else {
@@ -923,11 +928,11 @@ impl Editor {
             self.modified = true;
             // Try to keep cursor in a reasonable position
             self.clamp_cursor_to_line();
-            
+
             // Performance optimizations
             self.invalidate_cache();
             self.needs_redraw = true;
-            
+
             // Invalidate highlighting cache for entire document
             self.highlighter.invalidate_cache_from_line(0);
         }
@@ -942,32 +947,32 @@ impl Editor {
 
         self.save_undo_state();
         let text = self.rope.to_string();
-        
+
         // For interactive replace, only replace the first occurrence
         if let Some(pos) = text.find(search_term) {
             let mut new_text = text.clone();
             new_text.replace_range(pos..pos + search_term.len(), replace_term);
-            
+
             self.rope = Rope::from_str(&new_text);
             self.modified = true;
-            
+
             // Move cursor to the replaced text
             let line = self.rope.char_to_line(pos);
             let line_start = self.rope.line_to_char(line);
             let col = pos - line_start;
             self.cursor_pos = (line, col);
             self.clamp_cursor_to_line();
-            
+
             // Performance optimizations
             self.invalidate_cache();
             self.needs_redraw = true;
-            
+
             // Invalidate highlighting cache for entire document
             self.highlighter.invalidate_cache_from_line(0);
-            
+
             return 1;
         }
-        
+
         0
     }
 
@@ -981,36 +986,45 @@ impl Editor {
             self.set_temporary_status_message(format!("Invalid line number: {line_num}"));
         }
     }
-    
+
     fn toggle_regex_mode(&mut self) {
         self.use_regex = !self.use_regex;
         let mode = if self.use_regex { "Regex" } else { "Literal" };
-        self.set_temporary_status_message(format!("Search mode: {} ({})", 
+        self.set_temporary_status_message(format!(
+            "Search mode: {} ({})",
             mode,
-            if self.use_regex { "Pattern matching" } else { "Exact text" }
+            if self.use_regex {
+                "Pattern matching"
+            } else {
+                "Exact text"
+            }
         ));
         self.needs_redraw = true;
-        
+
         // Re-search if we have an active search
         if !self.search_buffer.is_empty() && self.input_mode == InputMode::Find {
             let search_term = self.search_buffer.clone();
             self.perform_find(&search_term);
         }
     }
-    
+
     fn toggle_case_sensitive(&mut self) {
         self.case_sensitive = !self.case_sensitive;
-        let mode = if self.case_sensitive { "Case sensitive" } else { "Case insensitive" };
+        let mode = if self.case_sensitive {
+            "Case sensitive"
+        } else {
+            "Case insensitive"
+        };
         self.set_temporary_status_message(format!("Search: {}", mode));
         self.needs_redraw = true;
-        
+
         // Re-search if we have an active search
         if !self.search_buffer.is_empty() && self.input_mode == InputMode::Find {
             let search_term = self.search_buffer.clone();
             self.perform_find(&search_term);
         }
     }
-    
+
     fn add_to_search_history(&mut self, search_term: &str) {
         if !search_term.is_empty() {
             // Remove duplicates
@@ -1030,7 +1044,7 @@ impl Editor {
         if self.search_history.is_empty() {
             return false;
         }
-        
+
         if let Some(current_index) = self.search_history_index {
             if current_index > 0 {
                 self.search_history_index = Some(current_index - 1);
@@ -1041,7 +1055,7 @@ impl Editor {
             // Start from most recent
             self.search_history_index = Some(self.search_history.len() - 1);
         }
-        
+
         if let Some(index) = self.search_history_index {
             if let Some(term) = self.search_history.get(index) {
                 self.search_buffer = term.clone();
@@ -1076,12 +1090,12 @@ impl Editor {
 
     fn handle_tab_insertion(&mut self) {
         self.save_undo_state();
-        
+
         // Calculate how many spaces to insert to reach the next tab stop
         let current_col = self.cursor_pos.1;
         let tab_width = self.tab_width.max(1); // Ensure tab_width is at least 1
         let spaces_to_next_tab = tab_width - (current_col % tab_width);
-        
+
         // Insert the appropriate number of spaces
         for _ in 0..spaces_to_next_tab {
             self.insert_char(' ');
@@ -1089,16 +1103,15 @@ impl Editor {
     }
 }
 
-
 fn draw_help_modal(f: &mut Frame, area: Rect) {
     use ratatui::widgets::*;
-    
+
     // Calculate modal size (fit content width)
     let modal_width = 48u16; // Fixed width to match content
     let modal_height = (area.height as f32 * 0.8) as u16;
     let modal_x = (area.width - modal_width) / 2;
     let modal_y = (area.height - modal_height) / 2;
-    
+
     let modal_area = Rect {
         x: modal_x,
         y: modal_y,
@@ -1159,17 +1172,17 @@ Arrows   Move cursor
     // Clear the modal background
     let clear = Clear;
     f.render_widget(clear, modal_area);
-    
+
     // Draw the modal
     let help_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
         .style(Style::default().bg(Color::Black).fg(Color::White));
-    
+
     let help_paragraph = Paragraph::new(help_content)
         .block(help_block)
         .alignment(ratatui::layout::Alignment::Center);
-    
+
     f.render_widget(help_paragraph, modal_area);
 }
 
@@ -1209,7 +1222,7 @@ fn run_editor(
     loop {
         // Update viewport before drawing to ensure correct cursor positioning
         editor.update_viewport(terminal.size()?.width, terminal.size()?.height);
-        
+
         // Only redraw if something has changed
         if editor.needs_redraw {
             // Use synchronized output on macOS to reduce visual artifacts
@@ -1228,7 +1241,7 @@ fn run_editor(
                 let _ = execute!(stdout(), EndSynchronizedUpdate);
                 let _ = stdout().flush();
             }
-            
+
             editor.needs_redraw = false;
         }
 
@@ -1430,8 +1443,10 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 // Add to search history
                 let search_term = editor.search_buffer.clone();
                 editor.add_to_search_history(&search_term);
-                
-                if editor.find_navigation_mode == FindNavigationMode::ResultNavigation && !editor.search_matches.is_empty() {
+
+                if editor.find_navigation_mode == FindNavigationMode::ResultNavigation
+                    && !editor.search_matches.is_empty()
+                {
                     // If we already have matches and are in result mode, exit find mode
                     editor.input_mode = InputMode::Normal;
                     editor.search_matches.clear();
@@ -1465,7 +1480,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 editor.set_temporary_status_message("Search cancelled".to_string());
             }
             KeyCode::Up | KeyCode::Left => {
-                if key.code == KeyCode::Up && editor.find_navigation_mode == FindNavigationMode::HistoryBrowsing {
+                if key.code == KeyCode::Up
+                    && editor.find_navigation_mode == FindNavigationMode::HistoryBrowsing
+                {
                     // Navigate search history
                     if editor.navigate_search_history_up() {
                         editor.needs_redraw = true;
@@ -1477,7 +1494,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     } else {
                         editor.move_cursor_up();
                     }
-                } else if editor.find_navigation_mode == FindNavigationMode::ResultNavigation && !editor.search_matches.is_empty() {
+                } else if editor.find_navigation_mode == FindNavigationMode::ResultNavigation
+                    && !editor.search_matches.is_empty()
+                {
                     // Navigate to previous match
                     editor.find_previous_match();
                     let matches_count = editor.search_matches.len();
@@ -1497,7 +1516,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 }
             }
             KeyCode::Down | KeyCode::Right => {
-                if key.code == KeyCode::Down && editor.find_navigation_mode == FindNavigationMode::HistoryBrowsing {
+                if key.code == KeyCode::Down
+                    && editor.find_navigation_mode == FindNavigationMode::HistoryBrowsing
+                {
                     // Navigate search history
                     if editor.navigate_search_history_down() {
                         editor.needs_redraw = true;
@@ -1512,7 +1533,9 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     } else {
                         editor.move_cursor_down();
                     }
-                } else if editor.find_navigation_mode == FindNavigationMode::ResultNavigation && !editor.search_matches.is_empty() {
+                } else if editor.find_navigation_mode == FindNavigationMode::ResultNavigation
+                    && !editor.search_matches.is_empty()
+                {
                     // Navigate to next match
                     editor.find_next_match();
                     let matches_count = editor.search_matches.len();
@@ -1523,7 +1546,7 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                     );
                     editor.needs_redraw = true;
                 } else {
-                    // Default cursor movement  
+                    // Default cursor movement
                     if key.code == KeyCode::Down {
                         editor.move_cursor_down();
                     } else {
@@ -1887,7 +1910,9 @@ fn apply_search_highlighting(
     for &match_char_pos in &validated_matches {
         // Add text before the match
         if match_char_pos > current_char_pos {
-            let before_chars: String = line_chars[current_char_pos..match_char_pos].iter().collect();
+            let before_chars: String = line_chars[current_char_pos..match_char_pos]
+                .iter()
+                .collect();
             if !before_chars.is_empty() {
                 result_spans.push(Span::styled(
                     before_chars,
@@ -1937,7 +1962,9 @@ fn validate_match_at_position(line_content: &str, char_pos: usize, search_term: 
     }
 
     // Extract the text at this position
-    let text_at_pos: String = line_chars[char_pos..char_pos + search_chars.len()].iter().collect();
+    let text_at_pos: String = line_chars[char_pos..char_pos + search_chars.len()]
+        .iter()
+        .collect();
 
     // Validate it exactly matches the search term
     text_at_pos == search_term || text_at_pos.to_lowercase() == search_term.to_lowercase()
@@ -1955,24 +1982,52 @@ fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usiz
     Style::default()
 }
 
-
 fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     let area = f.area();
 
     // Bottom bar content based on mode
     let (help_left, help_right) = match editor.input_mode {
-        InputMode::ConfirmQuit => ("Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel".to_string(), String::new()),
-        InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
-            ("Enter: Confirm  Esc: Cancel  Type filename".to_string(), String::new())
-        }
-        InputMode::OptionsMenu => ("M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  Esc: Back".to_string(), String::new()),
-        InputMode::Find => ("Enter: Search/Exit  Esc/^C: Cancel  Arrows: Navigate  ^R: Replace  ^O: Options".to_string(), String::new()),
-        InputMode::FindOptionsMenu => ("C: Case sensitivity  R: Regex mode  Esc: Back to find".to_string(), String::new()),
-        InputMode::Replace => ("Enter: Next step  Esc/^C: Cancel  ^O: Options".to_string(), String::new()),
-        InputMode::ReplaceConfirm => ("Y: Replace This  N: Skip  A: Replace All  ^C: Cancel".to_string(), String::new()),
-        InputMode::GoToLine => ("Enter: Go  Esc/^C: Cancel  Type line number".to_string(), String::new()),
-        InputMode::Help => ("^H Help".to_string(), format!("Rune v{}", env!("CARGO_PKG_VERSION"))),
-        _ => ("^H Help".to_string(), format!("Rune v{}", env!("CARGO_PKG_VERSION"))),
+        InputMode::ConfirmQuit => (
+            "Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel".to_string(),
+            String::new(),
+        ),
+        InputMode::EnteringFilename | InputMode::EnteringSaveAs => (
+            "Enter: Confirm  Esc: Cancel  Type filename".to_string(),
+            String::new(),
+        ),
+        InputMode::OptionsMenu => (
+            "M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  Esc: Back".to_string(),
+            String::new(),
+        ),
+        InputMode::Find => (
+            "Enter: Search/Exit  Esc/^C: Cancel  Arrows: Navigate  ^R: Replace  ^O: Options"
+                .to_string(),
+            String::new(),
+        ),
+        InputMode::FindOptionsMenu => (
+            "C: Case sensitivity  R: Regex mode  Esc: Back to find".to_string(),
+            String::new(),
+        ),
+        InputMode::Replace => (
+            "Enter: Next step  Esc/^C: Cancel  ^O: Options".to_string(),
+            String::new(),
+        ),
+        InputMode::ReplaceConfirm => (
+            "Y: Replace This  N: Skip  A: Replace All  ^C: Cancel".to_string(),
+            String::new(),
+        ),
+        InputMode::GoToLine => (
+            "Enter: Go  Esc/^C: Cancel  Type line number".to_string(),
+            String::new(),
+        ),
+        InputMode::Help => (
+            "^H Help".to_string(),
+            format!("Rune v{}", env!("CARGO_PKG_VERSION")),
+        ),
+        _ => (
+            "^H Help".to_string(),
+            format!("Rune v{}", env!("CARGO_PKG_VERSION")),
+        ),
     };
     let help_height = 1u16;
 
@@ -2086,14 +2141,19 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "[No Name]".to_string());
         let search_modes = if editor.input_mode == InputMode::Find {
-            format!(" | Search: {} {}",
+            format!(
+                " | Search: {} {}",
                 if editor.use_regex { "Regex" } else { "Literal" },
-                if editor.case_sensitive { "(Case)" } else { "(NoCase)" }
+                if editor.case_sensitive {
+                    "(Case)"
+                } else {
+                    "(NoCase)"
+                }
             )
         } else {
             String::new()
         };
-        
+
         format!(
             "{} {} | Ln {}, Col {} | Mouse: {}{}",
             filename,
@@ -2125,9 +2185,9 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             Span::raw(&help_right),
         ])
     };
-    
-    let help_widget = Paragraph::new(help_line)
-        .style(Style::default().bg(Color::Cyan).fg(Color::Black));
+
+    let help_widget =
+        Paragraph::new(help_line).style(Style::default().bg(Color::Cyan).fg(Color::Black));
 
     f.render_widget(help_widget, help_area);
 
