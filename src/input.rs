@@ -18,8 +18,13 @@ pub fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         InputMode::ReplaceConfirm => handle_replace_confirm(editor, key),
         InputMode::GoToLine => handle_goto_line(editor, key),
         InputMode::Help => handle_help(editor, key),
+        InputMode::HexView => handle_hex_view(editor, key),
         InputMode::Normal => handle_normal(editor, key),
     }
+}
+
+fn handle_hex_view(_editor: &mut Editor, _key: KeyEvent) -> Result<bool> {
+    Ok(false)
 }
 
 fn handle_confirm_quit(editor: &mut Editor, key: KeyEvent) -> Result<bool> {

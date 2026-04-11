@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::config::{self, Config};
 use crate::constants;
+use crate::hex::HexViewState;
 use crate::search::{FindNavigationMode, ReplacePhase, SearchState};
 use crate::syntax::SyntaxHighlighter;
 
@@ -95,6 +96,7 @@ pub enum InputMode {
     ReplaceConfirm,
     GoToLine,
     Help,
+    HexView,
 }
 
 /// Main editor state
@@ -117,6 +119,7 @@ pub struct Editor {
     pub needs_redraw: bool,
     pub cached_text: Option<String>,
     pub cache_valid: bool,
+    pub hex_state: Option<HexViewState>,
 }
 
 impl Editor {
@@ -141,6 +144,7 @@ impl Editor {
             needs_redraw: true,
             cached_text: None,
             cache_valid: false,
+            hex_state: None,
         }
     }
 
@@ -554,6 +558,45 @@ impl Editor {
         self.search.goto_line_buffer.clear();
         self.status_message = "Go to line: ".to_string();
         self.needs_redraw = true;
+    }
+
+    pub fn toggle_hex_view(&mut self) {
+        if self.input_mode == InputMode::HexView {
+            self.hex_state = None;
+            self.input_mode = InputMode::Normal;
+            self.needs_redraw = true;
+            return;
+        }
+
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => {
+                self.set_temporary_status_message(
+                    "No file to view in hex mode".to_string(),
+                );
+                return;
+            }
+        };
+
+        if self.modified {
+            self.set_temporary_status_message(
+                "Save changes before hex view".to_string(),
+            );
+            return;
+        }
+
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                self.hex_state = Some(HexViewState::new(bytes));
+                self.input_mode = InputMode::HexView;
+                self.needs_redraw = true;
+            }
+            Err(e) => {
+                self.set_temporary_status_message(
+                    format!("Failed to read file: {e}"),
+                );
+            }
+        }
     }
 
     pub fn perform_find(&mut self, search_term: &str) -> bool {
