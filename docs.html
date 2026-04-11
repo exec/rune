@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rune Documentation</title>
+    <meta name="description" content="Complete documentation for rune, a modern CLI text editor built with Rust.">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0d1117;
+            --bg-secondary: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --green: #7ee787;
+            --green-dim: #238636;
+            --yellow: #e3b341;
+            --purple: #bc8cff;
+            --orange: #f0883e;
+            --cyan: #39d2e0;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+        }
+
+        /* === NAV === */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            background: rgba(13, 17, 23, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+        }
+        .nav-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 56px;
+        }
+        .nav-logo {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .nav-links { display: flex; gap: 24px; align-items: center; }
+        .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85em;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover { color: var(--text); }
+
+        /* === LAYOUT === */
+        .docs-layout {
+            display: grid;
+            grid-template-columns: 240px 1fr;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding-top: 56px;
+            min-height: 100vh;
+        }
+
+        /* === SIDEBAR === */
+        .sidebar {
+            position: sticky;
+            top: 56px;
+            height: calc(100vh - 56px);
+            overflow-y: auto;
+            border-right: 1px solid var(--border);
+            padding: 32px 16px;
+        }
+        .sidebar-section {
+            margin-bottom: 24px;
+        }
+        .sidebar-section h4 {
+            color: var(--text-muted);
+            font-size: 0.7em;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            margin-bottom: 8px;
+            padding-left: 8px;
+        }
+        .sidebar a {
+            display: block;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.8em;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.15s;
+            margin-bottom: 2px;
+        }
+        .sidebar a:hover {
+            color: var(--text);
+            background: rgba(88, 166, 255, 0.05);
+        }
+        .sidebar a.active {
+            color: var(--accent);
+            background: rgba(88, 166, 255, 0.08);
+        }
+
+        /* === CONTENT === */
+        .docs-content {
+            padding: 48px 48px 100px;
+            max-width: 800px;
+        }
+        .docs-content h1 {
+            font-size: 2.2em;
+            font-weight: 700;
+            margin-bottom: 8px;
+            line-height: 1.2;
+        }
+        .docs-content h2 {
+            font-size: 1.6em;
+            font-weight: 700;
+            margin-top: 64px;
+            margin-bottom: 16px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+            color: var(--text);
+        }
+        .docs-content h2:first-of-type {
+            border-top: none;
+            margin-top: 32px;
+        }
+        .docs-content h3 {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-top: 32px;
+            margin-bottom: 12px;
+            color: var(--text);
+        }
+        .docs-content p {
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            font-size: 0.95em;
+        }
+        .docs-content ul, .docs-content ol {
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            padding-left: 24px;
+            font-size: 0.95em;
+        }
+        .docs-content li {
+            margin-bottom: 6px;
+        }
+        .docs-content a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .docs-content a:hover { text-decoration: underline; }
+
+        .lead {
+            font-size: 1.1em;
+            color: var(--text-muted);
+            margin-bottom: 32px;
+        }
+
+        /* Code blocks */
+        .code-block {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin: 16px 0 24px;
+            overflow-x: auto;
+            font-size: 0.88em;
+            line-height: 1.6;
+        }
+        .code-block .prompt { color: var(--green); user-select: none; }
+        .code-block .comment { color: var(--text-muted); font-style: italic; }
+        .code-block .flag { color: var(--yellow); }
+        .code-block .value { color: #a5d6ff; }
+
+        code {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1px 6px;
+            font-size: 0.9em;
+            font-family: inherit;
+        }
+        kbd {
+            display: inline-block;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1px 8px;
+            font-size: 0.85em;
+            color: var(--yellow);
+            font-family: inherit;
+        }
+
+        /* Keybinding tables */
+        .kb-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0 32px;
+        }
+        .kb-table th {
+            text-align: left;
+            color: var(--text-muted);
+            font-size: 0.75em;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .kb-table td {
+            padding: 8px 16px;
+            border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+            font-size: 0.88em;
+        }
+        .kb-table .kb-key { color: var(--yellow); white-space: nowrap; }
+        .kb-table .kb-desc { color: var(--text-muted); }
+
+        /* Config table */
+        .config-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0 32px;
+        }
+        .config-table th {
+            text-align: left;
+            color: var(--text-muted);
+            font-size: 0.75em;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .config-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+            font-size: 0.85em;
+            color: var(--text-muted);
+        }
+        .config-table .cfg-key { color: var(--cyan); }
+        .config-table .cfg-type { color: var(--purple); }
+        .config-table .cfg-default { color: var(--green); }
+
+        /* Info boxes */
+        .info-box {
+            background: var(--bg-secondary);
+            border-left: 3px solid var(--accent);
+            border-radius: 0 8px 8px 0;
+            padding: 16px 20px;
+            margin: 16px 0 24px;
+            font-size: 0.9em;
+        }
+        .info-box.tip { border-left-color: var(--green); }
+        .info-box.warn { border-left-color: var(--yellow); }
+        .info-box strong {
+            display: block;
+            margin-bottom: 4px;
+            color: var(--text);
+        }
+        .info-box p { margin-bottom: 0; }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 32px 24px;
+            text-align: center;
+        }
+        .footer-links { display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; }
+        .footer-links a { color: var(--text-muted); text-decoration: none; font-size: 0.8em; }
+        .footer-links a:hover { color: var(--accent); }
+        .footer-copy { color: #484f58; font-size: 0.75em; margin-top: 16px; }
+
+        /* Mobile sidebar toggle */
+        .sidebar-toggle {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 200;
+            background: var(--accent);
+            color: var(--bg);
+            border: none;
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            font-size: 1.2em;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        @media (max-width: 768px) {
+            .docs-layout {
+                grid-template-columns: 1fr;
+            }
+            .sidebar {
+                display: none;
+                position: fixed;
+                top: 56px;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                z-index: 50;
+                background: var(--bg);
+                border-right: none;
+            }
+            .sidebar.open { display: block; }
+            .sidebar-toggle { display: block; }
+            .docs-content {
+                padding: 32px 16px 80px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+    <div class="nav-inner">
+        <a href="index.html" class="nav-logo">rune</a>
+        <div class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="index.html#features">Features</a>
+            <a href="index.html#install">Install</a>
+            <a href="https://github.com/exec/rune">GitHub</a>
+        </div>
+    </div>
+</nav>
+
+<div class="docs-layout">
+
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+    <div class="sidebar-section">
+        <h4>Getting Started</h4>
+        <a href="#getting-started">Overview</a>
+        <a href="#installation">Installation</a>
+        <a href="#first-steps">First Steps</a>
+        <a href="#opening-files">Opening Files</a>
+    </div>
+    <div class="sidebar-section">
+        <h4>Editing</h4>
+        <a href="#basic-editing">Basic Editing</a>
+        <a href="#selection">Selection and Clipboard</a>
+        <a href="#indentation">Indentation</a>
+        <a href="#comments">Comment Toggle</a>
+        <a href="#completion">Word Completion</a>
+        <a href="#undo-redo">Undo and Redo</a>
+    </div>
+    <div class="sidebar-section">
+        <h4>Navigation</h4>
+        <a href="#cursor-movement">Cursor Movement</a>
+        <a href="#goto-line">Go to Line</a>
+        <a href="#bracket-matching">Bracket Matching</a>
+    </div>
+    <div class="sidebar-section">
+        <h4>Search</h4>
+        <a href="#search">Find</a>
+        <a href="#replace">Replace</a>
+        <a href="#search-options">Options</a>
+    </div>
+    <div class="sidebar-section">
+        <h4>Tabs</h4>
+        <a href="#tabs">Working with Tabs</a>
+        <a href="#fuzzy-finder">Fuzzy Finder</a>
+        <a href="#directories">Opening Directories</a>
+    </div>
+    <div class="sidebar-section">
+        <h4>Views</h4>
+        <a href="#hex-view">Hex View</a>
+        <a href="#whitespace">Whitespace Display</a>
+        <a href="#line-numbers">Line Numbers</a>
+        <a href="#word-wrap">Word Wrap</a>
+    </div>
+    <div class="sidebar-section">
+        <h4>Advanced</h4>
+        <a href="#execute-command">Execute Command</a>
+        <a href="#syntax">Syntax Highlighting</a>
+        <a href="#mouse">Mouse Support</a>
+    </div>
+    <div class="sidebar-section">
+        <h4>Reference</h4>
+        <a href="#all-keybindings">All Keybindings</a>
+        <a href="#configuration">Configuration</a>
+        <a href="#supported-languages">Languages</a>
+    </div>
+</aside>
+
+<!-- CONTENT -->
+<main class="docs-content">
+
+<h1 id="getting-started">Rune Documentation</h1>
+<p class="lead">Complete guide to rune v1.4.1, a modern CLI text editor inspired by nano but with many more features.</p>
+
+<!-- ===== GETTING STARTED ===== -->
+
+<h2 id="installation">Installation</h2>
+
+<h3>Quick Install</h3>
+<p>The fastest way to install rune. Auto-detects your platform and installs the latest release binary.</p>
+<div class="code-block"><span class="prompt">$ </span>curl -fsSL https://exec.github.io/rune/install.sh | bash</div>
+
+<h3>Homebrew (macOS and Linux)</h3>
+<div class="code-block"><span class="prompt">$ </span>brew tap exec/rune
+<span class="prompt">$ </span>brew install rune-editor</div>
+
+<h3>Cargo (from source)</h3>
+<div class="code-block"><span class="prompt">$ </span>cargo install --git https://github.com/exec/rune</div>
+
+<h3>Arch Linux (AUR)</h3>
+<div class="code-block"><span class="prompt">$ </span>yay -S rune-editor
+<span class="comment"># or</span>
+<span class="prompt">$ </span>paru -S rune-editor</div>
+
+<h3>Build from source</h3>
+<div class="code-block"><span class="prompt">$ </span>git clone https://github.com/exec/rune
+<span class="prompt">$ </span>cd rune
+<span class="prompt">$ </span>cargo build --release
+<span class="prompt">$ </span>./target/release/rune</div>
+
+<h3>Supported platforms</h3>
+<ul>
+    <li>macOS -- Intel (x86_64) and Apple Silicon (aarch64)</li>
+    <li>Linux -- x86_64, ARM64 (aarch64), ARMv7</li>
+    <li>FreeBSD -- x86_64</li>
+    <li>NetBSD -- x86_64</li>
+</ul>
+
+<h2 id="first-steps">First Steps</h2>
+
+<p>Open a file by passing it as an argument:</p>
+<div class="code-block"><span class="prompt">$ </span>rune myfile.rs</div>
+
+<p>Create a new file:</p>
+<div class="code-block"><span class="prompt">$ </span>rune newfile.py</div>
+
+<p>Open multiple files in tabs:</p>
+<div class="code-block"><span class="prompt">$ </span>rune file1.rs file2.rs file3.rs</div>
+
+<p>Open a directory (all files loaded as tabs):</p>
+<div class="code-block"><span class="prompt">$ </span>rune .
+<span class="comment"># or recursively (respects .gitignore)</span>
+<span class="prompt">$ </span>rune -r .</div>
+
+<p>Just launch the editor with an empty buffer:</p>
+<div class="code-block"><span class="prompt">$ </span>rune</div>
+
+<div class="info-box tip">
+    <strong>Tip</strong>
+    <p>Press <kbd>Ctrl+H</kbd> at any time to open the built-in help reference as a tab inside the editor.</p>
+</div>
+
+<h2 id="opening-files">Opening Files</h2>
+
+<p>Rune detects the file type from its extension and automatically enables syntax highlighting. If the file does not exist, rune creates a new buffer and will create the file (including any parent directories) when you save.</p>
+
+<p>When you open multiple files, each gets its own tab. The tab bar appears at the top of the screen showing all open buffers. Modified files show an indicator in their tab title.</p>
+
+<p>When two files share the same name (e.g., <code>src/config.rs</code> and <code>tests/config.rs</code>), rune shows relative paths in the tab titles to disambiguate them.</p>
+
+<!-- ===== EDITING ===== -->
+
+<h2 id="basic-editing">Basic Editing</h2>
+
+<p>Rune is a modeless editor -- just start typing. There is no insert mode to enter. What you see is what you get.</p>
+
+<ul>
+    <li>Type to insert text at the cursor position</li>
+    <li><kbd>Enter</kbd> inserts a new line with auto-indent (matches the indentation of the current line)</li>
+    <li><kbd>Backspace</kbd> deletes the character before the cursor</li>
+    <li><kbd>Delete</kbd> deletes the character after the cursor (forward delete)</li>
+    <li><kbd>Ctrl+S</kbd> saves the file (prompts for a filename if new)</li>
+    <li><kbd>Ctrl+W</kbd> saves with a new filename (Save As)</li>
+    <li><kbd>Ctrl+Q</kbd> or <kbd>Ctrl+X</kbd> quits (prompts to save if there are unsaved changes)</li>
+</ul>
+
+<h2 id="selection">Selection and Clipboard</h2>
+
+<h3>Mark mode</h3>
+<p>Press <kbd>Alt+A</kbd> to start a selection at the current cursor position. Move the cursor to extend the selection -- the selected region is visually highlighted. Press <kbd>Alt+A</kbd> again or <kbd>Esc</kbd> to cancel the selection.</p>
+
+<h3>Cut, copy, and paste</h3>
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+K</td><td class="kb-desc">Cut the current line (or cut selection if mark mode is active)</td></tr>
+        <tr><td class="kb-key">Alt+6</td><td class="kb-desc">Copy the current line (or copy selection if mark mode is active)</td></tr>
+        <tr><td class="kb-key">Ctrl+U</td><td class="kb-desc">Paste the most recently cut/copied text</td></tr>
+    </tbody>
+</table>
+
+<div class="info-box">
+    <strong>Note</strong>
+    <p>Without a selection, <kbd>Ctrl+K</kbd> cuts the entire current line and <kbd>Alt+6</kbd> copies it. With a selection active, they operate on the selected text only.</p>
+</div>
+
+<h2 id="indentation">Indentation</h2>
+
+<p>Rune supports block indent and unindent for selected text:</p>
+
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Alt+}</td><td class="kb-desc">Indent the selected block (or current line) by one tab stop</td></tr>
+        <tr><td class="kb-key">Alt+{</td><td class="kb-desc">Unindent the selected block (or current line) by one tab stop</td></tr>
+    </tbody>
+</table>
+
+<p>The tab width is configurable (2, 4, or 8 spaces) via <kbd>Ctrl+O</kbd> options menu or the config file.</p>
+
+<p>When you press <kbd>Enter</kbd>, the new line is automatically indented to match the indentation level of the current line.</p>
+
+<h2 id="comments">Comment Toggle</h2>
+
+<p>Press <kbd>Alt+;</kbd> to toggle comments on the current line or selected lines. Rune is language-aware and uses the correct comment style:</p>
+
+<ul>
+    <li><code>//</code> for Rust, C, C++, Go, Java, JavaScript, TypeScript, Swift, Kotlin, Dart, Zig</li>
+    <li><code>#</code> for Python, Ruby, Shell, TOML, YAML, PHP, Elixir, Dockerfile</li>
+    <li><code>--</code> for SQL, Lua, Haskell</li>
+</ul>
+
+<p>If the line is already commented, <kbd>Alt+;</kbd> removes the comment prefix. If multiple lines are selected, all lines are toggled together.</p>
+
+<h2 id="completion">Word Completion</h2>
+
+<p>Press <kbd>Alt+\</kbd> to trigger word completion from the current buffer. Rune scans the buffer for words that match the prefix at the cursor position and inserts the first match. Press <kbd>Alt+\</kbd> again to cycle through additional matches.</p>
+
+<h2 id="undo-redo">Undo and Redo</h2>
+
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+Z</td><td class="kb-desc">Undo the last change</td></tr>
+        <tr><td class="kb-key">Ctrl+Y</td><td class="kb-desc">Redo the last undone change</td></tr>
+    </tbody>
+</table>
+
+<p>Rune maintains a history of up to 100 actions for undo/redo.</p>
+
+<!-- ===== NAVIGATION ===== -->
+
+<h2 id="cursor-movement">Cursor Movement</h2>
+
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Arrow keys</td><td class="kb-desc">Move cursor one character/line</td></tr>
+        <tr><td class="kb-key">Ctrl+Left/Right</td><td class="kb-desc">Jump by word</td></tr>
+        <tr><td class="kb-key">Home</td><td class="kb-desc">Go to start of line</td></tr>
+        <tr><td class="kb-key">End</td><td class="kb-desc">Go to end of line</td></tr>
+        <tr><td class="kb-key">Ctrl+Home</td><td class="kb-desc">Go to start of file</td></tr>
+        <tr><td class="kb-key">Ctrl+End</td><td class="kb-desc">Go to end of file</td></tr>
+        <tr><td class="kb-key">Page Up</td><td class="kb-desc">Scroll up one page</td></tr>
+        <tr><td class="kb-key">Page Down</td><td class="kb-desc">Scroll down one page</td></tr>
+        <tr><td class="kb-key">Ctrl+V</td><td class="kb-desc">Page down (nano-compatible)</td></tr>
+        <tr><td class="kb-key">Ctrl+Y</td><td class="kb-desc">Page up (nano-compatible)</td></tr>
+        <tr><td class="kb-key">Ctrl+C</td><td class="kb-desc">Show cursor position info (line, column, character count)</td></tr>
+    </tbody>
+</table>
+
+<h2 id="goto-line">Go to Line</h2>
+
+<p>Press <kbd>Ctrl+G</kbd> to jump to a specific line number. A prompt appears at the bottom of the screen -- type the line number and press <kbd>Enter</kbd>. Press <kbd>Esc</kbd> to cancel.</p>
+
+<h2 id="bracket-matching">Bracket Matching</h2>
+
+<p>Press <kbd>Alt+]</kbd> to jump to the matching bracket. Supports <code>()</code>, <code>[]</code>, <code>{}</code>. The cursor jumps from the opening bracket to the closing bracket and vice versa.</p>
+
+<!-- ===== SEARCH ===== -->
+
+<h2 id="search">Find</h2>
+
+<p>Press <kbd>Ctrl+F</kbd> to enter search mode. Type your search query and all matches are highlighted in real-time as you type.</p>
+
+<ul>
+    <li><kbd>Up/Down</kbd> arrows navigate between matches (shows "3/7 matches" counter)</li>
+    <li><kbd>Enter</kbd> exits search mode and stays at the current match</li>
+    <li><kbd>Esc</kbd> cancels the search and returns to the original cursor position</li>
+    <li>Search wraps around document boundaries</li>
+</ul>
+
+<h2 id="replace">Replace</h2>
+
+<p>From search mode, press <kbd>Ctrl+R</kbd> to switch to replace mode. You can also enter replace mode directly with <kbd>Ctrl+\</kbd> (nano-compatible).</p>
+
+<p>For each match, you are prompted with:</p>
+<ul>
+    <li><kbd>Y</kbd> -- replace this match and move to next</li>
+    <li><kbd>N</kbd> -- skip this match and move to next</li>
+    <li><kbd>A</kbd> -- replace all remaining matches</li>
+</ul>
+
+<h2 id="search-options">Search Options</h2>
+
+<p>While in search mode, you can toggle these options:</p>
+
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Option</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+C</td><td class="kb-desc">Toggle case sensitivity</td></tr>
+        <tr><td class="kb-key">Ctrl+R</td><td class="kb-desc">Toggle regex mode / enter replace</td></tr>
+    </tbody>
+</table>
+
+<p>Rune stores up to 50 search history entries. Use <kbd>Up/Down</kbd> arrows in the search prompt to recall previous searches.</p>
+
+<!-- ===== TABS ===== -->
+
+<h2 id="tabs">Working with Tabs</h2>
+
+<p>Rune supports multiple buffers via a tab bar at the top of the screen.</p>
+
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+T</td><td class="kb-desc">Open a new empty tab</td></tr>
+        <tr><td class="kb-key">Alt+Left</td><td class="kb-desc">Switch to the previous tab</td></tr>
+        <tr><td class="kb-key">Alt+Right</td><td class="kb-desc">Switch to the next tab</td></tr>
+        <tr><td class="kb-key">Alt+W</td><td class="kb-desc">Close the current tab (prompts to save if modified)</td></tr>
+        <tr><td class="kb-key">Ctrl+P</td><td class="kb-desc">Open the fuzzy finder to jump between tabs</td></tr>
+    </tbody>
+</table>
+
+<h2 id="fuzzy-finder">Fuzzy Finder</h2>
+
+<p>Press <kbd>Ctrl+P</kbd> to open the fuzzy finder. It shows a list of all open tabs. Start typing to filter -- the matching is fuzzy, so you can type any substring of the filename. Press <kbd>Enter</kbd> to jump to the selected tab, or <kbd>Esc</kbd> to cancel.</p>
+
+<h2 id="directories">Opening Directories</h2>
+
+<p>You can open all files in a directory as tabs:</p>
+
+<div class="code-block"><span class="comment"># Open files in current directory</span>
+<span class="prompt">$ </span>rune .
+
+<span class="comment"># Open files recursively (respects .gitignore)</span>
+<span class="prompt">$ </span>rune -r .
+
+<span class="comment"># Open a specific directory</span>
+<span class="prompt">$ </span>rune src/</div>
+
+<p>When opening recursively with <code>-r</code>, rune respects your <code>.gitignore</code> rules and skips ignored files.</p>
+
+<!-- ===== VIEWS ===== -->
+
+<h2 id="hex-view">Hex View</h2>
+
+<p>Press <kbd>Ctrl+B</kbd> to toggle the hex view. This shows the raw bytes of the buffer in a traditional hex dump format with ASCII representation alongside. The cursor position is synced between the text view and hex view, so you can navigate in hex view and return to the same position in text view.</p>
+
+<p>This is useful for inspecting binary files, checking encoding, or debugging invisible characters.</p>
+
+<h2 id="whitespace">Whitespace Display</h2>
+
+<p>Press <kbd>Alt+P</kbd> to toggle whitespace visibility. When enabled, spaces, tabs, and line endings are rendered with visible markers so you can see exactly what whitespace characters are in the file.</p>
+
+<h2 id="line-numbers">Line Numbers</h2>
+
+<p>Toggle line numbers via the options menu (<kbd>Ctrl+O</kbd>, then <kbd>L</kbd>) or set <code>show_line_numbers</code> in the config file. Line numbers appear in the left gutter.</p>
+
+<h2 id="word-wrap">Word Wrap</h2>
+
+<p>Toggle word wrap via the options menu (<kbd>Ctrl+O</kbd>, then <kbd>W</kbd>) or set <code>word_wrap</code> in the config file. When disabled, long lines extend beyond the screen edge and the view scrolls horizontally as you navigate.</p>
+
+<!-- ===== ADVANCED ===== -->
+
+<h2 id="execute-command">Execute Command</h2>
+
+<p>Press <kbd>Ctrl+E</kbd> to run a shell command from within the editor. A prompt appears at the bottom -- type the command and press <kbd>Enter</kbd>. You will be asked to confirm before execution.</p>
+
+<p>If you have a selection active, the selected text is piped as stdin to the command, and the output replaces the selection. This lets you pipe text through external tools like <code>sort</code>, <code>fmt</code>, <code>jq</code>, etc.</p>
+
+<div class="info-box warn">
+    <strong>Safety limits</strong>
+    <p>Commands have a 10-second timeout and a 1MB output limit. If a command exceeds either limit, it is terminated.</p>
+</div>
+
+<h2 id="syntax">Syntax Highlighting</h2>
+
+<p>Rune automatically detects the file type from the extension and applies syntax highlighting. Highlighting is lazy (only visible lines are processed) and cached (scrolling back to previously viewed lines is instant).</p>
+
+<p>Highlighted elements include:</p>
+<ul>
+    <li>Keywords (language-specific reserved words)</li>
+    <li>Types (built-in and common type names)</li>
+    <li>Strings (with proper escape sequence handling)</li>
+    <li>Numbers (integers, floats, hex literals)</li>
+    <li>Comments (line and block comments)</li>
+</ul>
+
+<p>See the <a href="#supported-languages">supported languages</a> section for the full list.</p>
+
+<h2 id="mouse">Mouse Support</h2>
+
+<p>When enabled (the default), mouse support provides:</p>
+<ul>
+    <li><strong>Click</strong> to position the cursor</li>
+    <li><strong>Drag</strong> to select text</li>
+    <li><strong>Scroll wheel</strong> to scroll the document</li>
+</ul>
+
+<p>You can disable mouse support via <kbd>Ctrl+O</kbd> then <kbd>M</kbd>, or set <code>mouse_enabled = false</code> in the config file. Disabling mouse support allows your terminal's native text selection (useful for copying text to the system clipboard).</p>
+
+<!-- ===== REFERENCE ===== -->
+
+<h2 id="all-keybindings">All Keybindings</h2>
+
+<h3>File Operations</h3>
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+S</td><td class="kb-desc">Save file (prompts for filename if new)</td></tr>
+        <tr><td class="kb-key">Ctrl+W</td><td class="kb-desc">Save As (save with new filename)</td></tr>
+        <tr><td class="kb-key">Ctrl+Q / Ctrl+X</td><td class="kb-desc">Quit editor (prompts to save if modified)</td></tr>
+        <tr><td class="kb-key">Ctrl+H</td><td class="kb-desc">Open help as a tab</td></tr>
+    </tbody>
+</table>
+
+<h3>Editing</h3>
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+Z</td><td class="kb-desc">Undo</td></tr>
+        <tr><td class="kb-key">Ctrl+Y</td><td class="kb-desc">Redo</td></tr>
+        <tr><td class="kb-key">Ctrl+K</td><td class="kb-desc">Cut line (or selection)</td></tr>
+        <tr><td class="kb-key">Alt+6</td><td class="kb-desc">Copy line (or selection)</td></tr>
+        <tr><td class="kb-key">Ctrl+U</td><td class="kb-desc">Paste</td></tr>
+        <tr><td class="kb-key">Alt+A</td><td class="kb-desc">Toggle mark/selection mode</td></tr>
+        <tr><td class="kb-key">Delete</td><td class="kb-desc">Delete character forward</td></tr>
+        <tr><td class="kb-key">Alt+}</td><td class="kb-desc">Indent selected block</td></tr>
+        <tr><td class="kb-key">Alt+{</td><td class="kb-desc">Unindent selected block</td></tr>
+        <tr><td class="kb-key">Alt+;</td><td class="kb-desc">Toggle comment (language-aware: //, #, --)</td></tr>
+        <tr><td class="kb-key">Alt+\</td><td class="kb-desc">Word completion from buffer</td></tr>
+        <tr><td class="kb-key">Alt+V</td><td class="kb-desc">Verbatim input (insert literal control character)</td></tr>
+        <tr><td class="kb-key">Ctrl+E</td><td class="kb-desc">Execute shell command</td></tr>
+    </tbody>
+</table>
+
+<h3>Navigation</h3>
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Arrow keys</td><td class="kb-desc">Move cursor</td></tr>
+        <tr><td class="kb-key">Ctrl+Left/Right</td><td class="kb-desc">Jump by word</td></tr>
+        <tr><td class="kb-key">Home / End</td><td class="kb-desc">Start / end of line</td></tr>
+        <tr><td class="kb-key">Ctrl+Home / Ctrl+End</td><td class="kb-desc">Start / end of file</td></tr>
+        <tr><td class="kb-key">Ctrl+G</td><td class="kb-desc">Go to line number</td></tr>
+        <tr><td class="kb-key">Alt+]</td><td class="kb-desc">Jump to matching bracket</td></tr>
+        <tr><td class="kb-key">Ctrl+C</td><td class="kb-desc">Show cursor position info</td></tr>
+        <tr><td class="kb-key">Page Up / Page Down</td><td class="kb-desc">Scroll by page</td></tr>
+        <tr><td class="kb-key">Ctrl+V / Ctrl+Y</td><td class="kb-desc">Page down / Page up (nano-style)</td></tr>
+        <tr><td class="kb-key">Mouse click</td><td class="kb-desc">Position cursor</td></tr>
+        <tr><td class="kb-key">Mouse scroll</td><td class="kb-desc">Scroll document</td></tr>
+    </tbody>
+</table>
+
+<h3>Search and Replace</h3>
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+F</td><td class="kb-desc">Find (incremental search with live highlighting)</td></tr>
+        <tr><td class="kb-key">Ctrl+R</td><td class="kb-desc">Replace (within find mode)</td></tr>
+        <tr><td class="kb-key">Ctrl+\</td><td class="kb-desc">Replace (nano-compatible direct entry)</td></tr>
+        <tr><td class="kb-key">Up/Down in search</td><td class="kb-desc">Navigate between matches</td></tr>
+        <tr><td class="kb-key">Esc</td><td class="kb-desc">Cancel search, return to original position</td></tr>
+    </tbody>
+</table>
+
+<h3>Tabs</h3>
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+T</td><td class="kb-desc">Open new tab</td></tr>
+        <tr><td class="kb-key">Alt+Left / Alt+Right</td><td class="kb-desc">Switch to previous / next tab</td></tr>
+        <tr><td class="kb-key">Alt+W</td><td class="kb-desc">Close current tab</td></tr>
+        <tr><td class="kb-key">Ctrl+P</td><td class="kb-desc">Fuzzy finder (jump between tabs)</td></tr>
+    </tbody>
+</table>
+
+<h3>View</h3>
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">Ctrl+B</td><td class="kb-desc">Toggle hex view</td></tr>
+        <tr><td class="kb-key">Alt+P</td><td class="kb-desc">Toggle whitespace display</td></tr>
+        <tr><td class="kb-key">Ctrl+O</td><td class="kb-desc">Options menu (line numbers, wrap, tab width, mouse)</td></tr>
+    </tbody>
+</table>
+
+<h2 id="configuration">Configuration</h2>
+
+<p>Rune stores its configuration at <code>~/.config/rune/config.toml</code>. You can also change settings live via the options menu (<kbd>Ctrl+O</kbd>) -- changes are saved automatically.</p>
+
+<h3>Configuration file format</h3>
+
+<div class="code-block"><span class="comment"># ~/.config/rune/config.toml</span>
+
+<span class="flag">mouse_enabled</span> = <span class="value">true</span>       <span class="comment"># Enable/disable mouse support</span>
+<span class="flag">show_line_numbers</span> = <span class="value">false</span>  <span class="comment"># Show/hide line numbers</span>
+<span class="flag">tab_width</span> = <span class="value">4</span>              <span class="comment"># Tab width: 2, 4, or 8</span>
+<span class="flag">word_wrap</span> = <span class="value">false</span>          <span class="comment"># Enable/disable word wrap</span></div>
+
+<h3>All configuration options</h3>
+
+<table class="config-table">
+    <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+        <tr>
+            <td class="cfg-key">mouse_enabled</td>
+            <td class="cfg-type">bool</td>
+            <td class="cfg-default">true</td>
+            <td>Enable mouse support (click, drag, scroll). Disable for native terminal selection.</td>
+        </tr>
+        <tr>
+            <td class="cfg-key">show_line_numbers</td>
+            <td class="cfg-type">bool</td>
+            <td class="cfg-default">false</td>
+            <td>Show line numbers in the left gutter.</td>
+        </tr>
+        <tr>
+            <td class="cfg-key">tab_width</td>
+            <td class="cfg-type">int</td>
+            <td class="cfg-default">4</td>
+            <td>Number of spaces per tab stop. Valid values: 2, 4, 8.</td>
+        </tr>
+        <tr>
+            <td class="cfg-key">word_wrap</td>
+            <td class="cfg-type">bool</td>
+            <td class="cfg-default">false</td>
+            <td>Wrap long lines at the screen edge. When off, lines scroll horizontally.</td>
+        </tr>
+    </tbody>
+</table>
+
+<h3>Options menu</h3>
+
+<p>Press <kbd>Ctrl+O</kbd> to open the live options menu. Press the key shown next to each option to toggle it:</p>
+
+<table class="kb-table">
+    <thead><tr><th>Key</th><th>Option</th></tr></thead>
+    <tbody>
+        <tr><td class="kb-key">M</td><td class="kb-desc">Toggle mouse mode</td></tr>
+        <tr><td class="kb-key">L</td><td class="kb-desc">Toggle line numbers</td></tr>
+        <tr><td class="kb-key">W</td><td class="kb-desc">Toggle word wrap</td></tr>
+        <tr><td class="kb-key">T</td><td class="kb-desc">Cycle tab width (2 -> 4 -> 8 -> 2)</td></tr>
+    </tbody>
+</table>
+
+<p>Changes take effect immediately and are saved to the config file.</p>
+
+<h2 id="supported-languages">Supported Languages</h2>
+
+<p>Rune provides syntax highlighting for 26 languages. Detection is automatic based on file extension.</p>
+
+<table class="config-table">
+    <thead><tr><th>Language</th><th>Extensions</th><th>Comment style</th></tr></thead>
+    <tbody>
+        <tr><td>Rust</td><td>.rs</td><td>//</td></tr>
+        <tr><td>Python</td><td>.py</td><td>#</td></tr>
+        <tr><td>JavaScript</td><td>.js, .mjs, .cjs</td><td>//</td></tr>
+        <tr><td>TypeScript</td><td>.ts, .tsx</td><td>//</td></tr>
+        <tr><td>Go</td><td>.go</td><td>//</td></tr>
+        <tr><td>C</td><td>.c, .h</td><td>//</td></tr>
+        <tr><td>C++</td><td>.cpp, .cc, .hpp</td><td>//</td></tr>
+        <tr><td>Java</td><td>.java</td><td>//</td></tr>
+        <tr><td>Shell / Bash</td><td>.sh, .bash, .zsh</td><td>#</td></tr>
+        <tr><td>HTML</td><td>.html, .htm</td><td>&lt;!-- --&gt;</td></tr>
+        <tr><td>CSS</td><td>.css</td><td>/* */</td></tr>
+        <tr><td>JSON</td><td>.json</td><td>--</td></tr>
+        <tr><td>TOML</td><td>.toml</td><td>#</td></tr>
+        <tr><td>YAML</td><td>.yaml, .yml</td><td>#</td></tr>
+        <tr><td>Markdown</td><td>.md</td><td>--</td></tr>
+        <tr><td>SQL</td><td>.sql</td><td>--</td></tr>
+        <tr><td>Ruby</td><td>.rb</td><td>#</td></tr>
+        <tr><td>PHP</td><td>.php</td><td>// or #</td></tr>
+        <tr><td>Lua</td><td>.lua</td><td>--</td></tr>
+        <tr><td>Swift</td><td>.swift</td><td>//</td></tr>
+        <tr><td>Kotlin</td><td>.kt, .kts</td><td>//</td></tr>
+        <tr><td>Dart</td><td>.dart</td><td>//</td></tr>
+        <tr><td>Zig</td><td>.zig</td><td>//</td></tr>
+        <tr><td>Haskell</td><td>.hs</td><td>--</td></tr>
+        <tr><td>Elixir</td><td>.ex, .exs</td><td>#</td></tr>
+        <tr><td>Dockerfile</td><td>Dockerfile</td><td>#</td></tr>
+    </tbody>
+</table>
+
+<div class="info-box tip">
+    <strong>Performance</strong>
+    <p>Syntax highlighting is lazy (only visible lines are processed), incremental (only changed lines are re-highlighted), and cached (scrolling back to seen lines is instant). There is zero startup cost -- highlighting loads on demand.</p>
+</div>
+
+</main>
+</div>
+
+<!-- FOOTER -->
+<footer>
+    <div class="footer-links">
+        <a href="index.html">Home</a>
+        <a href="https://github.com/exec/rune">GitHub</a>
+        <a href="https://github.com/exec/rune/releases">Releases</a>
+        <a href="https://github.com/exec/rune/issues">Issues</a>
+        <a href="https://github.com/exec/rune/blob/master/LICENSE">MIT License</a>
+    </div>
+    <div class="footer-copy">rune v1.4.1 -- Built with Rust. MIT License.</div>
+</footer>
+
+<!-- Mobile sidebar toggle -->
+<button class="sidebar-toggle" id="sidebar-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">?</button>
+
+<script>
+// Close sidebar on mobile when a link is clicked
+var sidebarLinks = document.querySelectorAll('.sidebar a');
+for (var i = 0; i < sidebarLinks.length; i++) {
+    sidebarLinks[i].addEventListener('click', function() {
+        document.getElementById('sidebar').classList.remove('open');
+    });
+}
+
+// Highlight active sidebar link on scroll
+var sections = document.querySelectorAll('[id]');
+var sidebarAnchors = document.querySelectorAll('.sidebar a');
+
+window.addEventListener('scroll', function() {
+    var scrollPos = window.scrollY + 80;
+    var current = '';
+
+    for (var i = 0; i < sections.length; i++) {
+        if (sections[i].offsetTop <= scrollPos) {
+            current = sections[i].getAttribute('id');
+        }
+    }
+
+    for (var j = 0; j < sidebarAnchors.length; j++) {
+        sidebarAnchors[j].classList.remove('active');
+        if (sidebarAnchors[j].getAttribute('href') === '#' + current) {
+            sidebarAnchors[j].classList.add('active');
+        }
+    }
+}, { passive: true });
+</script>
+
+</body>
+</html>

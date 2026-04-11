@@ -3,187 +3,1061 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rune Editor - Install</title>
+    <title>Rune - A Modern CLI Text Editor</title>
+    <meta name="description" content="Rune is a modern CLI text editor built with Rust. The simplicity of nano, the power you actually need.">
     <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #1c2129;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --accent-dim: #1f6feb;
+            --green: #7ee787;
+            --green-dim: #238636;
+            --red: #f85149;
+            --yellow: #e3b341;
+            --purple: #bc8cff;
+            --orange: #f0883e;
+            --cyan: #39d2e0;
+        }
+
+        html { scroll-behavior: smooth; }
+
         body {
             font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-            background: #0d1117;
-            color: #c9d1d9;
-            margin: 0;
-            padding: 40px 20px;
-            line-height: 1.6;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            overflow-x: hidden;
         }
-        .container {
-            max-width: 800px;
+
+        /* === NAV === */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            background: rgba(13, 17, 23, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+        }
+        .nav-inner {
+            max-width: 1200px;
             margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 56px;
         }
-        h1 {
-            color: #58a6ff;
-            font-size: 3em;
-            margin-bottom: 0.2em;
-            text-align: center;
-        }
-        .subtitle {
-            text-align: center;
-            color: #8b949e;
+        .nav-logo {
             font-size: 1.2em;
-            margin-bottom: 2em;
+            font-weight: 700;
+            color: var(--accent);
+            text-decoration: none;
         }
-        .install-box {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            padding: 24px;
-            margin: 2em 0;
+        .nav-links { display: flex; gap: 24px; align-items: center; }
+        .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85em;
+            transition: color 0.2s;
         }
-        .install-command {
-            background: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 16px;
-            font-family: inherit;
-            color: #7ee787;
-            font-size: 16px;
-            margin: 16px 0;
-            word-break: break-all;
-            user-select: all;
+        .nav-links a:hover { color: var(--text); }
+        .nav-github {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
-        .copy-btn {
-            background: #238636;
+        .nav-github svg { width: 18px; height: 18px; fill: currentColor; }
+
+        /* === HERO === */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 120px 24px 80px;
+            position: relative;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 800px;
+            height: 600px;
+            background: radial-gradient(ellipse, rgba(88, 166, 255, 0.08) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .hero-badge {
+            display: inline-block;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 4px 16px;
+            font-size: 0.8em;
+            color: var(--green);
+            margin-bottom: 32px;
+        }
+        .hero h1 {
+            font-size: clamp(3em, 8vw, 6em);
+            font-weight: 800;
+            color: var(--text);
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+            margin-bottom: 16px;
+        }
+        .hero h1 span { color: var(--accent); }
+        .hero-tagline {
+            font-size: clamp(1em, 2.5vw, 1.4em);
+            color: var(--text-muted);
+            max-width: 600px;
+            margin: 0 auto 48px;
+            line-height: 1.5;
+        }
+        .hero-install {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 24px;
+            display: inline-flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+            max-width: 100%;
+        }
+        .hero-install code {
+            color: var(--green);
+            font-size: clamp(0.8em, 2vw, 1em);
+            white-space: nowrap;
+            overflow-x: auto;
+        }
+        .hero-install .copy-btn {
+            background: var(--green-dim);
             color: white;
             border: none;
-            padding: 8px 16px;
+            padding: 6px 14px;
             border-radius: 6px;
             cursor: pointer;
             font-family: inherit;
+            font-size: 0.85em;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+        .hero-install .copy-btn:hover { background: #2ea043; }
+        .hero-links {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .hero-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.9em;
+            transition: color 0.2s;
+        }
+        .hero-links a:hover { color: var(--accent); }
+        .hero-scroll {
+            position: absolute;
+            bottom: 40px;
+            color: var(--text-muted);
+            font-size: 0.8em;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+
+        /* === TERMINAL MOCKUP === */
+        .terminal {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            max-width: 100%;
+            font-size: clamp(0.65em, 1.4vw, 0.85em);
+            line-height: 1.5;
+        }
+        .terminal-bar {
+            background: var(--bg-secondary);
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        .terminal-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+        .terminal-dot.red { background: #f85149; }
+        .terminal-dot.yellow { background: #e3b341; }
+        .terminal-dot.green { background: #7ee787; }
+        .terminal-title {
+            color: var(--text-muted);
+            font-size: 0.9em;
             margin-left: 8px;
         }
-        .copy-btn:hover {
-            background: #2ea043;
-        }
-        .platforms {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-            margin: 2em 0;
-        }
-        .platform {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
+        .terminal-body {
             padding: 16px;
+            overflow-x: auto;
+        }
+        .terminal-body pre {
+            margin: 0;
+            white-space: pre;
+            font-family: inherit;
+        }
+        /* syntax colors for mockups */
+        .t-keyword { color: var(--purple); }
+        .t-string { color: #a5d6ff; }
+        .t-comment { color: var(--text-muted); font-style: italic; }
+        .t-type { color: var(--cyan); }
+        .t-number { color: var(--orange); }
+        .t-fn { color: #d2a8ff; }
+        .t-macro { color: var(--green); }
+        .t-line { color: #484f58; user-select: none; }
+        .t-sel { background: rgba(88, 166, 255, 0.2); }
+        .t-match { background: rgba(126, 231, 135, 0.25); border-radius: 2px; }
+        .t-tab { color: var(--accent); background: rgba(88, 166, 255, 0.08); border-radius: 3px; padding: 1px 6px; }
+        .t-tab-active { color: var(--text); background: var(--bg); border-radius: 3px; padding: 1px 6px; }
+        .t-status { color: var(--text-muted); }
+        .t-cursor { background: var(--text); color: var(--bg); }
+        .t-help { color: var(--accent); }
+        .t-helpkey { color: var(--yellow); }
+
+        /* === SECTIONS === */
+        section {
+            padding: 100px 24px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .section-label {
+            font-size: 0.8em;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            margin-bottom: 12px;
+        }
+        .section-title {
+            font-size: clamp(1.8em, 4vw, 2.8em);
+            font-weight: 700;
+            margin-bottom: 16px;
+            line-height: 1.2;
+        }
+        .section-desc {
+            color: var(--text-muted);
+            font-size: 1.05em;
+            max-width: 650px;
+            margin-bottom: 48px;
+        }
+        .divider {
+            max-width: 1200px;
+            margin: 0 auto;
+            border: none;
+            border-top: 1px solid var(--border);
+        }
+
+        /* === FEATURE GRID === */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+        }
+        .feature-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        .feature-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+        .feature-icon {
+            font-size: 1.6em;
+            margin-bottom: 16px;
+            display: block;
+            color: var(--accent);
+        }
+        .feature-card h3 {
+            font-size: 1.1em;
+            margin-bottom: 8px;
+            color: var(--text);
+        }
+        .feature-card p {
+            color: var(--text-muted);
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+        .feature-card kbd {
+            display: inline-block;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1px 6px;
+            font-size: 0.85em;
+            color: var(--yellow);
+            font-family: inherit;
+        }
+
+        /* === SHOWCASE (terminal + description side by side) === */
+        .showcase {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 48px;
+            align-items: center;
+            margin-bottom: 80px;
+        }
+        .showcase.reverse { direction: rtl; }
+        .showcase.reverse > * { direction: ltr; }
+        .showcase-text h3 {
+            font-size: 1.5em;
+            margin-bottom: 12px;
+        }
+        .showcase-text p {
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            font-size: 0.95em;
+        }
+        .showcase-text ul {
+            list-style: none;
+            padding: 0;
+        }
+        .showcase-text ul li {
+            color: var(--text-muted);
+            font-size: 0.9em;
+            padding: 4px 0;
+        }
+        .showcase-text ul li::before {
+            content: '>';
+            color: var(--green);
+            margin-right: 10px;
+            font-weight: 700;
+        }
+
+        /* === KEYBINDINGS === */
+        .keybindings-search {
+            width: 100%;
+            max-width: 500px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.95em;
+            margin-bottom: 32px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .keybindings-search:focus { border-color: var(--accent); }
+        .keybindings-search::placeholder { color: #484f58; }
+
+        .kb-categories {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 24px;
+        }
+        .kb-cat-btn {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px 14px;
+            color: var(--text-muted);
+            font-family: inherit;
+            font-size: 0.8em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .kb-cat-btn:hover, .kb-cat-btn.active {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: rgba(88, 166, 255, 0.08);
+        }
+
+        .kb-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .kb-table th {
+            text-align: left;
+            color: var(--text-muted);
+            font-size: 0.8em;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .kb-table td {
+            padding: 10px 16px;
+            border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+            font-size: 0.9em;
+        }
+        .kb-table tr:hover td { background: rgba(88, 166, 255, 0.03); }
+        .kb-table .kb-key {
+            color: var(--yellow);
+            white-space: nowrap;
+        }
+        .kb-table .kb-desc { color: var(--text-muted); }
+        .kb-table .kb-cat-label {
+            color: var(--accent);
+            font-size: 0.75em;
+            background: rgba(88, 166, 255, 0.08);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        /* === INSTALL SECTION === */
+        .install-methods {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+        .install-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px;
+        }
+        .install-card h3 {
+            color: var(--accent);
+            font-size: 1em;
+            margin-bottom: 16px;
+        }
+        .install-card .cmd {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px 16px;
+            color: var(--green);
+            font-size: 0.85em;
+            margin: 8px 0;
+            word-break: break-all;
+            cursor: pointer;
+            transition: border-color 0.2s;
+            position: relative;
+        }
+        .install-card .cmd:hover { border-color: var(--accent); }
+        .install-card .cmd::after {
+            content: 'click to copy';
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 0.8em;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .install-card .cmd:hover::after { opacity: 1; }
+        .install-card p {
+            color: var(--text-muted);
+            font-size: 0.85em;
+        }
+
+        /* === STATS === */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 24px;
+            margin-top: 48px;
+        }
+        .stat {
+            text-align: center;
+            padding: 24px;
+        }
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: 800;
+            color: var(--accent);
+            line-height: 1;
+            margin-bottom: 8px;
+        }
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 0.85em;
+        }
+
+        /* === FOOTER === */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 48px 24px;
             text-align: center;
         }
-        .github-link {
-            color: #58a6ff;
+        .footer-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .footer-links {
+            display: flex;
+            gap: 24px;
+            justify-content: center;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .footer-links a {
+            color: var(--text-muted);
             text-decoration: none;
+            font-size: 0.85em;
+            transition: color 0.2s;
         }
-        .github-link:hover {
-            text-decoration: underline;
+        .footer-links a:hover { color: var(--accent); }
+        .footer-copy {
+            color: #484f58;
+            font-size: 0.8em;
         }
-        .warning {
-            background: #1e2124;
-            border-left: 4px solid #f85149;
-            padding: 16px;
-            margin: 16px 0;
-            border-radius: 0 6px 6px 0;
+
+        /* === RESPONSIVE === */
+        @media (max-width: 768px) {
+            .showcase {
+                grid-template-columns: 1fr;
+                gap: 32px;
+            }
+            .showcase.reverse { direction: ltr; }
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+            .nav-links a.hide-mobile { display: none; }
+            section { padding: 60px 16px; }
+            .hero { padding: 100px 16px 60px; }
+        }
+
+        /* === LANGUAGE BADGES === */
+        .lang-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .lang-badge {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 4px 12px;
+            font-size: 0.8em;
+            color: var(--text-muted);
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🚀 Rune</h1>
-        <div class="subtitle">The Modern Text Editor for Nano Users</div>
-        
-        <div class="install-box">
-            <h2>Quick Install</h2>
-            <p>Install Rune Editor with a single command:</p>
-            <div style="display: flex; align-items: center;">
-                <code class="install-command" id="install-cmd">curl -fsSL https://exec.github.io/rune/install.sh | bash</code>
-                <button class="copy-btn" onclick="copyInstallCommand()">Copy</button>
-            </div>
-            
-            <div class="warning">
-                <strong>Always review scripts before running:</strong><br>
-                <a href="https://exec.github.io/rune/install.sh" class="github-link">View install.sh source</a>
-            </div>
-        </div>
 
-        <div class="install-box">
-            <h2>✨ What's New in v1.2.3</h2>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0;">
-                <div>
-                    <h3 style="color: #7ee787; margin-bottom: 8px;">🔍 Enhanced Find & Replace</h3>
-                    <ul style="margin: 0; padding-left: 20px; color: #8b949e;">
-                        <li>Unified workflow: <code>^F</code> to find, <code>^R</code> within find to replace</li>
-                        <li>Nano-compatible <code>^\</code> replace key</li>
-                        <li>Y/N/A confirmation just like nano</li>
-                        <li>Full regex support with smart fallback</li>
-                    </ul>
-                </div>
-                <div>
-                    <h3 style="color: #7ee787; margin-bottom: 8px;">⚡ Performance & Stability</h3>
-                    <ul style="margin: 0; padding-left: 20px; color: #8b949e;">
-                        <li>95% CPU reduction with smart caching</li>
-                        <li>Search history navigation with arrow keys</li>
-                        <li>Case-sensitive and regex search options</li>
-                        <li>Improved file save prompts and error handling</li>
-                    </ul>
-                </div>
-            </div>
-            <div style="text-align: center; margin-top: 16px;">
-                <em style="color: #8b949e;">Finally, a text editor that feels like home for nano users – but with the power you've always wanted.</em>
-            </div>
+<!-- NAV -->
+<nav>
+    <div class="nav-inner">
+        <a href="#" class="nav-logo">rune</a>
+        <div class="nav-links">
+            <a href="#features" class="hide-mobile">Features</a>
+            <a href="#keybindings" class="hide-mobile">Keybindings</a>
+            <a href="#install" class="hide-mobile">Install</a>
+            <a href="docs.html">Docs</a>
+            <a href="https://github.com/exec/rune" class="nav-github">
+                <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                GitHub
+            </a>
         </div>
+    </div>
+</nav>
 
-        <div class="install-box">
-            <h2>Supported Platforms</h2>
-            <div class="platforms">
-                <div class="platform">
-                    <strong>macOS</strong><br>
-                    Intel & Apple Silicon
-                </div>
-                <div class="platform">
-                    <strong>Linux</strong><br>
-                    x86_64 & ARM64
-                </div>
-                <div class="platform">
-                    <strong>Homebrew</strong><br>
-                    <code>brew install rune-editor</code>
-                </div>
-                <div class="platform">
-                    <strong>Arch Linux</strong><br>
-                    <code>yay -S rune-editor</code>
-                </div>
+<!-- HERO -->
+<section class="hero" id="top">
+    <div class="hero-badge">v1.4.1 -- Built with Rust, 109 tests, zero unsafe code</div>
+    <h1><span>rune</span></h1>
+    <p class="hero-tagline">The simplicity of nano. The power you actually need.</p>
+    <div class="hero-install">
+        <code id="hero-cmd">curl -fsSL https://exec.github.io/rune/install.sh | bash</code>
+        <button class="copy-btn" onclick="copyText('hero-cmd', this)">Copy</button>
+    </div>
+    <div class="hero-links">
+        <a href="#install">More install options</a>
+        <a href="docs.html">Read the docs</a>
+        <a href="https://github.com/exec/rune">View source</a>
+    </div>
+    <div class="hero-scroll">scroll down</div>
+</section>
+
+<!-- HERO TERMINAL DEMO -->
+<div style="max-width: 900px; margin: -40px auto 0; padding: 0 24px; position: relative; z-index: 2;">
+    <div class="terminal">
+        <div class="terminal-bar">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+            <span class="terminal-title">rune -- main.rs</span>
+        </div>
+        <div class="terminal-body"><pre><span class="t-tab-active"> main.rs </span> <span class="t-tab"> config.rs </span> <span class="t-tab"> utils.rs </span>
+<span class="t-line"> 1 </span><span class="t-keyword">use</span> std::collections::<span class="t-type">HashMap</span>;
+<span class="t-line"> 2 </span><span class="t-keyword">use</span> anyhow::<span class="t-type">Result</span>;
+<span class="t-line"> 3 </span>
+<span class="t-line"> 4 </span><span class="t-comment">/// Application entry point</span>
+<span class="t-line"> 5 </span><span class="t-keyword">fn</span> <span class="t-fn">main</span>() -&gt; <span class="t-type">Result</span>&lt;()&gt; {
+<span class="t-line"> 6 </span>    <span class="t-keyword">let</span> config = <span class="t-type">Config</span>::<span class="t-fn">load</span>()?;
+<span class="t-line"> 7 </span>    <span class="t-keyword">let</span> <span class="t-keyword">mut</span> editor = <span class="t-type">Editor</span>::<span class="t-fn">new</span>(config);
+<span class="t-line"> 8 </span>
+<span class="t-line"> 9 </span>    <span class="t-keyword">for</span> file <span class="t-keyword">in</span> &amp;args.files {
+<span class="t-line">10 </span>        editor.<span class="t-fn">open_tab</span>(file)?;
+<span class="t-line">11 </span>    }
+<span class="t-line">12 </span>
+<span class="t-line">13 </span>    editor.<span class="t-fn">run</span>()<span class="t-cursor"> </span>
+<span class="t-line">14 </span>}
+<span class="t-line">   </span>
+<span class="t-status"> main.rs                       Ln 13, Col 17    Rust </span>
+<span class="t-helpkey">^S</span><span class="t-help"> Save  </span><span class="t-helpkey">^F</span><span class="t-help"> Find  </span><span class="t-helpkey">^G</span><span class="t-help"> Go To  </span><span class="t-helpkey">^T</span><span class="t-help"> New Tab  </span><span class="t-helpkey">^H</span><span class="t-help"> Help  </span><span class="t-helpkey">^X</span><span class="t-help"> Exit</span></pre></div>
+    </div>
+</div>
+
+<hr class="divider" style="margin-top: 80px;">
+
+<!-- FEATURES OVERVIEW -->
+<section id="features">
+    <div class="section-label">Features</div>
+    <div class="section-title">Everything you need. Nothing you don't.</div>
+    <p class="section-desc">Rune gives you a real editor for the terminal -- tabs, syntax highlighting, search and replace, hex view -- without the complexity of vim or the limitations of nano.</p>
+
+    <div class="features-grid">
+        <div class="feature-card">
+            <span class="feature-icon">&#9638;</span>
+            <h3>Tabs and Multi-buffer</h3>
+            <p>Open multiple files in tabs. <kbd>Ctrl+T</kbd> new tab, <kbd>Alt+Left/Right</kbd> to switch. Open folders with <code>rune .</code> and get a fuzzy finder with <kbd>Ctrl+P</kbd>.</p>
+        </div>
+        <div class="feature-card">
+            <span class="feature-icon">&#9670;</span>
+            <h3>Syntax Highlighting</h3>
+            <p>26 languages with lazy, cached highlighting. Rust, Python, JS/TS, Go, C/C++, Shell, and more. Comments, strings, keywords, types, numbers -- all highlighted.</p>
+        </div>
+        <div class="feature-card">
+            <span class="feature-icon">&#8981;</span>
+            <h3>Search and Replace</h3>
+            <p>Incremental search with live match highlighting. Regex mode, case sensitivity toggle, 50-entry history. Interactive replace with Y/N/A per match.</p>
+        </div>
+        <div class="feature-card">
+            <span class="feature-icon">&#9638;</span>
+            <h3>Hex View</h3>
+            <p><kbd>Ctrl+B</kbd> toggles a live hex view of your buffer. Cursor stays synced between text and hex views. Inspect binary data without leaving the editor.</p>
+        </div>
+        <div class="feature-card">
+            <span class="feature-icon">&#9998;</span>
+            <h3>Smart Editing</h3>
+            <p>Auto-indent, block indent/unindent (<kbd>Alt+}/Alt+{</kbd>), language-aware comment toggle (<kbd>Alt+;</kbd>), word completion from buffer (<kbd>Alt+\</kbd>).</p>
+        </div>
+        <div class="feature-card">
+            <span class="feature-icon">&#9881;</span>
+            <h3>Execute Commands</h3>
+            <p><kbd>Ctrl+E</kbd> runs shell commands from the editor. Pipe selections through external commands. 10-second timeout, 1MB output limit for safety.</p>
+        </div>
+        <div class="feature-card">
+            <span class="feature-icon">&#9655;</span>
+            <h3>Selection and Clipboard</h3>
+            <p>Mark mode with <kbd>Alt+A</kbd>, visual highlighting, cut/copy/paste with <kbd>Ctrl+K</kbd>/<kbd>Alt+6</kbd>/<kbd>Ctrl+U</kbd>. Works with or without selection.</p>
+        </div>
+        <div class="feature-card">
+            <span class="feature-icon">&#9201;</span>
+            <h3>Fast and Reliable</h3>
+            <p>Built with Rust, ratatui, and ropey. Rope data structure for large files. Lazy syntax highlighting. Zero unsafe code. 109 tests.</p>
+        </div>
+    </div>
+</section>
+
+<hr class="divider">
+
+<!-- SHOWCASE: TABS -->
+<section>
+    <div class="section-label">In Action</div>
+    <div class="section-title">See it work.</div>
+    <p class="section-desc">Terminal mockups showing real rune features.</p>
+
+    <div class="showcase">
+        <div class="terminal">
+            <div class="terminal-bar">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span class="terminal-title">rune -- 3 tabs</span>
             </div>
+            <div class="terminal-body"><pre><span class="t-tab-active"> server.py </span> <span class="t-tab"> routes.py </span> <span class="t-tab"> models.py </span>
+<span class="t-line"> 1 </span><span class="t-keyword">from</span> flask <span class="t-keyword">import</span> <span class="t-type">Flask</span>, jsonify
+<span class="t-line"> 2 </span><span class="t-keyword">from</span> .routes <span class="t-keyword">import</span> api_bp
+<span class="t-line"> 3 </span>
+<span class="t-line"> 4 </span>app = <span class="t-type">Flask</span>(__name__)
+<span class="t-line"> 5 </span>app.<span class="t-fn">register_blueprint</span>(api_bp)
+<span class="t-line"> 6 </span>
+<span class="t-line"> 7 </span><span class="t-keyword">if</span> __name__ == <span class="t-string">"__main__"</span>:
+<span class="t-line"> 8 </span>    app.<span class="t-fn">run</span>(debug=<span class="t-keyword">True</span>)<span class="t-cursor"> </span>
+<span class="t-line">   </span>
+<span class="t-status"> server.py     Modified       Ln 8, Col 28    Python </span></pre></div>
         </div>
-
-        <div class="install-box">
-            <h2>Manual Installation</h2>
-            <p>Download the latest release directly:</p>
-            <p><a href="https://github.com/exec/rune/releases/latest" class="github-link">GitHub Releases</a></p>
-        </div>
-
-        <div style="text-align: center; margin-top: 3em; color: #8b949e;">
-            <p><a href="https://github.com/exec/rune" class="github-link">View on GitHub</a> | 
-               <a href="https://github.com/exec/rune/blob/master/README.md" class="github-link">Documentation</a></p>
+        <div class="showcase-text">
+            <h3>Tabs and Fuzzy Finder</h3>
+            <p>Work with multiple files effortlessly. Open entire directories and jump between files instantly.</p>
+            <ul>
+                <li><kbd>Ctrl+T</kbd> to open a new tab</li>
+                <li><kbd>Alt+Left/Right</kbd> to switch tabs</li>
+                <li><kbd>Ctrl+P</kbd> fuzzy finder across all tabs</li>
+                <li><kbd>Alt+W</kbd> to close current tab</li>
+                <li>Smart titles resolve name collisions</li>
+            </ul>
         </div>
     </div>
 
-    <script>
-        function copyInstallCommand() {
-            const cmd = document.getElementById('install-cmd');
-            navigator.clipboard.writeText(cmd.textContent).then(() => {
-                const btn = event.target;
-                const originalText = btn.textContent;
-                btn.textContent = 'Copied!';
-                btn.style.background = '#2ea043';
-                setTimeout(() => {
-                    btn.textContent = originalText;
-                    btn.style.background = '#238636';
-                }, 2000);
-            });
+    <div class="showcase reverse">
+        <div class="terminal">
+            <div class="terminal-bar">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span class="terminal-title">rune -- search</span>
+            </div>
+            <div class="terminal-body"><pre><span class="t-tab-active"> main.rs </span>
+<span class="t-line"> 5 </span><span class="t-keyword">fn</span> <span class="t-fn">main</span>() -&gt; <span class="t-type">Result</span>&lt;()&gt; {
+<span class="t-line"> 6 </span>    <span class="t-keyword">let</span> config = <span class="t-type"><span class="t-match">Config</span></span>::<span class="t-fn">load</span>()?;
+<span class="t-line"> 7 </span>    <span class="t-keyword">let</span> <span class="t-keyword">mut</span> editor = <span class="t-type">Editor</span>::<span class="t-fn">new</span>(<span class="t-match">config</span>);
+<span class="t-line"> 8 </span>    <span class="t-keyword">let</span> <span class="t-match">config</span>_path = dirs::<span class="t-fn"><span class="t-match">config</span>_dir</span>();
+<span class="t-line"> 9 </span>    editor.<span class="t-fn">load_</span><span class="t-match">config</span>()?;
+<span class="t-line">   </span>
+<span class="t-help"> Find: </span><span class="t-string">config</span><span class="t-help">                   4 matches  [^C case] [^R regex] </span></pre></div>
+        </div>
+        <div class="showcase-text">
+            <h3>Incremental Search</h3>
+            <p>Find anything instantly with live match highlighting as you type.</p>
+            <ul>
+                <li>All matches highlighted in real-time</li>
+                <li>Arrow keys navigate between matches</li>
+                <li>Toggle case sensitivity and regex</li>
+                <li>50-entry search history</li>
+                <li>Interactive replace: Y/N/A per match</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="showcase">
+        <div class="terminal">
+            <div class="terminal-bar">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span class="terminal-title">rune -- hex view</span>
+            </div>
+            <div class="terminal-body"><pre><span class="t-tab-active"> binary.dat </span>
+<span class="t-line">00000000 </span> <span class="t-number">89 50 4e 47</span>  <span class="t-number">0d 0a 1a 0a</span>  <span class="t-number">00 00 00 0d</span>  <span class="t-number">49 48 44 52</span>  <span class="t-string">.PNG........IHDR</span>
+<span class="t-line">00000010 </span> <span class="t-number">00 00 02 00</span>  <span class="t-number">00 00 02 00</span>  <span class="t-number">08 06 00 00</span>  <span class="t-number">00 f4 78 d4</span>  <span class="t-string">..............x.</span>
+<span class="t-line">00000020 </span> <span class="t-number">fa 00 00 00</span>  <span class="t-number">01 73 52 47</span>  <span class="t-number">42 00 ae ce</span>  <span class="t-number">1c e9 00 00</span>  <span class="t-string">.....sRGB......</span>
+<span class="t-line">00000030 </span> <span class="t-number">00 04 67 41</span>  <span class="t-number">4d 41 00 00</span>  <span class="t-number">b1 8f 0b fc</span>  <span class="t-number">61 05 00 00</span>  <span class="t-string">..gAMA......a...</span>
+<span class="t-line">   </span>
+<span class="t-status"> binary.dat    Hex View       Offset 0x00     1.2 KB </span>
+<span class="t-helpkey">^B</span><span class="t-help"> Text View  </span><span class="t-helpkey">^F</span><span class="t-help"> Find  </span><span class="t-helpkey">^G</span><span class="t-help"> Go To Offset</span></pre></div>
+        </div>
+        <div class="showcase-text">
+            <h3>Hex View</h3>
+            <p>Inspect any file at the byte level without leaving the editor.</p>
+            <ul>
+                <li><kbd>Ctrl+B</kbd> toggles between text and hex</li>
+                <li>Cursor position synced across views</li>
+                <li>ASCII representation alongside hex</li>
+                <li>Works on the live buffer</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<hr class="divider">
+
+<!-- SYNTAX HIGHLIGHTING -->
+<section>
+    <div class="section-label">Languages</div>
+    <div class="section-title">26 languages. Lazy and fast.</div>
+    <p class="section-desc">Syntax highlighting that only processes visible lines, caches results, and loads on demand. Zero startup cost.</p>
+    <div class="lang-grid">
+        <span class="lang-badge">Rust</span>
+        <span class="lang-badge">Python</span>
+        <span class="lang-badge">JavaScript</span>
+        <span class="lang-badge">TypeScript</span>
+        <span class="lang-badge">Go</span>
+        <span class="lang-badge">C</span>
+        <span class="lang-badge">C++</span>
+        <span class="lang-badge">Java</span>
+        <span class="lang-badge">Shell / Bash</span>
+        <span class="lang-badge">HTML</span>
+        <span class="lang-badge">CSS</span>
+        <span class="lang-badge">JSON</span>
+        <span class="lang-badge">TOML</span>
+        <span class="lang-badge">YAML</span>
+        <span class="lang-badge">Markdown</span>
+        <span class="lang-badge">SQL</span>
+        <span class="lang-badge">Ruby</span>
+        <span class="lang-badge">PHP</span>
+        <span class="lang-badge">Lua</span>
+        <span class="lang-badge">Swift</span>
+        <span class="lang-badge">Kotlin</span>
+        <span class="lang-badge">Dart</span>
+        <span class="lang-badge">Zig</span>
+        <span class="lang-badge">Haskell</span>
+        <span class="lang-badge">Elixir</span>
+        <span class="lang-badge">Dockerfile</span>
+    </div>
+</section>
+
+<hr class="divider">
+
+<!-- KEYBINDINGS -->
+<section id="keybindings">
+    <div class="section-label">Reference</div>
+    <div class="section-title">All keybindings.</div>
+    <p class="section-desc">Every shortcut in one place. Search or filter by category.</p>
+
+    <input type="text" class="keybindings-search" id="kb-search" placeholder="Search keybindings... (e.g. save, tab, search)">
+
+    <div class="kb-categories" id="kb-cats">
+        <button class="kb-cat-btn active" data-cat="all">All</button>
+        <button class="kb-cat-btn" data-cat="file">File</button>
+        <button class="kb-cat-btn" data-cat="edit">Edit</button>
+        <button class="kb-cat-btn" data-cat="nav">Navigation</button>
+        <button class="kb-cat-btn" data-cat="search">Search</button>
+        <button class="kb-cat-btn" data-cat="tabs">Tabs</button>
+        <button class="kb-cat-btn" data-cat="view">View</button>
+    </div>
+
+    <div id="kb-container"></div>
+</section>
+
+<hr class="divider">
+
+<!-- INSTALL -->
+<section id="install">
+    <div class="section-label">Get Started</div>
+    <div class="section-title">Install rune.</div>
+    <p class="section-desc">Pick your preferred method. All platforms supported: macOS (Intel and Apple Silicon), Linux (x86_64, ARM64, ARMv7), FreeBSD, NetBSD.</p>
+
+    <div class="install-methods">
+        <div class="install-card">
+            <h3>Quick Install (recommended)</h3>
+            <p>Auto-detects your platform and installs the latest release.</p>
+            <div class="cmd" onclick="copyText(null, this)">curl -fsSL https://exec.github.io/rune/install.sh | bash</div>
+        </div>
+        <div class="install-card">
+            <h3>Homebrew</h3>
+            <p>macOS and Linux via Homebrew.</p>
+            <div class="cmd" onclick="copyText(null, this)">brew tap exec/rune && brew install rune-editor</div>
+        </div>
+        <div class="install-card">
+            <h3>Cargo</h3>
+            <p>Build from source with Rust's package manager.</p>
+            <div class="cmd" onclick="copyText(null, this)">cargo install --git https://github.com/exec/rune</div>
+        </div>
+        <div class="install-card">
+            <h3>Arch Linux (AUR)</h3>
+            <p>Available in the AUR.</p>
+            <div class="cmd" onclick="copyText(null, this)">yay -S rune-editor</div>
+        </div>
+        <div class="install-card">
+            <h3>From Source</h3>
+            <p>Clone and build yourself.</p>
+            <div class="cmd" onclick="copyText(null, this)">git clone https://github.com/exec/rune && cd rune && cargo build --release</div>
+        </div>
+        <div class="install-card">
+            <h3>Binary Releases</h3>
+            <p>Download pre-built binaries directly.</p>
+            <div class="cmd" style="color: var(--accent); cursor: pointer;" onclick="window.open('https://github.com/exec/rune/releases/latest')">github.com/exec/rune/releases</div>
+        </div>
+    </div>
+
+    <div class="stats">
+        <div class="stat">
+            <div class="stat-value">26</div>
+            <div class="stat-label">Languages</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">109</div>
+            <div class="stat-label">Tests</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">0</div>
+            <div class="stat-label">Unsafe code</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">6</div>
+            <div class="stat-label">Platforms</div>
+        </div>
+    </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+    <div class="footer-inner">
+        <div class="footer-links">
+            <a href="https://github.com/exec/rune">GitHub</a>
+            <a href="https://github.com/exec/rune/releases">Releases</a>
+            <a href="docs.html">Documentation</a>
+            <a href="https://github.com/exec/rune/issues">Issues</a>
+            <a href="https://github.com/exec/rune/blob/master/LICENSE">MIT License</a>
+        </div>
+        <div class="footer-copy">
+            rune v1.4.1 -- Built with Rust. MIT License.
+        </div>
+    </div>
+</footer>
+
+<script>
+// Copy to clipboard
+function copyText(id, btn) {
+    var text = id ? document.getElementById(id).textContent : btn.textContent;
+    navigator.clipboard.writeText(text.trim()).then(function() {
+        if (btn.tagName === 'BUTTON') {
+            var orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(function() { btn.textContent = orig; }, 1500);
+        } else {
+            btn.style.color = 'var(--green)';
+            setTimeout(function() { btn.style.color = ''; }, 1000);
         }
-    </script>
+    });
+}
+
+// Keybindings data
+var KB = [
+    { key: 'Ctrl+S', desc: 'Save file', cat: 'file' },
+    { key: 'Ctrl+W', desc: 'Save As (new filename)', cat: 'file' },
+    { key: 'Ctrl+Q / Ctrl+X', desc: 'Quit (prompts to save)', cat: 'file' },
+    { key: 'Ctrl+H', desc: 'Open help as a tab', cat: 'file' },
+    { key: 'Ctrl+Z', desc: 'Undo', cat: 'edit' },
+    { key: 'Ctrl+Y', desc: 'Redo', cat: 'edit' },
+    { key: 'Ctrl+K', desc: 'Cut line (or selection)', cat: 'edit' },
+    { key: 'Alt+6', desc: 'Copy line (or selection)', cat: 'edit' },
+    { key: 'Ctrl+U', desc: 'Paste', cat: 'edit' },
+    { key: 'Alt+A', desc: 'Toggle mark/selection mode', cat: 'edit' },
+    { key: 'Delete', desc: 'Delete forward', cat: 'edit' },
+    { key: 'Alt+}', desc: 'Indent selected block', cat: 'edit' },
+    { key: 'Alt+{', desc: 'Unindent selected block', cat: 'edit' },
+    { key: 'Alt+;', desc: 'Toggle comment (language-aware)', cat: 'edit' },
+    { key: 'Alt+\\', desc: 'Word completion from buffer', cat: 'edit' },
+    { key: 'Alt+V', desc: 'Verbatim input (insert control char)', cat: 'edit' },
+    { key: 'Ctrl+E', desc: 'Execute shell command', cat: 'edit' },
+    { key: 'Arrow keys', desc: 'Move cursor', cat: 'nav' },
+    { key: 'Ctrl+Left/Right', desc: 'Jump by word', cat: 'nav' },
+    { key: 'Home / End', desc: 'Start / end of line', cat: 'nav' },
+    { key: 'Ctrl+Home/End', desc: 'Start / end of file', cat: 'nav' },
+    { key: 'Ctrl+G', desc: 'Go to line number', cat: 'nav' },
+    { key: 'Alt+]', desc: 'Jump to matching bracket', cat: 'nav' },
+    { key: 'Ctrl+C', desc: 'Show cursor position info', cat: 'nav' },
+    { key: 'Page Up / Down', desc: 'Scroll by page', cat: 'nav' },
+    { key: 'Ctrl+V / Ctrl+Y', desc: 'Page down / Page up (nano-style)', cat: 'nav' },
+    { key: 'Mouse click', desc: 'Position cursor', cat: 'nav' },
+    { key: 'Mouse scroll', desc: 'Scroll document', cat: 'nav' },
+    { key: 'Ctrl+F', desc: 'Find (incremental search)', cat: 'search' },
+    { key: 'Ctrl+R', desc: 'Replace (within find mode)', cat: 'search' },
+    { key: 'Ctrl+\\', desc: 'Replace (nano-compatible)', cat: 'search' },
+    { key: 'Up/Down in search', desc: 'Navigate between matches', cat: 'search' },
+    { key: 'Esc', desc: 'Cancel search / selection / mode', cat: 'search' },
+    { key: 'Ctrl+T', desc: 'Open new tab', cat: 'tabs' },
+    { key: 'Alt+Left/Right', desc: 'Switch tabs', cat: 'tabs' },
+    { key: 'Alt+W', desc: 'Close current tab', cat: 'tabs' },
+    { key: 'Ctrl+P', desc: 'Fuzzy finder (jump between tabs)', cat: 'tabs' },
+    { key: 'Ctrl+B', desc: 'Toggle hex view', cat: 'view' },
+    { key: 'Alt+P', desc: 'Toggle whitespace display', cat: 'view' },
+    { key: 'Ctrl+O', desc: 'Options menu (line numbers, wrap, tabs, mouse)', cat: 'view' }
+];
+
+function renderKB(filter, cat) {
+    var container = document.getElementById('kb-container');
+    var f = (filter || '').toLowerCase();
+    var rows = KB.filter(function(k) {
+        if (cat && cat !== 'all' && k.cat !== cat) return false;
+        if (f && k.key.toLowerCase().indexOf(f) === -1 && k.desc.toLowerCase().indexOf(f) === -1) return false;
+        return true;
+    });
+
+    // Build table using DOM methods (safe, no innerHTML)
+    var table = document.createElement('table');
+    table.className = 'kb-table';
+
+    var thead = document.createElement('thead');
+    var headRow = document.createElement('tr');
+    ['Key', 'Action', 'Category'].forEach(function(text) {
+        var th = document.createElement('th');
+        th.textContent = text;
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    rows.forEach(function(k) {
+        var tr = document.createElement('tr');
+
+        var tdKey = document.createElement('td');
+        tdKey.className = 'kb-key';
+        tdKey.textContent = k.key;
+        tr.appendChild(tdKey);
+
+        var tdDesc = document.createElement('td');
+        tdDesc.className = 'kb-desc';
+        tdDesc.textContent = k.desc;
+        tr.appendChild(tdDesc);
+
+        var tdCat = document.createElement('td');
+        var catSpan = document.createElement('span');
+        catSpan.className = 'kb-cat-label';
+        catSpan.textContent = k.cat;
+        tdCat.appendChild(catSpan);
+        tr.appendChild(tdCat);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    // Clear and append
+    while (container.firstChild) {
+        container.removeChild(container.firstChild);
+    }
+    container.appendChild(table);
+}
+
+// Init keybindings
+renderKB('', 'all');
+
+document.getElementById('kb-search').addEventListener('input', function() {
+    var activeBtn = document.querySelector('.kb-cat-btn.active');
+    var activeCat = activeBtn ? activeBtn.getAttribute('data-cat') : 'all';
+    renderKB(this.value, activeCat);
+});
+
+document.getElementById('kb-cats').addEventListener('click', function(e) {
+    if (e.target.classList.contains('kb-cat-btn')) {
+        var buttons = document.querySelectorAll('.kb-cat-btn');
+        for (var i = 0; i < buttons.length; i++) {
+            buttons[i].classList.remove('active');
+        }
+        e.target.classList.add('active');
+        renderKB(document.getElementById('kb-search').value, e.target.getAttribute('data-cat'));
+    }
+});
+
+// Smooth scroll for nav links
+var anchors = document.querySelectorAll('a[href^="#"]');
+for (var i = 0; i < anchors.length; i++) {
+    anchors[i].addEventListener('click', function(e) {
+        var target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+            e.preventDefault();
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
+}
+</script>
+
 </body>
 </html>
