@@ -50,6 +50,10 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             "^H Help".to_string(),
             format!("Rune v{}", env!("CARGO_PKG_VERSION")),
         ),
+        InputMode::HexView => (
+            "Arrows: Navigate  PgUp/PgDn: Page  ^B/Esc: Exit".to_string(),
+            String::new(),
+        ),
         _ => (
             "^H Help".to_string(),
             format!("Rune v{}", env!("CARGO_PKG_VERSION")),
@@ -78,80 +82,103 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         height: help_height,
     };
 
-    let line_num_width = if editor.config.show_line_numbers {
-        editor.rope.len_lines().to_string().len() + 1
+    if editor.input_mode == InputMode::HexView {
+        if let Some(state) = &mut editor.hex_state {
+            crate::hex::draw_hex_view(f, editor_area, state);
+        }
     } else {
-        0
-    };
+        let line_num_width = if editor.config.show_line_numbers {
+            editor.rope.len_lines().to_string().len() + 1
+        } else {
+            0
+        };
 
-    let mut lines = vec![];
-    let visible_lines = editor_area.height as usize;
+        let mut lines = vec![];
+        let visible_lines = editor_area.height as usize;
 
-    for i in 0..visible_lines {
-        let line_idx = editor.viewport.viewport_offset.0 + i;
-        if line_idx < editor.rope.len_lines() {
-            if let Some(line_text) = editor.rope.line(line_idx).as_str() {
-                let highlighted_spans: Rc<Vec<(Style, String)>> = editor.highlighter.highlight_line(line_idx, line_text);
+        for i in 0..visible_lines {
+            let line_idx = editor.viewport.viewport_offset.0 + i;
+            if line_idx < editor.rope.len_lines() {
+                if let Some(line_text) = editor.rope.line(line_idx).as_str() {
+                    let highlighted_spans: Rc<Vec<(Style, String)>> = editor.highlighter.highlight_line(line_idx, line_text);
 
+                    let mut styled_spans: Vec<Span> = vec![];
+
+                    if editor.config.show_line_numbers {
+                        let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
+                        styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+                    }
+
+                    let line_content = line_text.trim_end_matches('\n');
+
+                    styled_spans.extend(apply_search_highlighting(
+                        &highlighted_spans,
+                        line_content,
+                        line_idx,
+                        &editor.search.search_buffer,
+                        &editor.search.search_matches,
+                        editor.search.current_match_index,
+                        editor.search.case_sensitive,
+                    ));
+
+                    lines.push(Line::from(styled_spans));
+                }
+            } else {
                 let mut styled_spans: Vec<Span> = vec![];
 
                 if editor.config.show_line_numbers {
-                    let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
-                    styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+                    let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
+                    styled_spans.push(Span::styled(
+                        empty_line_num,
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
 
-                let line_content = line_text.trim_end_matches('\n');
-
-                styled_spans.extend(apply_search_highlighting(
-                    &highlighted_spans,
-                    line_content,
-                    line_idx,
-                    &editor.search.search_buffer,
-                    &editor.search.search_matches,
-                    editor.search.current_match_index,
-                    editor.search.case_sensitive,
-                ));
+                styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
 
                 lines.push(Line::from(styled_spans));
             }
-        } else {
-            let mut styled_spans: Vec<Span> = vec![];
-
-            if editor.config.show_line_numbers {
-                let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
-                styled_spans.push(Span::styled(
-                    empty_line_num,
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-
-            styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
-
-            lines.push(Line::from(styled_spans));
         }
-    }
 
-    let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
-    f.render_widget(editor_widget, editor_area);
+        let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
+        f.render_widget(editor_widget, editor_area);
 
-    // Draw cursor
-    let cursor_screen_y = editor
-        .viewport
-        .cursor_pos
-        .0
-        .saturating_sub(editor.viewport.viewport_offset.0);
-    if cursor_screen_y < visible_lines {
-        let cursor_x = if editor.config.show_line_numbers {
-            editor.viewport.cursor_pos.1 as u16 + line_num_width as u16
-        } else {
-            editor.viewport.cursor_pos.1 as u16
-        };
-        f.set_cursor_position(Position::new(cursor_x, cursor_screen_y as u16));
+        // Draw cursor
+        let cursor_screen_y = editor
+            .viewport
+            .cursor_pos
+            .0
+            .saturating_sub(editor.viewport.viewport_offset.0);
+        if cursor_screen_y < visible_lines {
+            let cursor_x = if editor.config.show_line_numbers {
+                editor.viewport.cursor_pos.1 as u16 + line_num_width as u16
+            } else {
+                editor.viewport.cursor_pos.1 as u16
+            };
+            f.set_cursor_position(Position::new(cursor_x, cursor_screen_y as u16));
+        }
     }
 
     // Draw status bar
     let status_text = if !editor.status_message.is_empty() {
         editor.status_message.clone()
+    } else if editor.input_mode == InputMode::HexView {
+        if let Some(state) = &editor.hex_state {
+            let filename = editor
+                .file_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "[No Name]".to_string());
+            format!(
+                "{} | HEX VIEW | Offset: 0x{:08X} ({}/{} bytes)",
+                filename,
+                state.cursor,
+                state.cursor + 1,
+                state.raw_bytes.len()
+            )
+        } else {
+            String::new()
+        }
     } else {
         let modified_indicator = if editor.modified { "[+]" } else { "" };
         let filename = editor
