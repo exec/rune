@@ -494,16 +494,6 @@ impl SyntaxHighlighter {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn get_cache_size(&self) -> usize {
-        self.line_cache.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_cache(&mut self) {
-        self.line_cache.clear();
-        self.file_version += 1;
-    }
 }
 
 impl Default for SyntaxHighlighter {
