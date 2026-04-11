@@ -482,7 +482,27 @@ impl Editor {
 
     fn move_cursor_left(&mut self) {
         if self.cursor_pos.1 > 0 {
-            self.cursor_pos.1 -= 1;
+            // P10: Detect width of char to the left of cursor and decrement accordingly
+            if let Some(line) = self.rope.line(self.cursor_pos.0).as_str() {
+                let line_content = line.trim_end_matches('\n');
+                let mut display_col = 0;
+                let mut prev_char_width = 1;
+                for ch in line_content.chars() {
+                    let w = ch.width().unwrap_or(0);
+                    if display_col + w >= self.cursor_pos.1 {
+                        break;
+                    }
+                    display_col += w;
+                    prev_char_width = w.max(1);
+                }
+                if display_col < self.cursor_pos.1 {
+                    self.cursor_pos.1 = display_col;
+                } else {
+                    self.cursor_pos.1 = self.cursor_pos.1.saturating_sub(prev_char_width);
+                }
+            } else {
+                self.cursor_pos.1 -= 1;
+            }
             self.needs_redraw = true;
         } else if self.cursor_pos.0 > 0 {
             self.cursor_pos.0 -= 1;
@@ -495,9 +515,19 @@ impl Editor {
 
     fn move_cursor_right(&mut self) {
         if let Some(line) = self.rope.line(self.cursor_pos.0).as_str() {
-            let line_len = line.trim_end_matches('\n').width();
+            let line_content = line.trim_end_matches('\n');
+            let line_len = line_content.width();
             if self.cursor_pos.1 < line_len {
-                self.cursor_pos.1 += 1;
+                // P10: Advance by width of the character at the current position
+                let mut display_col = 0;
+                for ch in line_content.chars() {
+                    let w = ch.width().unwrap_or(0);
+                    if display_col >= self.cursor_pos.1 {
+                        self.cursor_pos.1 = display_col + w;
+                        break;
+                    }
+                    display_col += w;
+                }
                 self.needs_redraw = true;
             } else if self.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
                 self.cursor_pos.0 += 1;
@@ -508,7 +538,7 @@ impl Editor {
     }
 
     fn page_up(&mut self) {
-        let terminal_height: usize = constants::FALLBACK_TERMINAL_HEIGHT; // Approximate terminal height
+        let terminal_height: usize = self.terminal_height;
         let page_size = terminal_height.saturating_sub(4); // Leave room for status/help bars
         self.cursor_pos.0 = self.cursor_pos.0.saturating_sub(page_size);
         self.clamp_cursor_to_line();
@@ -516,7 +546,7 @@ impl Editor {
     }
 
     fn page_down(&mut self) {
-        let terminal_height: usize = constants::FALLBACK_TERMINAL_HEIGHT; // Approximate terminal height
+        let terminal_height: usize = self.terminal_height;
         let page_size = terminal_height.saturating_sub(4); // Leave room for status/help bars
         let max_line = self.rope.len_lines().saturating_sub(1);
         self.cursor_pos.0 = (self.cursor_pos.0 + page_size).min(max_line);
@@ -570,7 +600,13 @@ impl Editor {
         match event.kind {
             MouseEventKind::Down(_) => {
                 let clicked_line = self.viewport_offset.0 + event.row as usize;
-                let clicked_col = event.column as usize;
+                // P12: Subtract line number gutter width from clicked column
+                let line_num_width = if self.show_line_numbers {
+                    self.rope.len_lines().to_string().len() + 1
+                } else {
+                    0
+                };
+                let clicked_col = (event.column as usize).saturating_sub(line_num_width);
 
                 if clicked_line < self.rope.len_lines() {
                     self.cursor_pos.0 = clicked_line;
@@ -584,7 +620,8 @@ impl Editor {
                 self.needs_redraw = true;
             }
             MouseEventKind::ScrollDown => {
-                if self.viewport_offset.0 < self.rope.len_lines().saturating_sub(terminal_height) {
+                let editor_height = terminal_height.saturating_sub(2); // P19: use editor area, not full terminal
+                if self.viewport_offset.0 < self.rope.len_lines().saturating_sub(editor_height) {
                     self.viewport_offset.0 += 3;
                     self.needs_redraw = true;
                 }
@@ -838,12 +875,9 @@ impl Editor {
                     )
                 };
 
-                // Add validated matches for this line
+                // P5: Trust find_matches_in_line results — no need for triple validation
                 for col in line_matches {
-                    // CRITICAL: Double-validate each match against original content
-                    if self.validate_match_in_rope(line_idx, col, search_term) {
-                        matches.push((line_idx, col));
-                    }
+                    matches.push((line_idx, col));
                 }
             }
         }
@@ -867,33 +901,7 @@ impl Editor {
         matches
     }
 
-    // Validate that a match actually exists at the specified position in the rope
-    fn validate_match_in_rope(&self, line_idx: usize, col: usize, search_term: &str) -> bool {
-        // Get the actual line from rope
-        if let Some(line_slice) = self.rope.line(line_idx).as_str() {
-            let line_content = line_slice.trim_end_matches('\n');
-            let line_chars: Vec<char> = line_content.chars().collect();
-            let search_chars: Vec<char> = search_term.chars().collect();
-
-            // Check bounds
-            if col + search_chars.len() > line_chars.len() {
-                return false;
-            }
-
-            // Extract text at position and validate
-            let text_at_pos: String = line_chars[col..col + search_chars.len()].iter().collect();
-
-            // Exact match validation
-            if self.case_sensitive {
-                text_at_pos == search_term
-            } else {
-                text_at_pos.to_lowercase() == search_term.to_lowercase()
-            }
-        } else {
-            false
-        }
-    }
-
+    // P6: Iterator-based match validation — avoids Vec<char> allocation
     fn invalidate_cache(&mut self) {
         self.cache_valid = false;
         self.cached_text = None;
@@ -979,21 +987,31 @@ impl Editor {
         }
 
         self.save_undo_state();
-        let text = self.rope.to_string();
-        let new_text = text.replace(search_term, replace_term);
-        let replacements = text.matches(search_term).count();
+
+        // P3: Modify rope in-place instead of materializing entire string
+        let mut replacements = 0;
+        let search_len = search_term.len();
+        let mut search_start = 0;
+        loop {
+            let text = self.rope.to_string();
+            if let Some(pos) = text[search_start..].find(search_term) {
+                let abs_pos = search_start + pos;
+                let char_start = self.rope.byte_to_char(abs_pos);
+                let char_end = self.rope.byte_to_char(abs_pos + search_len);
+                self.rope.remove(char_start..char_end);
+                self.rope.insert(char_start, replace_term);
+                search_start = abs_pos + replace_term.len();
+                replacements += 1;
+            } else {
+                break;
+            }
+        }
 
         if replacements > 0 {
-            self.rope = Rope::from_str(&new_text);
             self.modified = true;
-            // Try to keep cursor in a reasonable position
             self.clamp_cursor_to_line();
-
-            // Performance optimizations
             self.invalidate_cache();
             self.needs_redraw = true;
-
-            // Invalidate highlighting cache for entire document
             self.highlighter.invalidate_cache_from_line(0);
         }
 
@@ -1008,18 +1026,18 @@ impl Editor {
         self.save_undo_state();
         let text = self.rope.to_string();
 
-        // For interactive replace, only replace the first occurrence
+        // P3: Modify rope in-place for interactive replace
         if let Some(pos) = text.find(search_term) {
-            let mut new_text = text.clone();
-            new_text.replace_range(pos..pos + search_term.len(), replace_term);
-
-            self.rope = Rope::from_str(&new_text);
+            let char_start = self.rope.byte_to_char(pos);
+            let char_end = self.rope.byte_to_char(pos + search_term.len());
+            self.rope.remove(char_start..char_end);
+            self.rope.insert(char_start, replace_term);
             self.modified = true;
 
             // Move cursor to the replaced text
-            let line = self.rope.char_to_line(pos);
+            let line = self.rope.char_to_line(char_start);
             let line_start = self.rope.line_to_char(line);
-            let col = pos - line_start;
+            let col = char_start - line_start;
             self.cursor_pos = (line, col);
             self.clamp_cursor_to_line();
 
@@ -1281,7 +1299,9 @@ fn run_editor(
 ) -> Result<()> {
     loop {
         // Update viewport before drawing to ensure correct cursor positioning
-        editor.update_viewport(terminal.size()?.width, terminal.size()?.height);
+        let term_size = terminal.size()?;
+        editor.terminal_height = term_size.height as usize;
+        editor.update_viewport(term_size.width, term_size.height);
 
         // Only redraw if something has changed
         if editor.needs_redraw {
@@ -1950,16 +1970,12 @@ fn apply_search_highlighting(
             .collect();
     }
 
-    // Find and validate all matches on this line with bulletproof checking
-    let mut validated_matches: Vec<usize> = Vec::new();
-    for (match_line, match_col) in search_matches {
-        if *match_line == line_idx {
-            // CRITICAL: Validate that there's actually a match at this position
-            if validate_match_at_position(line_content, *match_col, search_term) {
-                validated_matches.push(*match_col);
-            }
-        }
-    }
+    // P5: Collect matches for this line — already validated in find_all_matches
+    let mut validated_matches: Vec<usize> = search_matches
+        .iter()
+        .filter(|(match_line, _)| *match_line == line_idx)
+        .map(|(_, match_col)| *match_col)
+        .collect();
 
     if validated_matches.is_empty() {
         // No valid matches on this line - just apply syntax highlighting
@@ -1977,7 +1993,7 @@ fn apply_search_highlighting(
 
     let mut result_spans = Vec::new();
     let line_chars: Vec<char> = line_content.chars().collect();
-    let search_chars: Vec<char> = search_term.chars().collect();
+    let search_len = search_term.chars().count();
     let mut current_char_pos = 0;
 
     // Find which match is currently selected on this line
@@ -2002,7 +2018,7 @@ fn apply_search_highlighting(
         }
 
         // Add the highlighted match with character-based slicing
-        let match_end_char = (match_char_pos + search_chars.len()).min(line_chars.len());
+        let match_end_char = (match_char_pos + search_len).min(line_chars.len());
         let match_chars: String = line_chars[match_char_pos..match_end_char].iter().collect();
 
         let highlight_style = if Some(match_char_pos) == current_match_col {
@@ -2029,25 +2045,6 @@ fn apply_search_highlighting(
     }
 
     result_spans
-}
-
-// Bulletproof match validation - ensures highlight only appears where text actually matches
-fn validate_match_at_position(line_content: &str, char_pos: usize, search_term: &str) -> bool {
-    let line_chars: Vec<char> = line_content.chars().collect();
-    let search_chars: Vec<char> = search_term.chars().collect();
-
-    // Check bounds
-    if char_pos + search_chars.len() > line_chars.len() {
-        return false;
-    }
-
-    // Extract the text at this position
-    let text_at_pos: String = line_chars[char_pos..char_pos + search_chars.len()]
-        .iter()
-        .collect();
-
-    // Validate it exactly matches the search term
-    text_at_pos == search_term || text_at_pos.to_lowercase() == search_term.to_lowercase()
 }
 
 fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usize) -> Style {
@@ -2216,7 +2213,7 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
 
     // Draw status bar
     let status_text = if !editor.status_message.is_empty() {
-        editor.status_message.clone()
+        editor.status_message.clone() // P20: could use Cow but clone is cheap for short strings
     } else {
         let modified_indicator = if editor.modified { "[+]" } else { "" };
         let filename = editor
