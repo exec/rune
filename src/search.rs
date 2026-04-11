@@ -1,3 +1,5 @@
+use regex::Regex;
+
 /// Navigation mode within find functionality
 #[derive(Debug, Clone, PartialEq)]
 pub enum FindNavigationMode {
@@ -54,6 +56,10 @@ impl SearchState {
             return Vec::new();
         }
 
+        if self.use_regex {
+            return self.find_all_regex_matches(rope);
+        }
+
         let mut matches = Vec::new();
 
         for line_idx in 0..rope.len_lines() {
@@ -81,6 +87,42 @@ impl SearchState {
                 if validate_match(rope, line_idx, col, search_term, self.case_sensitive) {
                     matches.push((line_idx, col));
                 }
+            }
+        }
+
+        matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        matches
+    }
+
+    fn find_all_regex_matches(&self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
+        let pattern = if self.case_sensitive {
+            self.search_buffer.clone()
+        } else {
+            format!("(?i){}", self.search_buffer)
+        };
+
+        let re = match Regex::new(&pattern) {
+            Ok(re) => re,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut matches = Vec::new();
+
+        for line_idx in 0..rope.len_lines() {
+            let rope_line = rope.line(line_idx);
+            let owned_line: String;
+            let line_str = match rope_line.as_str() {
+                Some(s) => s,
+                None => {
+                    owned_line = rope_line.chars().collect::<String>();
+                    &owned_line
+                }
+            };
+            let line_content = line_str.trim_end_matches('\n');
+
+            for m in re.find_iter(line_content) {
+                let char_pos = line_content[..m.start()].chars().count();
+                matches.push((line_idx, char_pos));
             }
         }
 
@@ -228,5 +270,42 @@ pub fn validate_match_at_position(
         text_at_pos == search_term
     } else {
         text_at_pos.to_lowercase() == search_term.to_lowercase()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ropey::Rope;
+
+    #[test]
+    fn test_regex_digits() {
+        let mut state = SearchState::default();
+        state.use_regex = true;
+        state.search_buffer = r"\d+".to_string();
+        let rope = Rope::from_str("hello123 world456\n");
+        let matches = state.find_all_matches(&rope);
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn test_invalid_regex() {
+        let mut state = SearchState::default();
+        state.use_regex = true;
+        state.search_buffer = "[invalid".to_string();
+        let rope = Rope::from_str("hello\n");
+        let matches = state.find_all_matches(&rope);
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn test_regex_case_insensitive() {
+        let mut state = SearchState::default();
+        state.use_regex = true;
+        state.case_sensitive = false;
+        state.search_buffer = "hello".to_string();
+        let rope = Rope::from_str("Hello HELLO hello\n");
+        let matches = state.find_all_matches(&rope);
+        assert_eq!(matches.len(), 3);
     }
 }
