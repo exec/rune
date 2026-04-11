@@ -145,7 +145,13 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
                     }
                 }
 
-                styled_spans.extend(search_spans);
+                let final_spans = apply_selection_highlighting(
+                    search_spans,
+                    line_idx,
+                    editor,
+                );
+
+                styled_spans.extend(final_spans);
 
                 lines.push(Line::from(styled_spans));
             } else {
@@ -484,4 +490,80 @@ fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usiz
         current_pos += text_len;
     }
     Style::default()
+}
+
+fn apply_selection_highlighting(
+    spans: Vec<Span<'static>>,
+    line_idx: usize,
+    editor: &Editor,
+) -> Vec<Span<'static>> {
+    let (anchor, cursor) = match editor.mark_anchor {
+        Some(anchor) => (anchor, editor.viewport.cursor_pos),
+        None => return spans,
+    };
+
+    let anchor_idx = editor.line_col_to_char_idx(anchor.0, anchor.1);
+    let cursor_idx = editor.line_col_to_char_idx(cursor.0, cursor.1);
+    let (sel_start, sel_end) = if anchor_idx <= cursor_idx {
+        (anchor_idx, cursor_idx)
+    } else {
+        (cursor_idx, anchor_idx)
+    };
+
+    let line_start_char = editor.rope.line_to_char(line_idx);
+    let line_end_char = if line_idx + 1 < editor.rope.len_lines() {
+        editor.rope.line_to_char(line_idx + 1)
+    } else {
+        editor.rope.len_chars()
+    };
+
+    // Check if this line intersects the selection
+    if sel_end <= line_start_char || sel_start >= line_end_char {
+        return spans;
+    }
+
+    let sel_start_in_line = sel_start.saturating_sub(line_start_char);
+    let sel_end_in_line = (sel_end - line_start_char).min(line_end_char - line_start_char);
+
+    let mut result = Vec::new();
+    let mut char_pos = 0;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        let span_end = char_pos + span_len;
+
+        if span_end <= sel_start_in_line || char_pos >= sel_end_in_line {
+            result.push(span);
+        } else if char_pos >= sel_start_in_line && span_end <= sel_end_in_line {
+            result.push(Span::styled(
+                span.content.to_string(),
+                span.style.bg(Color::White).fg(Color::Black),
+            ));
+        } else {
+            // Partially inside — split the span
+            let chars: Vec<char> = span.content.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                let abs_pos = char_pos + i;
+                let in_sel = abs_pos >= sel_start_in_line && abs_pos < sel_end_in_line;
+                let start_i = i;
+                while i < chars.len() {
+                    let p = char_pos + i;
+                    let p_in_sel = p >= sel_start_in_line && p < sel_end_in_line;
+                    if p_in_sel != in_sel {
+                        break;
+                    }
+                    i += 1;
+                }
+                let text: String = chars[start_i..i].iter().collect();
+                let style = if in_sel {
+                    span.style.bg(Color::White).fg(Color::Black)
+                } else {
+                    span.style
+                };
+                result.push(Span::styled(text, style));
+            }
+        }
+        char_pos = span_end;
+    }
+    result
 }

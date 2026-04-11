@@ -1493,6 +1493,151 @@ mod tests {
         assert_eq!(e.clipboard.len(), 1);
         assert_eq!(e.clipboard[0], "b\n");
     }
+
+    // ── Selection / mark mode tests ──
+
+    #[test]
+    fn test_toggle_mark() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.viewport.cursor_pos = (0, 2);
+        e.toggle_mark();
+        assert!(e.mark_anchor.is_some());
+        assert_eq!(e.mark_anchor.unwrap(), (0, 2));
+        e.toggle_mark();
+        assert!(e.mark_anchor.is_none());
+    }
+
+    #[test]
+    fn test_get_selection_range_none() {
+        let e = Editor::new_for_test();
+        assert!(e.get_selection_range().is_none());
+    }
+
+    #[test]
+    fn test_get_selection_range_forward() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.mark_anchor = Some((0, 1));
+        e.viewport.cursor_pos = (0, 4);
+        let (start, end) = e.get_selection_range().unwrap();
+        assert!(start < end);
+    }
+
+    #[test]
+    fn test_get_selection_range_backward() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.mark_anchor = Some((0, 4));
+        e.viewport.cursor_pos = (0, 1);
+        let (start, end) = e.get_selection_range().unwrap();
+        assert!(start < end);
+    }
+
+    #[test]
+    fn test_cut_selection() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.mark_anchor = Some((0, 0));
+        e.viewport.cursor_pos = (0, 5);
+        e.cut();
+        assert_eq!(content(&e), " world\n");
+        assert!(e.mark_anchor.is_none());
+        assert_eq!(e.clipboard, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn test_cut_no_selection_falls_back_to_cut_line() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.cut();
+        assert_eq!(content(&e), "line2\n");
+    }
+
+    #[test]
+    fn test_copy_selection() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world\n");
+        e.mark_anchor = Some((0, 0));
+        e.viewport.cursor_pos = (0, 5);
+        e.copy();
+        assert_eq!(content(&e), "hello world\n"); // unchanged
+        assert_eq!(e.clipboard, vec!["hello".to_string()]);
+        assert!(e.mark_anchor.is_none());
+    }
+
+    #[test]
+    fn test_copy_no_selection_falls_back_to_copy_line() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.copy();
+        assert_eq!(content(&e), "line1\nline2\n");
+        assert_eq!(e.clipboard, vec!["line1\n".to_string()]);
+    }
+
+    #[test]
+    fn test_selection_across_lines() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\nworld\n");
+        e.mark_anchor = Some((0, 3));
+        e.viewport.cursor_pos = (1, 3);
+        e.cut();
+        // Cuts "lo\nwor" (from col 3 line 0 to col 3 line 1), leaving "hel" + "ld\n"
+        assert_eq!(content(&e), "helld\n");
+    }
+
+    #[test]
+    fn test_paste_inline() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world\n");
+        e.clipboard = vec!["XY".to_string()];
+        e.viewport.cursor_pos = (0, 5);
+        e.paste_inline();
+        assert_eq!(content(&e), "helloXY world\n");
+        assert_eq!(e.viewport.cursor_pos, (0, 7));
+    }
+
+    #[test]
+    fn test_paste_inline_empty_clipboard() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.paste_inline();
+        assert_eq!(content(&e), "hello\n");
+    }
+
+    #[test]
+    fn test_mark_cleared_on_insert() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.mark_anchor = Some((0, 0));
+        e.viewport.cursor_pos = (0, 0);
+        e.insert_char('x');
+        assert!(e.mark_anchor.is_none());
+    }
+
+    #[test]
+    fn test_mark_cleared_on_delete() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.mark_anchor = Some((0, 0));
+        e.viewport.cursor_pos = (0, 3);
+        e.delete_char();
+        assert!(e.mark_anchor.is_none());
+    }
+
+    #[test]
+    fn test_mark_cleared_on_newline() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.mark_anchor = Some((0, 0));
+        e.viewport.cursor_pos = (0, 3);
+        e.insert_newline();
+        assert!(e.mark_anchor.is_none());
+    }
 }
 
 // Additional tests for indent/unindent/comment (Task 6)
