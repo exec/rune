@@ -25,6 +25,7 @@ pub fn handle_key_event(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         InputMode::FuzzyFinder => handle_fuzzy_finder(tabs, key),
         InputMode::VerbatimInput => handle_verbatim_input(tabs, key),
         InputMode::ExecuteCommand => handle_execute_command(tabs, key),
+        InputMode::ConfirmExecute => handle_confirm_execute(tabs, key),
         InputMode::Normal => handle_normal(tabs, key),
     }
 }
@@ -139,7 +140,10 @@ fn handle_confirm_close_tab(tabs: &mut TabManager, key: KeyEvent) -> Result<bool
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let path = tabs.active_editor().file_path.clone();
             if let Some(path) = path {
-                tabs.perform_save(path)?;
+                if let Err(e) = tabs.perform_save(path) {
+                    tabs.set_temporary_status_message(format!("Error saving file: {e}"));
+                    return Ok(false);
+                }
             }
             tabs.input_mode = InputMode::Normal;
             if tabs.close_tab() {
@@ -154,13 +158,11 @@ fn handle_confirm_close_tab(tabs: &mut TabManager, key: KeyEvent) -> Result<bool
         }
         KeyCode::Esc => {
             tabs.input_mode = InputMode::Normal;
-            tabs.status_message = "Cancelled".to_string();
-            tabs.needs_redraw = true;
+            tabs.set_temporary_status_message("Cancelled".to_string());
         }
         _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
             tabs.input_mode = InputMode::Normal;
-            tabs.status_message = "Cancelled".to_string();
-            tabs.needs_redraw = true;
+            tabs.set_temporary_status_message("Cancelled".to_string());
         }
         _ => {}
     }
@@ -337,8 +339,7 @@ fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
         KeyCode::Enter => {
             if tabs.filename_buffer.is_empty() {
                 tabs.input_mode = InputMode::Normal;
-                tabs.status_message = "Cancelled".to_string();
-                tabs.needs_redraw = true;
+                tabs.set_temporary_status_message("Cancelled".to_string());
                 return Ok(false);
             }
             let path = std::path::PathBuf::from(&tabs.filename_buffer);
@@ -369,8 +370,7 @@ fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
         KeyCode::Esc => {
             tabs.input_mode = InputMode::Normal;
             tabs.filename_buffer.clear();
-            tabs.status_message = "Cancelled".to_string();
-            tabs.needs_redraw = true;
+            tabs.set_temporary_status_message("Cancelled".to_string());
         }
         KeyCode::Backspace => {
             tabs.filename_buffer.pop();
@@ -634,13 +634,11 @@ fn handle_replace(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         },
         KeyCode::Esc => {
             tabs.input_mode = InputMode::Normal;
-            tabs.status_message = "Replace cancelled".to_string();
-            tabs.needs_redraw = true;
+            tabs.set_temporary_status_message("Replace cancelled".to_string());
         }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             tabs.input_mode = InputMode::Normal;
-            tabs.status_message = "Replace cancelled".to_string();
-            tabs.needs_redraw = true;
+            tabs.set_temporary_status_message("Replace cancelled".to_string());
         }
         KeyCode::Backspace => match tabs.active_editor().search.replace_phase {
             ReplacePhase::FindPattern => {
@@ -742,13 +740,11 @@ fn handle_goto_line(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Esc => {
             tabs.input_mode = InputMode::Normal;
-            tabs.status_message = "Go to line cancelled".to_string();
-            tabs.needs_redraw = true;
+            tabs.set_temporary_status_message("Go to line cancelled".to_string());
         }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             tabs.input_mode = InputMode::Normal;
-            tabs.status_message = "Go to line cancelled".to_string();
-            tabs.needs_redraw = true;
+            tabs.set_temporary_status_message("Go to line cancelled".to_string());
         }
         KeyCode::Backspace => {
             tabs.active_editor_mut().search.goto_line_buffer.pop();
@@ -1074,10 +1070,54 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             let command = tabs.filename_buffer.clone();
             if command.is_empty() {
                 tabs.input_mode = InputMode::Normal;
-                tabs.status_message = "Cancelled".to_string();
-                tabs.needs_redraw = true;
+                tabs.set_temporary_status_message("Cancelled".to_string());
                 return Ok(false);
             }
+
+            // Transition to confirmation mode
+            tabs.pending_command = Some(command.clone());
+            tabs.input_mode = InputMode::ConfirmExecute;
+            tabs.status_message = format!("Execute: {}? (Y/N)", command);
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Esc => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.filename_buffer.clear();
+            tabs.set_temporary_status_message("Cancelled".to_string());
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.filename_buffer.clear();
+            tabs.set_temporary_status_message("Cancelled".to_string());
+        }
+        KeyCode::Backspace => {
+            tabs.filename_buffer.pop();
+            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Char(c) => {
+            tabs.filename_buffer.push(c);
+            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
+            tabs.needs_redraw = true;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let command = match tabs.pending_command.take() {
+                Some(cmd) => cmd,
+                None => {
+                    tabs.input_mode = InputMode::Normal;
+                    tabs.filename_buffer.clear();
+                    tabs.status_message = "No command to execute".to_string();
+                    tabs.needs_redraw = true;
+                    return Ok(false);
+                }
+            };
 
             // Check if there's a selection
             let selection_text =
@@ -1091,7 +1131,7 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                             .collect::<String>()
                     });
 
-            // Execute the command
+            // Execute the command with timeout
             use std::process::{Command, Stdio};
             let mut child = match Command::new("sh")
                 .arg("-c")
@@ -1108,6 +1148,7 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 Ok(child) => child,
                 Err(e) => {
                     tabs.input_mode = InputMode::Normal;
+                    tabs.filename_buffer.clear();
                     tabs.set_temporary_status_message(format!("Error: {e}"));
                     return Ok(false);
                 }
@@ -1120,9 +1161,47 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 }
             }
 
-            match child.wait_with_output() {
+            // Wait with a 10-second timeout using try_wait polling
+            let timeout = std::time::Duration::from_secs(10);
+            let poll_interval = std::time::Duration::from_millis(50);
+            let start_time = std::time::Instant::now();
+            let timed_out = loop {
+                match child.try_wait() {
+                    Ok(Some(_status)) => break false,
+                    Ok(None) => {
+                        if start_time.elapsed() >= timeout {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break true;
+                        }
+                        std::thread::sleep(poll_interval);
+                    }
+                    Err(_) => break false,
+                }
+            };
+
+            if timed_out {
+                tabs.input_mode = InputMode::Normal;
+                tabs.filename_buffer.clear();
+                tabs.set_temporary_status_message("Command timed out (10s limit)".to_string());
+                tabs.needs_redraw = true;
+                return Ok(false);
+            }
+
+            // Read output from the completed child
+            const MAX_OUTPUT: usize = 1024 * 1024; // 1MB
+            let output = child.wait_with_output();
+
+            match output {
                 Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let raw_stdout = String::from_utf8_lossy(&output.stdout);
+                    let mut stdout = raw_stdout.to_string();
+                    let mut truncated = false;
+                    if stdout.len() > MAX_OUTPUT {
+                        stdout.truncate(MAX_OUTPUT);
+                        stdout.push_str("\n[Output truncated at 1MB]");
+                        truncated = true;
+                    }
 
                     if let Some((start, end)) = tabs.active_editor().get_selection_range() {
                         // Replace selection with output
@@ -1155,7 +1234,12 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                         let cursor_line = editor.viewport.cursor_pos.0;
                         editor.mark_document_changed(cursor_line);
                     }
-                    tabs.set_temporary_status_message(format!("Executed: {command}"));
+                    let msg = if truncated {
+                        format!("Executed: {command} (output truncated at 1MB)")
+                    } else {
+                        format!("Executed: {command}")
+                    };
+                    tabs.set_temporary_status_message(msg);
                 }
                 Err(e) => {
                     tabs.set_temporary_status_message(format!("Error: {e}"));
@@ -1166,29 +1250,19 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             tabs.filename_buffer.clear();
             tabs.needs_redraw = true;
         }
-        KeyCode::Esc => {
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            tabs.pending_command = None;
             tabs.input_mode = InputMode::Normal;
             tabs.filename_buffer.clear();
-            tabs.status_message = "Cancelled".to_string();
+            tabs.set_temporary_status_message("Cancelled".to_string());
+        }
+        _ => {
+            // Show the prompt again for any other key
+            if let Some(ref cmd) = tabs.pending_command {
+                tabs.status_message = format!("Execute: {}? (Y/N)", cmd);
+            }
             tabs.needs_redraw = true;
         }
-        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
-            tabs.input_mode = InputMode::Normal;
-            tabs.filename_buffer.clear();
-            tabs.status_message = "Cancelled".to_string();
-            tabs.needs_redraw = true;
-        }
-        KeyCode::Backspace => {
-            tabs.filename_buffer.pop();
-            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
-            tabs.needs_redraw = true;
-        }
-        KeyCode::Char(c) => {
-            tabs.filename_buffer.push(c);
-            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
-            tabs.needs_redraw = true;
-        }
-        _ => {}
     }
     Ok(false)
 }

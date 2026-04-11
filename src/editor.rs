@@ -1,5 +1,6 @@
 use anyhow::Result;
 use ropey::Rope;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -25,8 +26,8 @@ pub struct ViewportState {
 /// Undo/redo management
 #[derive(Default)]
 pub struct UndoManager {
-    pub undo_stack: Vec<UndoState>,
-    pub redo_stack: Vec<UndoState>,
+    pub undo_stack: VecDeque<UndoState>,
+    pub redo_stack: VecDeque<UndoState>,
 }
 
 impl UndoManager {
@@ -35,11 +36,11 @@ impl UndoManager {
             rope: rope.clone(),
             cursor_pos,
         };
-        self.undo_stack.push(state);
+        self.undo_stack.push_back(state);
         self.redo_stack.clear();
 
         if self.undo_stack.len() > constants::UNDO_STACK_LIMIT {
-            self.undo_stack.remove(0);
+            self.undo_stack.pop_front();
         }
     }
 
@@ -56,12 +57,12 @@ impl UndoManager {
             (&mut self.redo_stack, &mut self.undo_stack)
         };
 
-        if let Some(state) = from.pop() {
+        if let Some(state) = from.pop_back() {
             let current = UndoState {
                 rope: rope.clone(),
                 cursor_pos: *cursor_pos,
             };
-            to.push(current);
+            to.push_back(current);
             *rope = state.rope;
             *cursor_pos = state.cursor_pos;
             true
@@ -99,6 +100,7 @@ pub enum InputMode {
     FuzzyFinder,
     VerbatimInput,
     ExecuteCommand,
+    ConfirmExecute,
 }
 
 /// Main editor state — represents a single buffer/tab.
@@ -114,8 +116,6 @@ pub struct Editor {
     pub syntax_name: Option<String>,
     pub search: SearchState,
     pub undo_manager: UndoManager,
-    pub cached_text: Option<String>,
-    pub cache_valid: bool,
     pub hex_state: Option<HexViewState>,
     pub mark_anchor: Option<(usize, usize)>,
 }
@@ -153,8 +153,6 @@ impl Editor {
             syntax_name: None,
             search: SearchState::default(),
             undo_manager: UndoManager::default(),
-            cached_text: None,
-            cache_valid: false,
             hex_state: None,
             mark_anchor: None,
         }
@@ -250,7 +248,7 @@ impl Editor {
         self.rope.insert(pos, &insert_str);
         self.mark_document_changed(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.0 += 1;
-        self.viewport.cursor_pos.1 = indent.len();
+        self.viewport.cursor_pos.1 = UnicodeWidthStr::width(indent.as_str());
         self.modified = true;
     }
 
@@ -314,6 +312,20 @@ impl Editor {
     pub fn clamp_cursor_to_line(&mut self) {
         let line_len = line_display_width(&self.rope, self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.1 = self.viewport.cursor_pos.1.min(line_len);
+    }
+
+    /// Convert a char offset (number of chars from line start) to a display column,
+    /// accounting for character widths (e.g. wide CJK characters).
+    pub fn char_idx_to_display_col(&self, line: usize, char_offset: usize) -> usize {
+        let rope_line = self.rope.line(line);
+        let mut display_col = 0;
+        for (i, ch) in rope_line.chars().enumerate() {
+            if i >= char_offset || ch == '\n' {
+                break;
+            }
+            display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        display_col
     }
 
     pub fn line_col_to_char_idx(&self, line: usize, col: usize) -> usize {
@@ -454,12 +466,16 @@ impl Editor {
         &mut self,
         event: crossterm::event::MouseEvent,
         terminal_height: usize,
+        line_num_width: usize,
     ) {
         use crossterm::event::MouseEventKind;
         match event.kind {
             MouseEventKind::Down(_) => {
                 let clicked_line = self.viewport.viewport_offset.0 + event.row as usize;
-                let clicked_col = event.column as usize;
+                // Subtract gutter width and add horizontal scroll offset
+                let clicked_col = (event.column as usize)
+                    .saturating_sub(line_num_width)
+                    + self.viewport.viewport_offset.1;
 
                 if clicked_line < self.rope.len_lines() {
                     self.viewport.cursor_pos.0 = clicked_line;
@@ -503,28 +519,24 @@ impl Editor {
                     .char_to_line(char_idx.min(self.rope.len_chars().saturating_sub(1)));
                 let line_start = self.rope.line_to_char(line);
                 let col_chars = char_idx.saturating_sub(line_start);
-                let mut display_col = 0;
-                for (i, ch) in self.rope.line(line).chars().enumerate() {
-                    if i >= col_chars || ch == '\n' {
-                        break;
-                    }
-                    display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
-                }
+                let display_col = self.char_idx_to_display_col(line, col_chars);
                 self.viewport.cursor_pos = (line, display_col);
             }
             self.hex_state = None;
             return;
         }
 
+        // Materialize rope content once and reuse
+        let text = self.rope.to_string();
+
         // Get bytes from the live rope content
-        let bytes = self.rope.to_string().into_bytes();
+        let bytes = text.as_bytes().to_vec();
 
         // Convert text cursor position to byte offset
         let char_idx = self.line_col_to_char_idx(
             self.viewport.cursor_pos.0,
             self.viewport.cursor_pos.1,
         );
-        let text = self.rope.to_string();
         let byte_offset = text
             .char_indices()
             .nth(char_idx)
@@ -636,16 +648,18 @@ impl Editor {
         self.save_undo_state();
         let text = self.rope.to_string();
 
-        if let Some(pos) = text.find(search_term) {
+        if let Some(byte_pos) = text.find(search_term) {
             let mut new_text = text.clone();
-            new_text.replace_range(pos..pos + search_term.len(), replace_term);
+            new_text.replace_range(byte_pos..byte_pos + search_term.len(), replace_term);
 
             self.rope = Rope::from_str(&new_text);
             self.modified = true;
 
-            let line = self.rope.char_to_line(pos);
+            // Convert byte offset to char index before using with rope methods
+            let char_pos = text[..byte_pos].chars().count();
+            let line = self.rope.char_to_line(char_pos);
             let line_start = self.rope.line_to_char(line);
-            let col = pos - line_start;
+            let col = char_pos - line_start;
             self.viewport.cursor_pos = (line, col);
             self.clamp_cursor_to_line();
 
@@ -756,7 +770,18 @@ impl Editor {
         let line_idx = self.viewport.cursor_pos.0;
         let rope_line = self.rope.line(line_idx);
         let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
-        let mut col = self.viewport.cursor_pos.1;
+        let display_col = self.viewport.cursor_pos.1;
+
+        // Convert display column to char index
+        let mut col = 0;
+        let mut dcol = 0;
+        for &ch in &line_chars {
+            if dcol >= display_col {
+                break;
+            }
+            col += 1;
+            dcol += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
 
         while col < line_chars.len() && !line_chars[col].is_whitespace() {
             col += 1;
@@ -769,7 +794,12 @@ impl Editor {
             self.viewport.cursor_pos.0 += 1;
             self.viewport.cursor_pos.1 = 0;
         } else {
-            self.viewport.cursor_pos.1 = col;
+            // Convert char index back to display column
+            let new_display_col: usize = line_chars[..col]
+                .iter()
+                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                .sum();
+            self.viewport.cursor_pos.1 = new_display_col;
         }
     }
 
@@ -778,15 +808,26 @@ impl Editor {
         let line_idx = self.viewport.cursor_pos.0;
         let rope_line = self.rope.line(line_idx);
         let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
-        let mut col = self.viewport.cursor_pos.1;
+        let display_col = self.viewport.cursor_pos.1;
 
-        if col == 0 {
+        if display_col == 0 {
             if line_idx > 0 {
                 self.viewport.cursor_pos.0 -= 1;
                 self.viewport.cursor_pos.1 =
                     line_display_width(&self.rope, self.viewport.cursor_pos.0);
             }
             return;
+        }
+
+        // Convert display column to char index
+        let mut col: usize = 0;
+        let mut dcol: usize = 0;
+        for &ch in &line_chars {
+            if dcol >= display_col {
+                break;
+            }
+            col += 1;
+            dcol += UnicodeWidthChar::width(ch).unwrap_or(0);
         }
 
         while col > 0 && line_chars.get(col.saturating_sub(1)).is_some_and(|c| c.is_whitespace())
@@ -801,7 +842,12 @@ impl Editor {
             col -= 1;
         }
 
-        self.viewport.cursor_pos.1 = col;
+        // Convert char index back to display column
+        let new_display_col: usize = line_chars[..col]
+            .iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+            .sum();
+        self.viewport.cursor_pos.1 = new_display_col;
     }
 
     /// Jump to start of file.
@@ -848,13 +894,7 @@ impl Editor {
                     let line = self.rope.char_to_line(i);
                     let line_start = self.rope.line_to_char(line);
                     let col_chars = i - line_start;
-                    let mut display_col = 0;
-                    for (j, jch) in self.rope.line(line).chars().enumerate() {
-                        if j >= col_chars {
-                            break;
-                        }
-                        display_col += UnicodeWidthChar::width(jch).unwrap_or(0);
-                    }
+                    let display_col = self.char_idx_to_display_col(line, col_chars);
                     self.viewport.cursor_pos = (line, display_col);
                     return;
                 }
@@ -874,13 +914,7 @@ impl Editor {
                     let line = self.rope.char_to_line(i);
                     let line_start = self.rope.line_to_char(line);
                     let col_chars = i - line_start;
-                    let mut display_col = 0;
-                    for (j, jch) in self.rope.line(line).chars().enumerate() {
-                        if j >= col_chars {
-                            break;
-                        }
-                        display_col += UnicodeWidthChar::width(jch).unwrap_or(0);
-                    }
+                    let display_col = self.char_idx_to_display_col(line, col_chars);
                     self.viewport.cursor_pos = (line, display_col);
                     return;
                 }
@@ -892,10 +926,22 @@ impl Editor {
     /// from the first matching word in the buffer.
     pub fn word_complete(&mut self) {
         let line_idx = self.viewport.cursor_pos.0;
-        let col = self.viewport.cursor_pos.1;
+        let display_col = self.viewport.cursor_pos.1;
         let rope_line = self.rope.line(line_idx);
-        let line_content: String = rope_line.chars().collect();
-        let before_cursor = &line_content[..col.min(line_content.len())];
+        let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
+
+        // Convert display column to char index
+        let mut char_idx = 0;
+        let mut current_display_col = 0;
+        for &ch in &line_chars {
+            if current_display_col >= display_col {
+                break;
+            }
+            char_idx += 1;
+            current_display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+
+        let before_cursor: String = line_chars[..char_idx].iter().collect();
 
         // Find the word prefix (alphanumeric + underscore)
         let prefix: String = before_cursor
@@ -911,31 +957,36 @@ impl Editor {
             return;
         }
 
-        // Scan all words in the document for matches
-        let text = self.rope.to_string();
-        let mut found: Option<&str> = None;
-        for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
-            if word.starts_with(prefix.as_str()) && word != prefix && word.len() > prefix.len() {
-                found = Some(word);
-                break;
+        // Scan all words in the document for matches using rope line iteration
+        let mut found: Option<String> = None;
+        'outer: for line_i in 0..self.rope.len_lines() {
+            let rope_ln = self.rope.line(line_i);
+            let line_str: String = rope_ln.chars().collect();
+            for word in line_str.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if word.starts_with(prefix.as_str()) && word != prefix && word.len() > prefix.len()
+                {
+                    found = Some(word.to_string());
+                    break 'outer;
+                }
             }
         }
 
-        if let Some(completion) = found {
+        if let Some(ref completion) = found {
             let suffix = &completion[prefix.len()..];
             self.save_undo_state();
             let pos =
                 self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
             self.rope.insert(pos, suffix);
             self.mark_document_changed(self.viewport.cursor_pos.0);
-            self.viewport.cursor_pos.1 += suffix.len();
+            // Update cursor by display width of the suffix, not byte length
+            self.viewport.cursor_pos.1 += UnicodeWidthStr::width(suffix);
             self.modified = true;
         }
     }
 
     pub fn invalidate_cache(&mut self) {
-        self.cache_valid = false;
-        self.cached_text = None;
+        // Reserved for future caching needs; currently a no-op used as
+        // an extension point by mark_document_changed.
     }
 
     /// Invalidate highlighting and text caches from a given line onwards

@@ -23,6 +23,8 @@ pub struct TabManager {
     pub fuzzy_selected: usize,
     // Tab bar scroll offset (index of first visible tab)
     pub tab_scroll_offset: usize,
+    // Pending command for execute confirmation
+    pub pending_command: Option<String>,
 }
 
 impl Default for TabManager {
@@ -52,6 +54,7 @@ impl TabManager {
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
             tab_scroll_offset: 0,
+            pending_command: None,
         }
     }
 
@@ -74,6 +77,7 @@ impl TabManager {
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
             tab_scroll_offset: 0,
+            pending_command: None,
         }
     }
 
@@ -237,7 +241,9 @@ impl TabManager {
 
     pub fn save_file(&mut self) -> anyhow::Result<()> {
         if let Some(path) = self.active_editor().file_path.clone() {
-            self.perform_save(path)?;
+            if let Err(e) = self.perform_save(path) {
+                self.set_temporary_status_message(format!("Error saving file: {e}"));
+            }
         } else {
             self.start_filename_input();
         }
@@ -279,33 +285,28 @@ impl TabManager {
         }
 
         let editor = self.active_editor_mut();
-        match std::fs::write(&path, editor.rope.to_string()) {
-            Ok(()) => {
-                editor.file_path = Some(path.clone());
-                editor.modified = false;
+        std::fs::write(&path, editor.rope.to_string())?;
 
-                let first_line = editor
-                    .rope
-                    .line(0)
-                    .as_str()
-                    .map(|s| s.trim_end_matches('\n'));
-                editor.syntax_name = editor.highlighter.detect_syntax(Some(&path), first_line);
-                editor
-                    .highlighter
-                    .set_syntax(editor.syntax_name.as_deref());
+        editor.file_path = Some(path.clone());
+        editor.modified = false;
 
-                // Update display name
-                editor.display_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "[untitled]".to_string());
+        let first_line = editor
+            .rope
+            .line(0)
+            .as_str()
+            .map(|s| s.trim_end_matches('\n'));
+        editor.syntax_name = editor.highlighter.detect_syntax(Some(&path), first_line);
+        editor
+            .highlighter
+            .set_syntax(editor.syntax_name.as_deref());
 
-                self.set_temporary_status_message(format!("Saved: {}", path.display()));
-            }
-            Err(e) => {
-                self.set_temporary_status_message(format!("Error saving file: {e}"));
-            }
-        }
+        // Update display name
+        editor.display_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "[untitled]".to_string());
+
+        self.set_temporary_status_message(format!("Saved: {}", path.display()));
         Ok(())
     }
 
@@ -318,7 +319,13 @@ impl TabManager {
         }
 
         let path = PathBuf::from(&self.filename_buffer);
-        self.perform_save(path)?;
+        if let Err(e) = self.perform_save(path) {
+            self.set_temporary_status_message(format!("Error saving file: {e}"));
+            self.input_mode = InputMode::Normal;
+            self.filename_buffer.clear();
+            self.quit_after_save = false;
+            return Ok(false);
+        }
         self.input_mode = InputMode::Normal;
         self.filename_buffer.clear();
 
@@ -589,13 +596,7 @@ impl TabManager {
             let line = self.tabs[idx].rope.char_to_line(clamped);
             let line_start = self.tabs[idx].rope.line_to_char(line);
             let col_chars = start.saturating_sub(line_start);
-            let mut display_col = 0;
-            for (i, ch) in self.tabs[idx].rope.line(line).chars().enumerate() {
-                if i >= col_chars || ch == '\n' {
-                    break;
-                }
-                display_col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            }
+            let display_col = self.tabs[idx].char_idx_to_display_col(line, col_chars);
             self.tabs[idx].viewport.cursor_pos = (line, display_col);
             self.tabs[idx].mark_anchor = None;
             self.tabs[idx].modified = true;
@@ -742,13 +743,7 @@ impl TabManager {
         let line = self.tabs[idx].rope.char_to_line(clamped);
         let line_start = self.tabs[idx].rope.line_to_char(line);
         let col_chars = end_pos.saturating_sub(line_start);
-        let mut display_col = 0;
-        for (i, ch) in self.tabs[idx].rope.line(line).chars().enumerate() {
-            if i >= col_chars || ch == '\n' {
-                break;
-            }
-            display_col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        }
+        let display_col = self.tabs[idx].char_idx_to_display_col(line, col_chars);
         self.tabs[idx].viewport.cursor_pos = (line, display_col);
         let cursor_line = self.tabs[idx].viewport.cursor_pos.0;
         self.tabs[idx].mark_document_changed(cursor_line);
@@ -862,14 +857,28 @@ impl TabManager {
             return;
         }
         adjusted.row = adjusted.row.saturating_sub(1);
+        let line_num_width = if self.config.show_line_numbers {
+            self.active_editor().rope.len_lines().to_string().len() + 1
+        } else {
+            0
+        };
         let editor = self.active_editor_mut();
-        editor.handle_mouse_event(adjusted, terminal_height);
+        editor.handle_mouse_event(adjusted, terminal_height, line_num_width);
         self.needs_redraw = true;
     }
 
     fn handle_tab_bar_click(&mut self, click_col: usize) {
         let mut col = 0;
-        for (i, tab) in self.tabs.iter().enumerate() {
+
+        // Account for left overflow indicator width when tabs are scrolled
+        if self.tab_scroll_offset > 0 {
+            let left_label = format!(" <{} ", self.tab_scroll_offset);
+            col += left_label.len();
+        }
+
+        // Start iterating from tab_scroll_offset, matching the rendering order
+        for i in self.tab_scroll_offset..self.tabs.len() {
+            let tab = &self.tabs[i];
             let modified = if tab.modified { "*" } else { "" };
             let title = format!(" {}{} ", tab.display_name, modified);
             let title_len = title.len();
@@ -1148,10 +1157,14 @@ mod tests {
         let mut t = make_tabs("hello\n");
         t.input_mode = InputMode::ExecuteCommand;
         t.filename_buffer = "echo test".to_string();
-        // Simulate Enter to execute
+        // Simulate Enter to go to confirmation
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let _ = crate::input::handle_key_event(&mut t, enter);
+        assert_eq!(t.input_mode, InputMode::ConfirmExecute);
+        // Confirm with Y
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, y);
         assert_eq!(t.input_mode, InputMode::Normal);
         // "echo test" output should be inserted
         assert!(content(&t).contains("test"));
@@ -1169,6 +1182,23 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_command_confirm_cancel() {
+        let mut t = make_tabs("hello\n");
+        t.input_mode = InputMode::ExecuteCommand;
+        t.filename_buffer = "echo test".to_string();
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // Enter to go to confirmation
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, enter);
+        assert_eq!(t.input_mode, InputMode::ConfirmExecute);
+        // Cancel with N
+        let n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, n);
+        assert_eq!(t.input_mode, InputMode::Normal);
+        assert_eq!(content(&t), "hello\n"); // unchanged
+    }
+
+    #[test]
     fn test_execute_command_with_selection() {
         let mut t = make_tabs("hello world\n");
         // Select "hello" (chars 0..5)
@@ -1179,6 +1209,10 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let _ = crate::input::handle_key_event(&mut t, enter);
+        assert_eq!(t.input_mode, InputMode::ConfirmExecute);
+        // Confirm with Y
+        let y = KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, y);
         assert_eq!(t.input_mode, InputMode::Normal);
         // "hello" should be replaced with "HELLO"
         assert!(content(&t).contains("HELLO"));

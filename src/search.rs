@@ -213,15 +213,21 @@ impl SearchState {
     }
 }
 
-/// Find all occurrences of search_term in a single line
+/// Find all occurrences of search_term in a single line, returning char positions.
 pub fn find_matches_in_line(line_content: &str, search_term: &str) -> Vec<usize> {
     let mut matches = Vec::new();
     let mut start_pos = 0;
 
     while let Some(pos) = line_content[start_pos..].find(search_term) {
-        let match_pos = start_pos + pos;
-        matches.push(match_pos);
-        start_pos = match_pos + 1;
+        let byte_pos = start_pos + pos;
+        // Convert byte offset to char position
+        let char_pos = line_content[..byte_pos].chars().count();
+        matches.push(char_pos);
+        start_pos = byte_pos + 1;
+        // Ensure we don't start in the middle of a multi-byte char
+        while start_pos < line_content.len() && !line_content.is_char_boundary(start_pos) {
+            start_pos += 1;
+        }
     }
 
     matches

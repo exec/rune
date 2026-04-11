@@ -66,6 +66,10 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
             "Enter: Execute  Esc/^C: Cancel  Type shell command".to_string(),
             String::new(),
         ),
+        InputMode::ConfirmExecute => (
+            "Y: Execute  N/Esc: Cancel".to_string(),
+            String::new(),
+        ),
         _ => (
             "^H Help  ^T New Tab  ^P Finder".to_string(),
             format!("Rune v{}", env!("CARGO_PKG_VERSION")),
