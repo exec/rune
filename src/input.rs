@@ -633,13 +633,16 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             editor.toggle_hex_view();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-            editor.cut_line();
+            editor.cut();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            editor.paste();
+            editor.paste_inline();
         }
         (KeyModifiers::ALT, KeyCode::Char('6')) => {
-            editor.copy_line();
+            editor.copy();
+        }
+        (KeyModifiers::ALT, KeyCode::Char('a')) => {
+            editor.toggle_mark();
         }
         (KeyModifiers::ALT, KeyCode::Char('p')) => {
             editor.config.show_whitespace = !editor.config.show_whitespace;

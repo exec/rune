@@ -982,6 +982,105 @@ impl Editor {
     pub fn reset_cut_tracking(&mut self) {
         self.last_cut_line = None;
     }
+    /// Toggle mark (start/stop selection).
+    pub fn toggle_mark(&mut self) {
+        if self.mark_anchor.is_some() {
+            self.mark_anchor = None;
+            self.set_temporary_status_message("Mark unset".to_string());
+        } else {
+            self.mark_anchor = Some(self.viewport.cursor_pos);
+            self.set_temporary_status_message("Mark set".to_string());
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Get the selection range as (start_char_idx, end_char_idx) where start < end.
+    pub fn get_selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.mark_anchor?;
+        let cursor = self.viewport.cursor_pos;
+        let anchor_idx = self.line_col_to_char_idx(anchor.0, anchor.1);
+        let cursor_idx = self.line_col_to_char_idx(cursor.0, cursor.1);
+        if anchor_idx <= cursor_idx {
+            Some((anchor_idx, cursor_idx))
+        } else {
+            Some((cursor_idx, anchor_idx))
+        }
+    }
+
+    /// Cut the selection (or the current line if no selection).
+    pub fn cut(&mut self) {
+        if let Some((start, end)) = self.get_selection_range() {
+            if start == end {
+                self.cut_line();
+                return;
+            }
+            self.save_undo_state();
+            let selected: String = self.rope.slice(start..end).chars().collect();
+            self.clipboard = vec![selected];
+            self.last_cut_line = None;
+            self.rope.remove(start..end);
+            let char_count = self.rope.len_chars();
+            let clamped = if char_count == 0 { 0 } else { start.min(char_count - 1) };
+            let line = self.rope.char_to_line(clamped);
+            let line_start = self.rope.line_to_char(line);
+            let col_chars = start.saturating_sub(line_start);
+            let mut display_col = 0;
+            for (i, ch) in self.rope.line(line).chars().enumerate() {
+                if i >= col_chars || ch == '\n' { break; }
+                display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+            }
+            self.viewport.cursor_pos = (line, display_col);
+            self.mark_anchor = None;
+            self.modified = true;
+            self.mark_document_changed(line);
+        } else {
+            self.cut_line();
+        }
+    }
+
+    /// Copy the selection (or the current line if no selection).
+    pub fn copy(&mut self) {
+        if let Some((start, end)) = self.get_selection_range() {
+            if start == end {
+                self.copy_line();
+                return;
+            }
+            let selected: String = self.rope.slice(start..end).chars().collect();
+            self.clipboard = vec![selected];
+            self.last_cut_line = None;
+            self.mark_anchor = None;
+            self.set_temporary_status_message("Copied selection".to_string());
+        } else {
+            self.copy_line();
+        }
+    }
+
+    /// Paste clipboard at current cursor position (inline, not above line).
+    pub fn paste_inline(&mut self) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        self.save_undo_state();
+        self.mark_anchor = None;
+        let paste_text: String = self.clipboard.join("");
+        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        self.rope.insert(pos, &paste_text);
+        self.modified = true;
+        let end_pos = pos + paste_text.chars().count();
+        let char_count = self.rope.len_chars();
+        let clamped = if char_count == 0 { 0 } else { end_pos.min(char_count - 1) };
+        let line = self.rope.char_to_line(clamped);
+        let line_start = self.rope.line_to_char(line);
+        let col_chars = end_pos.saturating_sub(line_start);
+        let mut display_col = 0;
+        for (i, ch) in self.rope.line(line).chars().enumerate() {
+            if i >= col_chars || ch == '\n' { break; }
+            display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        self.viewport.cursor_pos = (line, display_col);
+        self.mark_document_changed(self.viewport.cursor_pos.0);
+    }
+
 
     /// Get the range of lines affected by the current selection, or just the cursor line.
     fn get_affected_lines(&self) -> (usize, usize) {
@@ -1458,5 +1557,122 @@ mod indent_comment_tests {
         e.viewport.cursor_pos = (0, 0);
         e.toggle_comment();
         assert_eq!(e.rope.to_string(), "# hello\n");
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+
+    #[test]
+    fn test_move_word_right_basic() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world foo\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.move_word_right();
+        assert_eq!(e.viewport.cursor_pos.1, 6);
+    }
+
+    #[test]
+    fn test_move_word_right_from_middle() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world\n");
+        e.viewport.cursor_pos = (0, 6);
+        e.move_word_right();
+        // At end of line, wraps to next line
+        assert_eq!(e.viewport.cursor_pos, (1, 0));
+    }
+
+    #[test]
+    fn test_move_word_left_basic() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world\n");
+        e.viewport.cursor_pos = (0, 8);
+        e.move_word_left();
+        assert_eq!(e.viewport.cursor_pos.1, 6);
+    }
+
+    #[test]
+    fn test_move_word_left_to_start() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world\n");
+        e.viewport.cursor_pos = (0, 3);
+        e.move_word_left();
+        assert_eq!(e.viewport.cursor_pos.1, 0);
+    }
+
+    #[test]
+    fn test_move_word_left_wraps() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\nworld\n");
+        e.viewport.cursor_pos = (1, 0);
+        e.move_word_left();
+        assert_eq!(e.viewport.cursor_pos.0, 0);
+        assert_eq!(e.viewport.cursor_pos.1, 5);
+    }
+
+    #[test]
+    fn test_goto_start() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\nline3\n");
+        e.viewport.cursor_pos = (2, 3);
+        e.goto_start();
+        assert_eq!(e.viewport.cursor_pos, (0, 0));
+    }
+
+    #[test]
+    fn test_goto_end() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.goto_end();
+        let last_line = e.rope.len_lines().saturating_sub(1);
+        assert_eq!(e.viewport.cursor_pos.0, last_line);
+    }
+
+    #[test]
+    fn test_match_bracket_forward() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("(hello)\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.match_bracket();
+        assert_eq!(e.viewport.cursor_pos.1, 6);
+    }
+
+    #[test]
+    fn test_match_bracket_backward() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("(hello)\n");
+        e.viewport.cursor_pos = (0, 6);
+        e.match_bracket();
+        assert_eq!(e.viewport.cursor_pos.1, 0);
+    }
+
+    #[test]
+    fn test_match_bracket_nested() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("((a))\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.match_bracket();
+        assert_eq!(e.viewport.cursor_pos.1, 4); // matches outer )
+    }
+
+    #[test]
+    fn test_match_bracket_no_match() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.viewport.cursor_pos = (0, 2);
+        e.match_bracket();
+        assert_eq!(e.viewport.cursor_pos, (0, 2)); // unchanged
+    }
+
+    #[test]
+    fn test_show_cursor_info() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\nworld\n");
+        e.viewport.cursor_pos = (1, 3);
+        e.show_cursor_info();
+        assert!(e.status_message.contains("Line: 2"));
+        assert!(e.status_message.contains("Col: 4"));
     }
 }
