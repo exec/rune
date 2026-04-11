@@ -298,6 +298,11 @@ fn draw_help_modal(f: &mut Frame, area: Rect) {
 Arrows   Move cursor
 
 ─────────────────────────────────────────
+                  VIEW
+─────────────────────────────────────────
+^B       Hex view (read-only)
+
+─────────────────────────────────────────
                 OPTIONS
 ─────────────────────────────────────────
 ^O       Open options menu
