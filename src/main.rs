@@ -14,8 +14,9 @@ use ratatui::{
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     fs,
-    io::{self, stdout},
+    io::{self, stdout, BufWriter, Write},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -93,8 +94,9 @@ struct Editor {
     search_matches: Vec<(usize, usize)>,
     current_match_index: Option<usize>,
     search_start_pos: (usize, usize),
-    undo_stack: Vec<UndoState>,
-    redo_stack: Vec<UndoState>,
+    undo_stack: VecDeque<UndoState>,
+    redo_stack: VecDeque<UndoState>,
+    terminal_height: usize,
     // Performance optimizations
     needs_redraw: bool,
     cached_text: Option<String>, // Cache for search operations
@@ -120,6 +122,7 @@ enum InputMode {
     Normal,
     EnteringFilename,
     EnteringSaveAs,
+    ConfirmOverwrite,
     ConfirmQuit,
     OptionsMenu,
     Find,
@@ -155,8 +158,9 @@ impl Editor {
             search_matches: Vec::new(),
             current_match_index: None,
             search_start_pos: (0, 0),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+            terminal_height: constants::FALLBACK_TERMINAL_HEIGHT,
             // Performance optimizations
             needs_redraw: true,
             cached_text: None,
@@ -173,11 +177,26 @@ impl Editor {
     }
 
     fn load_file(&mut self, path: PathBuf) -> Result<()> {
+        // Warn about very large files (>50MB)
+        const LARGE_FILE_THRESHOLD: u64 = 50 * 1024 * 1024;
+        if let Ok(metadata) = fs::metadata(&path) {
+            if metadata.len() > LARGE_FILE_THRESHOLD {
+                let size_mb = metadata.len() / (1024 * 1024);
+                self.set_temporary_status_message(format!(
+                    "Warning: Large file ({size_mb}MB) — loading may be slow"
+                ));
+            }
+        }
+
         let content = fs::read_to_string(&path)?;
         self.rope = Rope::from_str(&content);
 
-        // Detect syntax for highlighting
-        let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
+        // Detect syntax for highlighting (with empty file guard — P18)
+        let first_line = if self.rope.len_lines() > 0 && self.rope.len_chars() > 0 {
+            self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'))
+        } else {
+            None
+        };
         self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
 
         // Set the syntax in the highlighter
@@ -221,13 +240,22 @@ impl Editor {
     }
 
     fn perform_save(&mut self, path: PathBuf) -> Result<()> {
-        // Create parent directories if they don't exist
+        // Create parent directories if they don't exist, with user awareness
         if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                self.set_temporary_status_message(format!(
+                    "Creating directories: {}",
+                    parent.display()
+                ));
+            }
             fs::create_dir_all(parent)?;
         }
 
-        // Try to write the file
-        match fs::write(&path, self.rope.to_string()) {
+        // Write using rope.write_to for efficiency (avoids materializing entire string — P3)
+        match fs::File::create(&path).and_then(|file| {
+            let mut writer = BufWriter::new(file);
+            self.rope.write_to(&mut writer).and_then(|_| writer.flush())
+        }) {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.modified = false;
@@ -258,9 +286,15 @@ impl Editor {
 
         let path = PathBuf::from(&self.filename_buffer);
 
-        // Check if file exists and warn user
-        if path.exists() && self.input_mode == InputMode::EnteringFilename {
-            // For now, just overwrite. Could add confirmation later.
+        // Check if file exists and ask for confirmation before overwriting
+        if path.exists() && self.input_mode != InputMode::ConfirmOverwrite {
+            self.input_mode = InputMode::ConfirmOverwrite;
+            self.status_message = format!(
+                "File '{}' exists. Overwrite? (Y/N)",
+                path.display()
+            );
+            self.needs_redraw = true;
+            return Ok(false);
         }
 
         self.perform_save(path)?;
@@ -345,6 +379,23 @@ impl Editor {
         self.modified = true;
     }
 
+    /// Insert a character without saving undo state (used for batch operations like tab insertion)
+    fn insert_char_no_undo(&mut self, c: char) {
+        let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
+        self.rope.insert_char(pos, c);
+
+        // Invalidate highlighting cache from current line
+        self.highlighter
+            .invalidate_cache_from_line(self.cursor_pos.0);
+
+        // Performance optimizations
+        self.invalidate_cache();
+        self.needs_redraw = true;
+
+        self.move_cursor_right();
+        self.modified = true;
+    }
+
     fn delete_char(&mut self) {
         if self.cursor_pos.1 > 0 {
             let pos = self.line_col_to_char_idx(self.cursor_pos.0, self.cursor_pos.1);
@@ -369,10 +420,10 @@ impl Editor {
             if pos > 0 {
                 self.save_undo_state();
 
-                // Get the length of the previous line before joining
+                // Get the display width of the previous line before joining (P11)
                 let prev_line = self.rope.line(self.cursor_pos.0 - 1);
                 let junction_col = if let Some(line_str) = prev_line.as_str() {
-                    line_str.trim_end_matches('\n').len()
+                    line_str.trim_end_matches('\n').width()
                 } else {
                     0
                 };
@@ -582,7 +633,7 @@ impl Editor {
         false
     }
 
-    fn save_config(&self) {
+    fn save_config(&mut self) {
         let config = Config {
             mouse_enabled: self.mouse_enabled,
             show_line_numbers: self.show_line_numbers,
@@ -592,13 +643,21 @@ impl Editor {
 
         if let Some(config_dir) = dirs::config_dir() {
             let rune_config_dir = config_dir.join("rune");
-            if fs::create_dir_all(&rune_config_dir).is_err() {
-                return; // Silently fail if we can't create the directory
+            if let Err(e) = fs::create_dir_all(&rune_config_dir) {
+                self.set_temporary_status_message(format!("Failed to create config directory: {e}"));
+                return;
             }
 
             let config_path = rune_config_dir.join("config.toml");
-            if let Ok(config_str) = toml::to_string(&config) {
-                let _ = fs::write(config_path, config_str); // Silently fail if we can't write
+            match toml::to_string(&config) {
+                Ok(config_str) => {
+                    if let Err(e) = fs::write(config_path, config_str) {
+                        self.set_temporary_status_message(format!("Failed to save config: {e}"));
+                    }
+                }
+                Err(e) => {
+                    self.set_temporary_status_message(format!("Failed to serialize config: {e}"));
+                }
             }
         }
     }
@@ -610,7 +669,8 @@ impl Editor {
                 if let Ok(config) = toml::from_str::<Config>(&config_str) {
                     self.mouse_enabled = config.mouse_enabled;
                     self.show_line_numbers = config.show_line_numbers;
-                    self.tab_width = config.tab_width.max(1); // Ensure tab_width is at least 1
+                    // Validate tab_width: must be between 1 and 16
+                    self.tab_width = config.tab_width.clamp(1, 16);
                     self.word_wrap = config.word_wrap;
                 }
             }
@@ -622,22 +682,22 @@ impl Editor {
             rope: self.rope.clone(),
             cursor_pos: self.cursor_pos,
         };
-        self.undo_stack.push(state);
+        self.undo_stack.push_back(state);
         self.redo_stack.clear(); // Clear redo stack when new action happens
 
         // Limit undo stack size to prevent memory issues
         if self.undo_stack.len() > constants::MAX_UNDO_STACK_SIZE {
-            self.undo_stack.remove(0);
+            self.undo_stack.pop_front();
         }
     }
 
     fn undo(&mut self) {
-        if let Some(state) = self.undo_stack.pop() {
+        if let Some(state) = self.undo_stack.pop_back() {
             let current_state = UndoState {
                 rope: self.rope.clone(),
                 cursor_pos: self.cursor_pos,
             };
-            self.redo_stack.push(current_state);
+            self.redo_stack.push_back(current_state);
 
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
@@ -655,12 +715,12 @@ impl Editor {
     }
 
     fn redo(&mut self) {
-        if let Some(state) = self.redo_stack.pop() {
+        if let Some(state) = self.redo_stack.pop_back() {
             let current_state = UndoState {
                 rope: self.rope.clone(),
                 cursor_pos: self.cursor_pos,
             };
-            self.undo_stack.push(current_state);
+            self.undo_stack.push_back(current_state);
 
             self.rope = state.rope;
             self.cursor_pos = state.cursor_pos;
@@ -1096,9 +1156,9 @@ impl Editor {
         let tab_width = self.tab_width.max(1); // Ensure tab_width is at least 1
         let spaces_to_next_tab = tab_width - (current_col % tab_width);
 
-        // Insert the appropriate number of spaces
+        // Insert the appropriate number of spaces without creating multiple undo states
         for _ in 0..spaces_to_next_tab {
-            self.insert_char(' ');
+            self.insert_char_no_undo(' ');
         }
     }
 }
@@ -1387,6 +1447,27 @@ fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
                 editor.input_mode = InputMode::Find;
                 return Ok(false);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    // Handle file overwrite confirmation
+    if editor.input_mode == InputMode::ConfirmOverwrite {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // User confirmed overwrite - proceed with save
+                return editor.finish_filename_input();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                // User declined - go back to filename input
+                editor.input_mode = InputMode::EnteringFilename;
+                editor.status_message = format!("File Name to Write: {}", editor.filename_buffer);
+                editor.needs_redraw = true;
+            }
+            _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
+                editor.cancel_filename_input();
             }
             _ => {}
         }
@@ -1992,6 +2073,10 @@ fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         ),
         InputMode::EnteringFilename | InputMode::EnteringSaveAs => (
             "Enter: Confirm  Esc: Cancel  Type filename".to_string(),
+            String::new(),
+        ),
+        InputMode::ConfirmOverwrite => (
+            "Y: Overwrite  N: Go back  ^C: Cancel".to_string(),
             String::new(),
         ),
         InputMode::OptionsMenu => (
