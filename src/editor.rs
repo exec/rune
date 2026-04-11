@@ -1105,6 +1105,149 @@ impl Editor {
         self.clamp_cursor_to_line();
         self.mark_document_changed(start_line);
     }
+
+    /// Move cursor to the start of the next word.
+    pub fn move_word_right(&mut self) {
+        let line_idx = self.viewport.cursor_pos.0;
+        let rope_line = self.rope.line(line_idx);
+        let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
+        let mut col = self.viewport.cursor_pos.1;
+
+        // Skip current word characters
+        while col < line_chars.len() && !line_chars[col].is_whitespace() {
+            col += 1;
+        }
+        // Skip whitespace
+        while col < line_chars.len() && line_chars[col].is_whitespace() {
+            col += 1;
+        }
+
+        if col >= line_chars.len() && line_idx < self.rope.len_lines().saturating_sub(1) {
+            self.viewport.cursor_pos.0 += 1;
+            self.viewport.cursor_pos.1 = 0;
+        } else {
+            self.viewport.cursor_pos.1 = col;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Move cursor to the start of the previous word.
+    pub fn move_word_left(&mut self) {
+        let line_idx = self.viewport.cursor_pos.0;
+        let rope_line = self.rope.line(line_idx);
+        let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
+        let mut col = self.viewport.cursor_pos.1;
+
+        if col == 0 {
+            if line_idx > 0 {
+                self.viewport.cursor_pos.0 -= 1;
+                self.viewport.cursor_pos.1 =
+                    line_display_width(&self.rope, self.viewport.cursor_pos.0);
+            }
+            self.needs_redraw = true;
+            return;
+        }
+
+        // Move back past whitespace
+        while col > 0 && line_chars.get(col.saturating_sub(1)).map_or(false, |c| c.is_whitespace()) {
+            col -= 1;
+        }
+        // Move back past word characters
+        while col > 0 && line_chars.get(col.saturating_sub(1)).map_or(false, |c| !c.is_whitespace()) {
+            col -= 1;
+        }
+
+        self.viewport.cursor_pos.1 = col;
+        self.needs_redraw = true;
+    }
+
+    /// Jump to start of file.
+    pub fn goto_start(&mut self) {
+        self.viewport.cursor_pos = (0, 0);
+        self.needs_redraw = true;
+    }
+
+    /// Jump to end of file.
+    pub fn goto_end(&mut self) {
+        let last_line = self.rope.len_lines().saturating_sub(1);
+        self.viewport.cursor_pos.0 = last_line;
+        self.viewport.cursor_pos.1 = line_display_width(&self.rope, last_line);
+        self.needs_redraw = true;
+    }
+
+    /// Jump to matching bracket.
+    pub fn match_bracket(&mut self) {
+        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        if pos >= self.rope.len_chars() {
+            return;
+        }
+
+        let ch = self.rope.char(pos);
+        let (target, forward) = match ch {
+            '(' => (')', true),
+            '[' => (']', true),
+            '{' => ('}', true),
+            ')' => ('(', false),
+            ']' => ('[', false),
+            '}' => ('{', false),
+            _ => return,
+        };
+
+        let mut depth = 1i32;
+        if forward {
+            for i in (pos + 1)..self.rope.len_chars() {
+                let c = self.rope.char(i);
+                if c == ch { depth += 1; }
+                if c == target { depth -= 1; }
+                if depth == 0 {
+                    let line = self.rope.char_to_line(i);
+                    let line_start = self.rope.line_to_char(line);
+                    let col_chars = i - line_start;
+                    let mut display_col = 0;
+                    for (j, jch) in self.rope.line(line).chars().enumerate() {
+                        if j >= col_chars { break; }
+                        display_col += UnicodeWidthChar::width(jch).unwrap_or(0);
+                    }
+                    self.viewport.cursor_pos = (line, display_col);
+                    self.needs_redraw = true;
+                    return;
+                }
+            }
+        } else {
+            let mut i = pos;
+            while i > 0 {
+                i -= 1;
+                let c = self.rope.char(i);
+                if c == ch { depth += 1; }
+                if c == target { depth -= 1; }
+                if depth == 0 {
+                    let line = self.rope.char_to_line(i);
+                    let line_start = self.rope.line_to_char(line);
+                    let col_chars = i - line_start;
+                    let mut display_col = 0;
+                    for (j, jch) in self.rope.line(line).chars().enumerate() {
+                        if j >= col_chars { break; }
+                        display_col += UnicodeWidthChar::width(jch).unwrap_or(0);
+                    }
+                    self.viewport.cursor_pos = (line, display_col);
+                    self.needs_redraw = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Show cursor position information.
+    pub fn show_cursor_info(&mut self) {
+        let line = self.viewport.cursor_pos.0 + 1;
+        let col = self.viewport.cursor_pos.1 + 1;
+        let total_lines = self.rope.len_lines();
+        let total_chars = self.rope.len_chars();
+        let char_idx = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        self.set_temporary_status_message(format!(
+            "Line: {}/{} | Col: {} | Char: {}/{}", line, total_lines, col, char_idx + 1, total_chars
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -1250,5 +1393,70 @@ mod tests {
         e.cut_line();
         assert_eq!(e.clipboard.len(), 1);
         assert_eq!(e.clipboard[0], "b\n");
+    }
+}
+
+// Additional tests for indent/unindent/comment (Task 6)
+#[cfg(test)]
+mod indent_comment_tests {
+    use super::*;
+
+    #[test]
+    fn test_indent_adds_spaces() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\nworld\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.mark_anchor = Some((1, 0));
+        e.indent_lines();
+        assert_eq!(e.rope.to_string(), "    hello\n    world\n");
+    }
+
+    #[test]
+    fn test_indent_single_line() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\nworld\n");
+        e.viewport.cursor_pos = (1, 0);
+        e.indent_lines();
+        assert_eq!(e.rope.to_string(), "hello\n    world\n");
+    }
+
+    #[test]
+    fn test_unindent_removes_spaces() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("    hello\n    world\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.mark_anchor = Some((1, 0));
+        e.unindent_lines();
+        assert_eq!(e.rope.to_string(), "hello\nworld\n");
+    }
+
+    #[test]
+    fn test_comment_adds_rust() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.syntax_name = Some("Rust".to_string());
+        e.viewport.cursor_pos = (0, 0);
+        e.toggle_comment();
+        assert_eq!(e.rope.to_string(), "// hello\n");
+    }
+
+    #[test]
+    fn test_uncomment_removes_rust() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("// hello\n");
+        e.syntax_name = Some("Rust".to_string());
+        e.viewport.cursor_pos = (0, 0);
+        e.toggle_comment();
+        assert_eq!(e.rope.to_string(), "hello\n");
+    }
+
+    #[test]
+    fn test_comment_toggle_python() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.syntax_name = Some("Python".to_string());
+        e.viewport.cursor_pos = (0, 0);
+        e.toggle_comment();
+        assert_eq!(e.rope.to_string(), "# hello\n");
     }
 }

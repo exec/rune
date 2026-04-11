@@ -661,6 +661,12 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         }
 
         // Navigation
+        (KeyModifiers::CONTROL, KeyCode::Home) => editor.goto_start(),
+        (KeyModifiers::CONTROL, KeyCode::End) => editor.goto_end(),
+        (KeyModifiers::CONTROL, KeyCode::Left) => editor.move_word_left(),
+        (KeyModifiers::CONTROL, KeyCode::Right) => editor.move_word_right(),
+        (KeyModifiers::ALT, KeyCode::Char(']')) => editor.match_bracket(),
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => editor.show_cursor_info(),
         (_, KeyCode::Up) => editor.move_cursor_up(),
         (_, KeyCode::Down) => editor.move_cursor_down(),
         (_, KeyCode::Left) => editor.move_cursor_left(),
