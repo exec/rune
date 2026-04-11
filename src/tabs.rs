@@ -1098,4 +1098,60 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_verbatim_input_mode() {
+        let mut t = make_tabs("hello\n");
+        // Enter verbatim input mode
+        t.input_mode = InputMode::VerbatimInput;
+        assert_eq!(t.input_mode, InputMode::VerbatimInput);
+        // Simulate a key press - the handler is in input.rs,
+        // but we can verify mode transition logic
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = KeyEvent::new(KeyCode::Char('\t'), KeyModifiers::NONE);
+        // Verbatim should insert literally and return to Normal
+        let _ = crate::input::handle_key_event(&mut t, key);
+        assert_eq!(t.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_execute_command_mode() {
+        let mut t = make_tabs("hello\n");
+        t.input_mode = InputMode::ExecuteCommand;
+        t.filename_buffer = "echo test".to_string();
+        // Simulate Enter to execute
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, enter);
+        assert_eq!(t.input_mode, InputMode::Normal);
+        // "echo test" output should be inserted
+        assert!(content(&t).contains("test"));
+    }
+
+    #[test]
+    fn test_execute_command_cancel() {
+        let mut t = make_tabs("hello\n");
+        t.input_mode = InputMode::ExecuteCommand;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, esc);
+        assert_eq!(t.input_mode, InputMode::Normal);
+        assert_eq!(content(&t), "hello\n"); // unchanged
+    }
+
+    #[test]
+    fn test_execute_command_with_selection() {
+        let mut t = make_tabs("hello world\n");
+        // Select "hello" (chars 0..5)
+        t.active_editor_mut().mark_anchor = Some((0, 0));
+        t.active_editor_mut().viewport.cursor_pos = (0, 5);
+        t.input_mode = InputMode::ExecuteCommand;
+        t.filename_buffer = "tr a-z A-Z".to_string();
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, enter);
+        assert_eq!(t.input_mode, InputMode::Normal);
+        // "hello" should be replaced with "HELLO"
+        assert!(content(&t).contains("HELLO"));
+    }
 }

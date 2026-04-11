@@ -23,6 +23,8 @@ pub fn handle_key_event(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         InputMode::GoToLine => handle_goto_line(tabs, key),
         InputMode::HexView => handle_hex_view(tabs, key),
         InputMode::FuzzyFinder => handle_fuzzy_finder(tabs, key),
+        InputMode::VerbatimInput => handle_verbatim_input(tabs, key),
+        InputMode::ExecuteCommand => handle_execute_command(tabs, key),
         InputMode::Normal => handle_normal(tabs, key),
     }
 }
@@ -879,6 +881,17 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.active_editor_mut().word_complete();
             tabs.needs_redraw = true;
         }
+        (KeyModifiers::ALT, KeyCode::Char('v')) if !is_read_only => {
+            tabs.input_mode = InputMode::VerbatimInput;
+            tabs.status_message = "Verbatim input: press any key to insert literally".to_string();
+            tabs.needs_redraw = true;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) if !is_read_only => {
+            tabs.input_mode = InputMode::ExecuteCommand;
+            tabs.filename_buffer.clear();
+            tabs.status_message = "Command to execute: ".to_string();
+            tabs.needs_redraw = true;
+        }
 
         // Navigation
         (KeyModifiers::CONTROL, KeyCode::Home) => {
@@ -1008,6 +1021,159 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         KeyCode::Char(c) => {
             tabs.fuzzy_query.push(c);
             tabs.fuzzy_selected = 0;
+            tabs.needs_redraw = true;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_verbatim_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Char(c) => {
+            tabs.active_editor_mut().insert_char(c);
+        }
+        KeyCode::Enter => {
+            tabs.insert_newline();
+        }
+        KeyCode::Tab => {
+            let editor = tabs.active_editor_mut();
+            editor.save_undo_state();
+            let pos = editor.line_col_to_char_idx(
+                editor.viewport.cursor_pos.0,
+                editor.viewport.cursor_pos.1,
+            );
+            editor.rope.insert_char(pos, '\t');
+            editor.mark_document_changed(editor.viewport.cursor_pos.0);
+            editor.viewport.cursor_pos.1 += 1;
+            editor.modified = true;
+        }
+        _ => {} // ignore non-character keys
+    }
+    tabs.input_mode = InputMode::Normal;
+    tabs.status_message.clear();
+    tabs.needs_redraw = true;
+    Ok(false)
+}
+
+fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Enter => {
+            let command = tabs.filename_buffer.clone();
+            if command.is_empty() {
+                tabs.input_mode = InputMode::Normal;
+                tabs.status_message = "Cancelled".to_string();
+                tabs.needs_redraw = true;
+                return Ok(false);
+            }
+
+            // Check if there's a selection
+            let selection_text =
+                tabs.active_editor()
+                    .get_selection_range()
+                    .map(|(start, end)| {
+                        tabs.active_editor()
+                            .rope
+                            .slice(start..end)
+                            .chars()
+                            .collect::<String>()
+                    });
+
+            // Execute the command
+            use std::process::{Command, Stdio};
+            let mut child = match Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .stdin(if selection_text.is_some() {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(e) => {
+                    tabs.input_mode = InputMode::Normal;
+                    tabs.set_temporary_status_message(format!("Error: {e}"));
+                    return Ok(false);
+                }
+            };
+
+            if let Some(ref input) = selection_text {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(input.as_bytes());
+                }
+            }
+
+            match child.wait_with_output() {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+                    if let Some((start, end)) = tabs.active_editor().get_selection_range() {
+                        // Replace selection with output
+                        let editor = tabs.active_editor_mut();
+                        editor.save_undo_state();
+                        editor.rope.remove(start..end);
+                        editor.rope.insert(start, &stdout);
+                        editor.mark_anchor = None;
+                        editor.modified = true;
+                        let line = editor.rope.char_to_line(start);
+                        editor.mark_document_changed(line);
+                        // Position cursor at end of insertion
+                        let end_pos = start + stdout.chars().count();
+                        let char_count = editor.rope.len_chars();
+                        let clamped = end_pos.min(char_count.saturating_sub(1));
+                        let line = editor.rope.char_to_line(clamped);
+                        let line_start = editor.rope.line_to_char(line);
+                        editor.viewport.cursor_pos =
+                            (line, end_pos.saturating_sub(line_start));
+                    } else {
+                        // Insert output at cursor
+                        let editor = tabs.active_editor_mut();
+                        editor.save_undo_state();
+                        let pos = editor.line_col_to_char_idx(
+                            editor.viewport.cursor_pos.0,
+                            editor.viewport.cursor_pos.1,
+                        );
+                        editor.rope.insert(pos, &stdout);
+                        editor.modified = true;
+                        let cursor_line = editor.viewport.cursor_pos.0;
+                        editor.mark_document_changed(cursor_line);
+                    }
+                    tabs.set_temporary_status_message(format!("Executed: {command}"));
+                }
+                Err(e) => {
+                    tabs.set_temporary_status_message(format!("Error: {e}"));
+                }
+            }
+
+            tabs.input_mode = InputMode::Normal;
+            tabs.filename_buffer.clear();
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Esc => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.filename_buffer.clear();
+            tabs.status_message = "Cancelled".to_string();
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.filename_buffer.clear();
+            tabs.status_message = "Cancelled".to_string();
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Backspace => {
+            tabs.filename_buffer.pop();
+            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Char(c) => {
+            tabs.filename_buffer.push(c);
+            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
             tabs.needs_redraw = true;
         }
         _ => {}

@@ -97,6 +97,8 @@ pub enum InputMode {
     OpenFileCurrentTab,
     OpenFileNewTab,
     FuzzyFinder,
+    VerbatimInput,
+    ExecuteCommand,
 }
 
 /// Main editor state — represents a single buffer/tab.

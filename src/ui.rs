@@ -58,6 +58,14 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
             "Arrows: Navigate  PgUp/PgDn: Page  ^B/Esc: Exit".to_string(),
             String::new(),
         ),
+        InputMode::VerbatimInput => (
+            "Press any key to insert it literally".to_string(),
+            String::new(),
+        ),
+        InputMode::ExecuteCommand => (
+            "Enter: Execute  Esc/^C: Cancel  Type shell command".to_string(),
+            String::new(),
+        ),
         _ => (
             "^H Help  ^T New Tab  ^P Finder".to_string(),
             format!("Rune v{}", env!("CARGO_PKG_VERSION")),
