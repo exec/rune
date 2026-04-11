@@ -113,6 +113,13 @@ pub struct Editor {
     pub undo_manager: UndoManager,
     pub hex_state: Option<HexViewState>,
     pub mark_anchor: Option<(usize, usize)>,
+    /// Word completion cycling state
+    pub word_complete_candidates: Vec<String>,
+    pub word_complete_index: usize,
+    /// Cursor position when the completion was inserted (used to detect movement)
+    word_complete_cursor: Option<(usize, usize)>,
+    /// The prefix length used for the current completion
+    word_complete_prefix_len: usize,
 }
 
 /// Get the display width of a line, handling the case where the line spans chunk boundaries.
@@ -150,6 +157,10 @@ impl Editor {
             undo_manager: UndoManager::default(),
             hex_state: None,
             mark_anchor: None,
+            word_complete_candidates: Vec::new(),
+            word_complete_index: 0,
+            word_complete_cursor: None,
+            word_complete_prefix_len: 0,
         }
     }
 
@@ -609,12 +620,26 @@ impl Editor {
         }
 
         self.save_undo_state();
-        let text = self.rope.to_string();
-        let new_text = text.replace(search_term, replace_term);
-        let replacements = text.matches(search_term).count();
 
+        // Find all match positions using rope-native text scanning
+        let mut match_positions: Vec<usize> = Vec::new();
+        let text = self.rope.to_string();
+        let mut start = 0;
+        while let Some(pos) = text[start..].find(search_term) {
+            let byte_pos = start + pos;
+            let char_pos = text[..byte_pos].chars().count();
+            match_positions.push(char_pos);
+            start = byte_pos + search_term.len();
+        }
+
+        let replacements = match_positions.len();
         if replacements > 0 {
-            self.rope = Rope::from_str(&new_text);
+            let search_char_len = search_term.chars().count();
+            // Iterate in reverse to preserve earlier positions
+            for &char_pos in match_positions.iter().rev() {
+                self.rope.remove(char_pos..char_pos + search_char_len);
+                self.rope.insert(char_pos, replace_term);
+            }
             self.modified = true;
             self.clamp_cursor_to_line();
             self.invalidate_cache();
@@ -915,9 +940,54 @@ impl Editor {
         }
     }
 
+    /// Reset word completion cycling state. Call this when the cursor moves
+    /// or any non-completion key is pressed.
+    pub fn reset_word_complete(&mut self) {
+        self.word_complete_candidates.clear();
+        self.word_complete_index = 0;
+        self.word_complete_cursor = None;
+        self.word_complete_prefix_len = 0;
+    }
+
     /// Word completion: find the partial word before cursor and complete it
-    /// from the first matching word in the buffer.
+    /// from matching words in the buffer. Subsequent calls cycle through
+    /// alternatives.
     pub fn word_complete(&mut self) {
+        // Check if we're continuing a previous completion cycle
+        let is_cycling = self.word_complete_cursor == Some(self.viewport.cursor_pos)
+            && !self.word_complete_candidates.is_empty();
+
+        if is_cycling {
+            // Undo the previous completion suffix
+            let prev_candidate = &self.word_complete_candidates[self.word_complete_index];
+            let prev_suffix_width =
+                UnicodeWidthStr::width(&prev_candidate[self.word_complete_prefix_len..]);
+            let suffix_start_col = self.viewport.cursor_pos.1 - prev_suffix_width;
+            let start_pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, suffix_start_col);
+            let end_pos =
+                self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+            self.rope.remove(start_pos..end_pos);
+            self.mark_document_changed(self.viewport.cursor_pos.0);
+            self.viewport.cursor_pos.1 = suffix_start_col;
+
+            // Advance to next candidate
+            self.word_complete_index =
+                (self.word_complete_index + 1) % self.word_complete_candidates.len();
+
+            // Insert the new candidate's suffix
+            let candidate = self.word_complete_candidates[self.word_complete_index].clone();
+            let suffix = &candidate[self.word_complete_prefix_len..];
+            let pos =
+                self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+            self.rope.insert(pos, suffix);
+            self.mark_document_changed(self.viewport.cursor_pos.0);
+            self.viewport.cursor_pos.1 += UnicodeWidthStr::width(suffix);
+            self.modified = true;
+            self.word_complete_cursor = Some(self.viewport.cursor_pos);
+            return;
+        }
+
+        // Fresh completion: scan for prefix and candidates
         let line_idx = self.viewport.cursor_pos.0;
         let display_col = self.viewport.cursor_pos.1;
         let rope_line = self.rope.line(line_idx);
@@ -950,31 +1020,41 @@ impl Editor {
             return;
         }
 
-        // Scan all words in the document for matches using rope line iteration
-        let mut found: Option<String> = None;
-        'outer: for line_i in 0..self.rope.len_lines() {
+        // Scan all words in the document for matches, collecting unique candidates
+        let mut candidates: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for line_i in 0..self.rope.len_lines() {
             let rope_ln = self.rope.line(line_i);
             let line_str: String = rope_ln.chars().collect();
             for word in line_str.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                if word.starts_with(prefix.as_str()) && word != prefix && word.len() > prefix.len()
+                if word.starts_with(prefix.as_str())
+                    && word != prefix
+                    && word.len() > prefix.len()
+                    && seen.insert(word.to_string())
                 {
-                    found = Some(word.to_string());
-                    break 'outer;
+                    candidates.push(word.to_string());
                 }
             }
         }
 
-        if let Some(ref completion) = found {
-            let suffix = &completion[prefix.len()..];
-            self.save_undo_state();
-            let pos =
-                self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
-            self.rope.insert(pos, suffix);
-            self.mark_document_changed(self.viewport.cursor_pos.0);
-            // Update cursor by display width of the suffix, not byte length
-            self.viewport.cursor_pos.1 += UnicodeWidthStr::width(suffix);
-            self.modified = true;
+        if candidates.is_empty() {
+            return;
         }
+
+        // Insert first candidate's suffix
+        let suffix = &candidates[0][prefix.len()..];
+        self.save_undo_state();
+        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        self.rope.insert(pos, suffix);
+        self.mark_document_changed(self.viewport.cursor_pos.0);
+        self.viewport.cursor_pos.1 += UnicodeWidthStr::width(suffix);
+        self.modified = true;
+
+        // Store cycling state
+        self.word_complete_candidates = candidates;
+        self.word_complete_index = 0;
+        self.word_complete_prefix_len = prefix.len();
+        self.word_complete_cursor = Some(self.viewport.cursor_pos);
     }
 
     pub fn invalidate_cache(&mut self) {
@@ -1177,6 +1257,50 @@ mod tests {
         e.viewport.cursor_pos = (1, 3); // after "my_"
         e.word_complete();
         assert_eq!(e.rope.to_string(), "my_variable\nmy_variable\n");
+    }
+
+    #[test]
+    fn test_word_complete_cycling() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("println private protect\npr\n");
+        e.viewport.cursor_pos = (1, 2); // after "pr"
+
+        // First completion: "println"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "println private protect\nprintln\n");
+
+        // Second press: cycle to "private"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "println private protect\nprivate\n");
+
+        // Third press: cycle to "protect"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "println private protect\nprotect\n");
+
+        // Fourth press: wrap around to "println"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "println private protect\nprintln\n");
+    }
+
+    #[test]
+    fn test_word_complete_reset_on_cursor_move() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("println private\npr\n");
+        e.viewport.cursor_pos = (1, 2); // after "pr"
+
+        // First completion: "println"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "println private\nprintln\n");
+
+        // Reset (simulates any other key press or cursor move)
+        e.reset_word_complete();
+
+        // Move cursor to simulate typing or movement, then try again
+        // After reset, word_complete starts fresh from the current buffer
+        e.viewport.cursor_pos = (1, 7); // cursor at end of "println"
+        e.word_complete();
+        // Now scanning with prefix "println" - no other match, so unchanged
+        assert_eq!(e.rope.to_string(), "println private\nprintln\n");
     }
 }
 

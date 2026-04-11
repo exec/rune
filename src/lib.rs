@@ -10,6 +10,15 @@ pub mod constants {
     pub const UNDO_STACK_LIMIT: usize = 100;
 }
 
+/// Get a line's text content as a String, handling chunk boundaries in the rope.
+pub fn get_line_str(rope: &ropey::Rope, line: usize) -> String {
+    let rope_line = rope.line(line);
+    match rope_line.as_str() {
+        Some(s) => s.to_string(),
+        None => rope_line.chars().collect(),
+    }
+}
+
 pub mod config;
 pub mod editor;
 pub mod fuzzy;

@@ -63,16 +63,8 @@ impl SearchState {
         let mut matches = Vec::new();
 
         for line_idx in 0..rope.len_lines() {
-            let rope_line = rope.line(line_idx);
-            let owned_line: String;
-            let line_str = match rope_line.as_str() {
-                Some(s) => s,
-                None => {
-                    owned_line = rope_line.chars().collect::<String>();
-                    &owned_line
-                }
-            };
-            let line_content = line_str.trim_end_matches('\n');
+            let line_string = crate::get_line_str(rope, line_idx);
+            let line_content = line_string.trim_end_matches('\n');
 
             let line_matches = if self.case_sensitive {
                 find_matches_in_line(line_content, search_term)
@@ -106,16 +98,8 @@ impl SearchState {
         let mut matches = Vec::new();
 
         for line_idx in 0..rope.len_lines() {
-            let rope_line = rope.line(line_idx);
-            let owned_line: String;
-            let line_str = match rope_line.as_str() {
-                Some(s) => s,
-                None => {
-                    owned_line = rope_line.chars().collect::<String>();
-                    &owned_line
-                }
-            };
-            let line_content = line_str.trim_end_matches('\n');
+            let line_string = crate::get_line_str(rope, line_idx);
+            let line_content = line_string.trim_end_matches('\n');
 
             for m in re.find_iter(line_content) {
                 let char_pos = line_content[..m.start()].chars().count();
@@ -238,16 +222,8 @@ pub fn validate_match(
     search_term: &str,
     case_sensitive: bool,
 ) -> bool {
-    let rope_line = rope.line(line_idx);
-    let owned_line: String;
-    let line_str = match rope_line.as_str() {
-        Some(s) => s,
-        None => {
-            owned_line = rope_line.chars().collect::<String>();
-            &owned_line
-        }
-    };
-    let line_content = line_str.trim_end_matches('\n');
+    let line_string = crate::get_line_str(rope, line_idx);
+    let line_content = line_string.trim_end_matches('\n');
     validate_match_at_position(line_content, col, search_term, case_sensitive)
 }
 

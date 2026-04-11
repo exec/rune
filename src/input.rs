@@ -5,6 +5,21 @@ use crate::editor::InputMode;
 use crate::search::{FindNavigationMode, ReplacePhase};
 use crate::tabs::TabManager;
 
+/// Build the standard find status message: "Find: term (N/M matches) - Use arrows..."
+fn format_find_status(tabs: &TabManager) -> String {
+    let editor = tabs.active_editor();
+    let search_buf = &editor.search.search_buffer;
+    let matches_count = editor.search.search_matches.len();
+    let current = editor
+        .search
+        .current_match_index
+        .map(|i| i + 1)
+        .unwrap_or(1);
+    format!(
+        "Find: {search_buf} ({current}/{matches_count} matches) - Use \u{2191}\u{2193} to navigate, Enter/Esc to exit"
+    )
+}
+
 pub fn handle_key_event(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     match tabs.input_mode {
         InputMode::ConfirmQuit => handle_confirm_quit(tabs, key),
@@ -230,13 +245,13 @@ fn handle_options_menu(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Char('o') | KeyCode::Char('O') => {
             tabs.input_mode = InputMode::OpenFileCurrentTab;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.status_message = "Open file: ".to_string();
             tabs.needs_redraw = true;
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             tabs.input_mode = InputMode::OpenFileNewTab;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.status_message = "Open in new tab: ".to_string();
             tabs.needs_redraw = true;
         }
@@ -308,13 +323,13 @@ fn handle_filename_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.cancel_filename_input();
         }
         KeyCode::Backspace => {
-            tabs.filename_buffer.pop();
-            tabs.status_message = format!("File Name to Write: {}", tabs.filename_buffer);
+            tabs.input_buffer.pop();
+            tabs.status_message = format!("File Name to Write: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
         }
         KeyCode::Char(c) => {
-            tabs.filename_buffer.push(c);
-            tabs.status_message = format!("File Name to Write: {}", tabs.filename_buffer);
+            tabs.input_buffer.push(c);
+            tabs.status_message = format!("File Name to Write: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
         }
         _ => {}
@@ -331,12 +346,12 @@ fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
     };
     match key.code {
         KeyCode::Enter => {
-            if tabs.filename_buffer.is_empty() {
+            if tabs.input_buffer.is_empty() {
                 tabs.input_mode = InputMode::Normal;
                 tabs.set_temporary_status_message("Cancelled".to_string());
                 return Ok(false);
             }
-            let path = std::path::PathBuf::from(&tabs.filename_buffer);
+            let path = std::path::PathBuf::from(&tabs.input_buffer);
             if is_new_tab {
                 match tabs.open_in_new_tab(path) {
                     Ok(()) => {
@@ -359,21 +374,21 @@ fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 }
             }
             tabs.input_mode = InputMode::Normal;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
         }
         KeyCode::Esc => {
             tabs.input_mode = InputMode::Normal;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.set_temporary_status_message("Cancelled".to_string());
         }
         KeyCode::Backspace => {
-            tabs.filename_buffer.pop();
-            tabs.status_message = format!("{}{}", prompt, tabs.filename_buffer);
+            tabs.input_buffer.pop();
+            tabs.status_message = format!("{}{}", prompt, tabs.input_buffer);
             tabs.needs_redraw = true;
         }
         KeyCode::Char(c) => {
-            tabs.filename_buffer.push(c);
-            tabs.status_message = format!("{}{}", prompt, tabs.filename_buffer);
+            tabs.input_buffer.push(c);
+            tabs.status_message = format!("{}{}", prompt, tabs.input_buffer);
             tabs.needs_redraw = true;
         }
         _ => {}
@@ -420,16 +435,7 @@ fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 if tabs.active_editor_mut().perform_find(&search_term) {
                     tabs.active_editor_mut().search.find_navigation_mode =
                         FindNavigationMode::ResultNavigation;
-                    let matches_count = tabs.active_editor().search.search_matches.len();
-                    let current = tabs
-                        .active_editor()
-                        .search
-                        .current_match_index
-                        .map(|i| i + 1)
-                        .unwrap_or(1);
-                    tabs.status_message = format!(
-                        "Find: {search_term} ({current}/{matches_count} matches) - Use \u{2191}\u{2193} to navigate, Enter/Esc to exit"
-                    );
+                    tabs.status_message = format_find_status(tabs);
                     tabs.needs_redraw = true;
                 } else {
                     tabs.set_temporary_status_message("Not found".to_string());
@@ -469,18 +475,7 @@ fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 && !tabs.active_editor().search.search_matches.is_empty()
             {
                 tabs.active_editor_mut().find_previous_match();
-                let matches_count = tabs.active_editor().search.search_matches.len();
-                let current = tabs
-                    .active_editor()
-                    .search
-                    .current_match_index
-                    .map(|i| i + 1)
-                    .unwrap_or(1);
-                let search_buf = tabs.active_editor().search.search_buffer.clone();
-                tabs.status_message = format!(
-                    "Find: {} ({current}/{matches_count} matches) - Use arrows to navigate, Enter/Esc to exit",
-                    search_buf
-                );
+                tabs.status_message = format_find_status(tabs);
                 tabs.needs_redraw = true;
             } else if key.code == KeyCode::Up {
                 tabs.active_editor_mut().move_cursor_up();
@@ -520,18 +515,7 @@ fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 && !tabs.active_editor().search.search_matches.is_empty()
             {
                 tabs.active_editor_mut().find_next_match();
-                let matches_count = tabs.active_editor().search.search_matches.len();
-                let current = tabs
-                    .active_editor()
-                    .search
-                    .current_match_index
-                    .map(|i| i + 1)
-                    .unwrap_or(1);
-                let search_buf = tabs.active_editor().search.search_buffer.clone();
-                tabs.status_message = format!(
-                    "Find: {} ({current}/{matches_count} matches) - Use arrows to navigate, Enter/Esc to exit",
-                    search_buf
-                );
+                tabs.status_message = format_find_status(tabs);
                 tabs.needs_redraw = true;
             } else if key.code == KeyCode::Down {
                 tabs.active_editor_mut().move_cursor_down();
@@ -546,16 +530,7 @@ fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             if !tabs.active_editor().search.search_buffer.is_empty() {
                 let search_term = tabs.active_editor().search.search_buffer.clone();
                 if tabs.active_editor_mut().perform_find(&search_term) {
-                    let matches_count = tabs.active_editor().search.search_matches.len();
-                    let current = tabs
-                        .active_editor()
-                        .search
-                        .current_match_index
-                        .map(|i| i + 1)
-                        .unwrap_or(1);
-                    tabs.status_message = format!(
-                        "Find: {search_term} ({current}/{matches_count} matches) - Use \u{2191}\u{2193} to navigate, Enter/Esc to exit"
-                    );
+                    tabs.status_message = format_find_status(tabs);
                 } else {
                     let search_buf = tabs.active_editor().search.search_buffer.clone();
                     tabs.status_message = format!("Find: {} (no matches)", search_buf);
@@ -576,16 +551,7 @@ fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 FindNavigationMode::ResultNavigation;
             let search_term = tabs.active_editor().search.search_buffer.clone();
             if tabs.active_editor_mut().perform_find(&search_term) {
-                let matches_count = tabs.active_editor().search.search_matches.len();
-                let current = tabs
-                    .active_editor()
-                    .search
-                    .current_match_index
-                    .map(|i| i + 1)
-                    .unwrap_or(1);
-                tabs.status_message = format!(
-                    "Find: {search_term} ({current}/{matches_count} matches) - Use \u{2191}\u{2193} to navigate, Enter/Esc to exit"
-                );
+                tabs.status_message = format_find_status(tabs);
                 tabs.needs_redraw = true;
             } else {
                 let search_buf = tabs.active_editor().search.search_buffer.clone();
@@ -759,6 +725,11 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         tabs.reset_cut_tracking();
     }
 
+    // Reset word completion cycling for any key that isn't Alt+\
+    if !(key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('\\')) {
+        tabs.active_editor_mut().reset_word_complete();
+    }
+
     match (key.modifiers, key.code) {
         (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Ok(tabs.try_quit()),
         (KeyModifiers::CONTROL, KeyCode::Char('x')) => return Ok(tabs.try_quit()),
@@ -878,7 +849,7 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         }
         (KeyModifiers::CONTROL, KeyCode::Char('e')) if !is_read_only => {
             tabs.input_mode = InputMode::ExecuteCommand;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.status_message = "Command to execute: ".to_string();
             tabs.needs_redraw = true;
         }
@@ -905,19 +876,19 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.needs_redraw = true;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => tabs.show_cursor_info(),
-        (_, KeyCode::Up) => {
+        (KeyModifiers::NONE, KeyCode::Up) => {
             tabs.active_editor_mut().move_cursor_up();
             tabs.needs_redraw = true;
         }
-        (_, KeyCode::Down) => {
+        (KeyModifiers::NONE, KeyCode::Down) => {
             tabs.active_editor_mut().move_cursor_down();
             tabs.needs_redraw = true;
         }
-        (_, KeyCode::Left) => {
+        (KeyModifiers::NONE, KeyCode::Left) => {
             tabs.active_editor_mut().move_cursor_left();
             tabs.needs_redraw = true;
         }
-        (_, KeyCode::Right) => {
+        (KeyModifiers::NONE, KeyCode::Right) => {
             tabs.active_editor_mut().move_cursor_right();
             tabs.needs_redraw = true;
         }
@@ -1007,6 +978,17 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Down => {
             tabs.fuzzy_selected += 1;
+            // Clamp to filtered list bounds
+            let candidates: Vec<(usize, String)> = tabs
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i, t.display_name.clone()))
+                .collect();
+            let filtered = crate::fuzzy::fuzzy_filter(&tabs.fuzzy_query, &candidates);
+            tabs.fuzzy_selected = tabs
+                .fuzzy_selected
+                .min(filtered.len().saturating_sub(1));
             tabs.needs_redraw = true;
         }
         KeyCode::Backspace => {
@@ -1053,7 +1035,7 @@ fn handle_verbatim_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
 fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Enter => {
-            let command = tabs.filename_buffer.clone();
+            let command = tabs.input_buffer.clone();
             if command.is_empty() {
                 tabs.input_mode = InputMode::Normal;
                 tabs.set_temporary_status_message("Cancelled".to_string());
@@ -1068,22 +1050,22 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
         }
         KeyCode::Esc => {
             tabs.input_mode = InputMode::Normal;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.set_temporary_status_message("Cancelled".to_string());
         }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             tabs.input_mode = InputMode::Normal;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.set_temporary_status_message("Cancelled".to_string());
         }
         KeyCode::Backspace => {
-            tabs.filename_buffer.pop();
-            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
+            tabs.input_buffer.pop();
+            tabs.status_message = format!("Command to execute: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
         }
         KeyCode::Char(c) => {
-            tabs.filename_buffer.push(c);
-            tabs.status_message = format!("Command to execute: {}", tabs.filename_buffer);
+            tabs.input_buffer.push(c);
+            tabs.status_message = format!("Command to execute: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
         }
         _ => {}
@@ -1098,7 +1080,7 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 Some(cmd) => cmd,
                 None => {
                     tabs.input_mode = InputMode::Normal;
-                    tabs.filename_buffer.clear();
+                    tabs.input_buffer.clear();
                     tabs.status_message = "No command to execute".to_string();
                     tabs.needs_redraw = true;
                     return Ok(false);
@@ -1134,7 +1116,7 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 Ok(child) => child,
                 Err(e) => {
                     tabs.input_mode = InputMode::Normal;
-                    tabs.filename_buffer.clear();
+                    tabs.input_buffer.clear();
                     tabs.set_temporary_status_message(format!("Error: {e}"));
                     return Ok(false);
                 }
@@ -1168,7 +1150,7 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
 
             if timed_out {
                 tabs.input_mode = InputMode::Normal;
-                tabs.filename_buffer.clear();
+                tabs.input_buffer.clear();
                 tabs.set_temporary_status_message("Command timed out (10s limit)".to_string());
                 tabs.needs_redraw = true;
                 return Ok(false);
@@ -1232,13 +1214,13 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             }
 
             tabs.input_mode = InputMode::Normal;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.needs_redraw = true;
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             tabs.pending_command = None;
             tabs.input_mode = InputMode::Normal;
-            tabs.filename_buffer.clear();
+            tabs.input_buffer.clear();
             tabs.set_temporary_status_message("Cancelled".to_string());
         }
         _ => {

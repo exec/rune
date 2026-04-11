@@ -6,7 +6,7 @@ use ratatui::{
 use std::rc::Rc;
 
 use crate::editor::{Editor, InputMode};
-use crate::search::validate_match_at_position;
+use crate::get_line_str;
 use crate::tabs::TabManager;
 
 pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
@@ -366,18 +366,10 @@ fn draw_editor_horizontal_scroll(
     for i in 0..visible_lines {
         let line_idx = editor.viewport.viewport_offset.0 + i;
         if line_idx < editor.rope.len_lines() {
-            let rope_line = editor.rope.line(line_idx);
-            let owned_line: String;
-            let line_text = match rope_line.as_str() {
-                Some(s) => s,
-                None => {
-                    owned_line = rope_line.chars().collect::<String>();
-                    &owned_line
-                }
-            };
+            let line_text = get_line_str(&editor.rope, line_idx);
 
             let highlighted_spans: Rc<Vec<(Style, String)>> =
-                editor.highlighter.highlight_line(line_idx, line_text);
+                editor.highlighter.highlight_line(line_idx, &line_text);
 
             let mut styled_spans: Vec<Span> = vec![];
 
@@ -470,18 +462,10 @@ fn draw_editor_word_wrap(
     let mut line_idx = editor.viewport.viewport_offset.0;
 
     while screen_row < visible_lines && line_idx < editor.rope.len_lines() {
-        let rope_line = editor.rope.line(line_idx);
-        let owned_line: String;
-        let line_text = match rope_line.as_str() {
-            Some(s) => s,
-            None => {
-                owned_line = rope_line.chars().collect::<String>();
-                &owned_line
-            }
-        };
+        let line_text = get_line_str(&editor.rope, line_idx);
 
         let highlighted_spans: Rc<Vec<(Style, String)>> =
-            editor.highlighter.highlight_line(line_idx, line_text);
+            editor.highlighter.highlight_line(line_idx, &line_text);
 
         let line_content = line_text.trim_end_matches('\n');
 
@@ -755,7 +739,7 @@ fn apply_search_highlighting(
     search_term: &str,
     search_matches: &[(usize, usize)],
     current_match_index: Option<usize>,
-    case_sensitive: bool,
+    _case_sensitive: bool,
 ) -> Vec<Span<'static>> {
     if search_term.is_empty() || search_matches.is_empty() {
         return syntax_spans
@@ -767,14 +751,12 @@ fn apply_search_highlighting(
             .collect();
     }
 
-    let mut validated_matches: Vec<usize> = Vec::new();
-    for (match_line, match_col) in search_matches {
-        if *match_line == line_idx
-            && validate_match_at_position(line_content, *match_col, search_term, case_sensitive)
-        {
-            validated_matches.push(*match_col);
-        }
-    }
+    // Trust match positions directly -- they were already validated when find_all_matches ran.
+    let mut validated_matches: Vec<usize> = search_matches
+        .iter()
+        .filter(|(match_line, _)| *match_line == line_idx)
+        .map(|(_, match_col)| *match_col)
+        .collect();
 
     if validated_matches.is_empty() {
         return syntax_spans

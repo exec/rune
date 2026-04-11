@@ -15,7 +15,7 @@ pub struct TabManager {
     pub status_message: String,
     pub status_message_time: Option<Instant>,
     pub status_message_timeout: Duration,
-    pub filename_buffer: String,
+    pub input_buffer: String,
     pub quit_after_save: bool,
     pub needs_redraw: bool,
     // Fuzzy finder state
@@ -47,7 +47,7 @@ impl TabManager {
             status_message: String::new(),
             status_message_time: None,
             status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
-            filename_buffer: String::new(),
+            input_buffer: String::new(),
             quit_after_save: false,
 
             needs_redraw: true,
@@ -70,7 +70,7 @@ impl TabManager {
             status_message: String::new(),
             status_message_time: None,
             status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
-            filename_buffer: String::new(),
+            input_buffer: String::new(),
             quit_after_save: false,
 
             needs_redraw: true,
@@ -82,11 +82,31 @@ impl TabManager {
     }
 
     pub fn active_editor(&self) -> &Editor {
-        &self.tabs[self.active_tab]
+        debug_assert!(
+            self.active_tab < self.tabs.len(),
+            "active_tab {} out of bounds (tabs.len() = {})",
+            self.active_tab,
+            self.tabs.len()
+        );
+        self.tabs
+            .get(self.active_tab)
+            .expect("active_tab index out of bounds")
     }
 
     pub fn active_editor_mut(&mut self) -> &mut Editor {
-        &mut self.tabs[self.active_tab]
+        debug_assert!(
+            self.active_tab < self.tabs.len(),
+            "active_tab {} out of bounds (tabs.len() = {})",
+            self.active_tab,
+            self.tabs.len()
+        );
+        let len = self.tabs.len();
+        self.tabs.get_mut(self.active_tab).unwrap_or_else(|| {
+            panic!(
+                "active_tab {} out of bounds (tabs.len() = {})",
+                self.active_tab, len
+            )
+        })
     }
 
     /// Open a file in a new tab and switch to it.
@@ -146,6 +166,7 @@ impl TabManager {
         if self.tabs.len() <= 1 {
             return true; // signal to quit
         }
+        self.reset_editor_mode_on_tab_switch();
         self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
@@ -154,8 +175,26 @@ impl TabManager {
         false
     }
 
+    /// Reset input_mode to Normal when switching tabs if we're in an
+    /// editor-specific mode whose state lives on the per-tab Editor.
+    fn reset_editor_mode_on_tab_switch(&mut self) {
+        match self.input_mode {
+            InputMode::Find
+            | InputMode::FindOptionsMenu
+            | InputMode::Replace
+            | InputMode::ReplaceConfirm
+            | InputMode::GoToLine
+            | InputMode::HexView => {
+                self.input_mode = InputMode::Normal;
+                self.status_message.clear();
+            }
+            _ => {}
+        }
+    }
+
     pub fn next_tab(&mut self) {
         if self.tabs.len() > 1 {
+            self.reset_editor_mode_on_tab_switch();
             self.active_tab = (self.active_tab + 1) % self.tabs.len();
             self.needs_redraw = true;
         }
@@ -163,6 +202,7 @@ impl TabManager {
 
     pub fn prev_tab(&mut self) {
         if self.tabs.len() > 1 {
+            self.reset_editor_mode_on_tab_switch();
             self.active_tab = if self.active_tab == 0 {
                 self.tabs.len() - 1
             } else {
@@ -256,20 +296,20 @@ impl TabManager {
 
     fn start_filename_input(&mut self) {
         self.input_mode = InputMode::EnteringFilename;
-        self.filename_buffer.clear();
+        self.input_buffer.clear();
         self.status_message = "File Name to Write: ".to_string();
         self.needs_redraw = true;
     }
 
     fn start_save_as_input(&mut self) {
         self.input_mode = InputMode::EnteringSaveAs;
-        self.filename_buffer = self
+        self.input_buffer = self
             .active_editor()
             .file_path
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        self.status_message = format!("File Name to Write: {}", self.filename_buffer);
+        self.status_message = format!("File Name to Write: {}", self.input_buffer);
         self.needs_redraw = true;
     }
 
@@ -309,23 +349,23 @@ impl TabManager {
     }
 
     pub fn finish_filename_input(&mut self) -> anyhow::Result<bool> {
-        if self.filename_buffer.is_empty() {
+        if self.input_buffer.is_empty() {
             self.set_temporary_status_message("Cancelled".to_string());
             self.input_mode = InputMode::Normal;
             self.quit_after_save = false;
             return Ok(false);
         }
 
-        let path = PathBuf::from(&self.filename_buffer);
+        let path = PathBuf::from(&self.input_buffer);
         if let Err(e) = self.perform_save(path) {
             self.set_temporary_status_message(format!("Error saving file: {e}"));
             self.input_mode = InputMode::Normal;
-            self.filename_buffer.clear();
+            self.input_buffer.clear();
             self.quit_after_save = false;
             return Ok(false);
         }
         self.input_mode = InputMode::Normal;
-        self.filename_buffer.clear();
+        self.input_buffer.clear();
 
         let should_quit = self.quit_after_save && !self.active_editor().modified;
         self.quit_after_save = false;
@@ -334,7 +374,7 @@ impl TabManager {
 
     pub fn cancel_filename_input(&mut self) {
         self.input_mode = InputMode::Normal;
-        self.filename_buffer.clear();
+        self.input_buffer.clear();
         self.quit_after_save = false;
         self.set_temporary_status_message("Cancelled".to_string());
     }
@@ -383,6 +423,7 @@ impl TabManager {
             return true; // last tab — quit the app
         }
 
+        self.reset_editor_mode_on_tab_switch();
         self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
@@ -1144,7 +1185,7 @@ mod tests {
     fn test_execute_command_mode() {
         let mut t = make_tabs("hello\n");
         t.input_mode = InputMode::ExecuteCommand;
-        t.filename_buffer = "echo test".to_string();
+        t.input_buffer = "echo test".to_string();
         // Simulate Enter to go to confirmation
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
@@ -1173,7 +1214,7 @@ mod tests {
     fn test_execute_command_confirm_cancel() {
         let mut t = make_tabs("hello\n");
         t.input_mode = InputMode::ExecuteCommand;
-        t.filename_buffer = "echo test".to_string();
+        t.input_buffer = "echo test".to_string();
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         // Enter to go to confirmation
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
@@ -1193,7 +1234,7 @@ mod tests {
         t.active_editor_mut().mark_anchor = Some((0, 0));
         t.active_editor_mut().viewport.cursor_pos = (0, 5);
         t.input_mode = InputMode::ExecuteCommand;
-        t.filename_buffer = "tr a-z A-Z".to_string();
+        t.input_buffer = "tr a-z A-Z".to_string();
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let _ = crate::input::handle_key_event(&mut t, enter);
