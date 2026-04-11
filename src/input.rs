@@ -587,6 +587,11 @@ fn handle_help(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
 }
 
 fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
+    // Reset cut accumulation for any key that isn't Ctrl+K
+    if !(key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('k')) {
+        editor.reset_cut_tracking();
+    }
+
     match (key.modifiers, key.code) {
         (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Ok(editor.try_quit()),
         (KeyModifiers::CONTROL, KeyCode::Char('x')) => return Ok(editor.try_quit()),
@@ -627,6 +632,15 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
             editor.toggle_hex_view();
         }
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
+            editor.cut_line();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            editor.paste();
+        }
+        (KeyModifiers::ALT, KeyCode::Char('6')) => {
+            editor.copy_line();
+        }
         (KeyModifiers::ALT, KeyCode::Char('p')) => {
             editor.config.show_whitespace = !editor.config.show_whitespace;
             editor.set_temporary_status_message(format!(
@@ -634,6 +648,16 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
                 if editor.config.show_whitespace { "ON" } else { "OFF" }
             ));
             editor.needs_redraw = true;
+        }
+
+        (KeyModifiers::ALT, KeyCode::Char('}')) => {
+            editor.indent_lines();
+        }
+        (KeyModifiers::ALT, KeyCode::Char('{')) => {
+            editor.unindent_lines();
+        }
+        (KeyModifiers::ALT, KeyCode::Char(';')) => {
+            editor.toggle_comment();
         }
 
         // Navigation

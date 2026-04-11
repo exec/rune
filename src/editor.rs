@@ -894,6 +894,217 @@ impl Editor {
         self.invalidate_cache();
         self.needs_redraw = true;
     }
+
+    /// Cut the current line (or append to clipboard if consecutive cut).
+    pub fn cut_line(&mut self) {
+        let line_idx = self.viewport.cursor_pos.0;
+        if line_idx >= self.rope.len_lines() {
+            return;
+        }
+
+        self.save_undo_state();
+
+        let line_start = self.rope.line_to_char(line_idx);
+        let line_end = if line_idx + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(line_idx + 1)
+        } else {
+            self.rope.len_chars()
+        };
+
+        let line_text: String = self.rope.slice(line_start..line_end).chars().collect();
+
+        // Accumulate if consecutive cut on adjacent line
+        if self.last_cut_line == Some(line_idx) || self.last_cut_line == Some(line_idx + 1) {
+            // Append to existing clipboard for consecutive cuts (nano behavior)
+        } else {
+            self.clipboard.clear();
+        }
+        self.clipboard.push(line_text);
+        self.last_cut_line = Some(line_idx);
+
+        self.rope.remove(line_start..line_end);
+
+        let max_line = self.rope.len_lines().saturating_sub(1);
+        if self.viewport.cursor_pos.0 > max_line {
+            self.viewport.cursor_pos.0 = max_line;
+        }
+        self.viewport.cursor_pos.1 = 0;
+        self.clamp_cursor_to_line();
+
+        self.modified = true;
+        self.mark_document_changed(line_idx);
+    }
+
+    /// Copy the current line to clipboard.
+    pub fn copy_line(&mut self) {
+        let line_idx = self.viewport.cursor_pos.0;
+        if line_idx >= self.rope.len_lines() {
+            return;
+        }
+
+        let line_start = self.rope.line_to_char(line_idx);
+        let line_end = if line_idx + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(line_idx + 1)
+        } else {
+            self.rope.len_chars()
+        };
+
+        let line_text: String = self.rope.slice(line_start..line_end).chars().collect();
+        self.clipboard.clear();
+        self.clipboard.push(line_text);
+        self.last_cut_line = None;
+
+        self.set_temporary_status_message("Copied 1 line".to_string());
+    }
+
+    /// Paste clipboard contents at cursor position (inserts above current line).
+    pub fn paste(&mut self) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+
+        self.save_undo_state();
+
+        let paste_text: String = self.clipboard.join("");
+        let insert_pos = self.rope.line_to_char(self.viewport.cursor_pos.0);
+
+        self.rope.insert(insert_pos, &paste_text);
+        self.modified = true;
+
+        self.viewport.cursor_pos.1 = 0;
+        self.mark_document_changed(self.viewport.cursor_pos.0);
+
+        let lines_pasted = paste_text.matches('\n').count();
+        self.set_temporary_status_message(format!("Pasted {} line(s)", lines_pasted.max(1)));
+    }
+
+    /// Reset cut accumulation tracking (called on any non-cut action).
+    pub fn reset_cut_tracking(&mut self) {
+        self.last_cut_line = None;
+    }
+
+    /// Get the range of lines affected by the current selection, or just the cursor line.
+    fn get_affected_lines(&self) -> (usize, usize) {
+        if let Some(anchor) = self.mark_anchor {
+            let start = anchor.0.min(self.viewport.cursor_pos.0);
+            let end = anchor.0.max(self.viewport.cursor_pos.0);
+            (start, end)
+        } else {
+            (self.viewport.cursor_pos.0, self.viewport.cursor_pos.0)
+        }
+    }
+
+    /// Indent selected lines (or current line if no selection) by tab_width spaces.
+    pub fn indent_lines(&mut self) {
+        let (start_line, end_line) = self.get_affected_lines();
+        self.save_undo_state();
+
+        let indent: String = " ".repeat(self.config.tab_width);
+
+        for line_idx in (start_line..=end_line).rev() {
+            if line_idx < self.rope.len_lines() {
+                let line_start = self.rope.line_to_char(line_idx);
+                self.rope.insert(line_start, &indent);
+            }
+        }
+
+        self.mark_anchor = None;
+        self.modified = true;
+        self.mark_document_changed(start_line);
+        self.set_temporary_status_message(format!("Indented {} line(s)", end_line - start_line + 1));
+    }
+
+    /// Unindent selected lines (or current line) by up to tab_width spaces.
+    pub fn unindent_lines(&mut self) {
+        let (start_line, end_line) = self.get_affected_lines();
+        self.save_undo_state();
+
+        for line_idx in (start_line..=end_line).rev() {
+            if line_idx < self.rope.len_lines() {
+                let line_start = self.rope.line_to_char(line_idx);
+                let mut spaces_to_remove = 0;
+                for ch in self.rope.line(line_idx).chars() {
+                    if ch == ' ' && spaces_to_remove < self.config.tab_width {
+                        spaces_to_remove += 1;
+                    } else if ch == '\t' && spaces_to_remove == 0 {
+                        spaces_to_remove = 1;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+                if spaces_to_remove > 0 {
+                    self.rope.remove(line_start..line_start + spaces_to_remove);
+                }
+            }
+        }
+
+        self.mark_anchor = None;
+        self.modified = true;
+        self.clamp_cursor_to_line();
+        self.mark_document_changed(start_line);
+    }
+
+    /// Toggle line comment on selected lines (or current line).
+    pub fn toggle_comment(&mut self) {
+        let comment_str = match self.syntax_name.as_deref() {
+            Some("Rust") | Some("C") | Some("C++") | Some("Go") | Some("JavaScript")
+            | Some("TypeScript") | Some("Java") | Some("Swift") | Some("Kotlin")
+            | Some("Zig") => "// ",
+            Some("Python") | Some("Ruby") | Some("Shell Script (Bash)") | Some("Perl")
+            | Some("R") | Some("YAML") | Some("TOML") => "# ",
+            Some("Lua") | Some("SQL") => "-- ",
+            Some("HTML") | Some("XML") | Some("CSS") => return,
+            _ => "// ",
+        };
+
+        let (start_line, end_line) = self.get_affected_lines();
+        self.save_undo_state();
+
+        // Check if all lines are already commented
+        let all_commented = (start_line..=end_line).all(|line_idx| {
+            if line_idx < self.rope.len_lines() {
+                let rope_line = self.rope.line(line_idx);
+                let line_text: String = rope_line.chars().collect();
+                let trimmed = line_text.trim_start();
+                trimmed.starts_with(comment_str.trim_end())
+            } else {
+                true
+            }
+        });
+
+        if all_commented {
+            // Uncomment
+            for line_idx in (start_line..=end_line).rev() {
+                if line_idx < self.rope.len_lines() {
+                    let line_start = self.rope.line_to_char(line_idx);
+                    let rope_line = self.rope.line(line_idx);
+                    let line_text: String = rope_line.chars().collect();
+                    if let Some(pos) = line_text.find(comment_str.trim_end()) {
+                        let remove_len = if line_text[pos..].starts_with(comment_str) {
+                            comment_str.len()
+                        } else {
+                            comment_str.trim_end().len()
+                        };
+                        self.rope.remove(line_start + pos..line_start + pos + remove_len);
+                    }
+                }
+            }
+        } else {
+            // Comment
+            for line_idx in (start_line..=end_line).rev() {
+                if line_idx < self.rope.len_lines() {
+                    let line_start = self.rope.line_to_char(line_idx);
+                    self.rope.insert(line_start, comment_str);
+                }
+            }
+        }
+
+        self.mark_anchor = None;
+        self.modified = true;
+        self.clamp_cursor_to_line();
+        self.mark_document_changed(start_line);
+    }
 }
 
 #[cfg(test)]
@@ -945,5 +1156,99 @@ mod tests {
         e.viewport.cursor_pos = (0, 9);
         e.insert_newline();
         assert_eq!(e.rope.to_string(), "    hello\n\n");
+    }
+
+    fn content(editor: &Editor) -> String {
+        editor.rope.to_string()
+    }
+
+    #[test]
+    fn test_cut_line_basic() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\nline3\n");
+        e.viewport.cursor_pos = (1, 0);
+        e.cut_line();
+        assert_eq!(content(&e), "line1\nline3\n");
+        assert_eq!(e.viewport.cursor_pos, (1, 0));
+    }
+
+    #[test]
+    fn test_cut_single_line_doc() {
+        // Single line document: cutting the only line leaves empty doc
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("only line\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.cut_line();
+        assert_eq!(content(&e), "");
+        assert_eq!(e.viewport.cursor_pos.0, 0);
+    }
+
+    #[test]
+    fn test_paste_after_cut() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\nline3\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.cut_line();
+        assert_eq!(content(&e), "line2\nline3\n");
+        e.viewport.cursor_pos = (1, 0);
+        e.paste();
+        assert_eq!(content(&e), "line2\nline1\nline3\n");
+    }
+
+    #[test]
+    fn test_copy_line() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.copy_line();
+        assert_eq!(content(&e), "line1\nline2\n");
+        e.viewport.cursor_pos = (1, 0);
+        e.paste();
+        assert_eq!(content(&e), "line1\nline1\nline2\n");
+    }
+
+    #[test]
+    fn test_paste_empty_clipboard() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.paste();
+        assert_eq!(content(&e), "hello\n");
+    }
+
+    #[test]
+    fn test_multiple_cuts_accumulate() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("a\nb\nc\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.cut_line();
+        e.cut_line();
+        assert_eq!(content(&e), "c\n");
+        e.paste();
+        assert_eq!(content(&e), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn test_cut_undo() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("line1\nline2\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.cut_line();
+        assert_eq!(content(&e), "line2\n");
+        e.undo();
+        assert_eq!(content(&e), "line1\nline2\n");
+    }
+
+    #[test]
+    fn test_cut_resets_on_non_consecutive() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("a\nb\nc\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.cut_line();
+        e.reset_cut_tracking();
+        e.viewport.cursor_pos = (0, 0);
+        e.cut_line();
+        assert_eq!(e.clipboard.len(), 1);
+        assert_eq!(e.clipboard[0], "b\n");
     }
 }
