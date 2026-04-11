@@ -23,7 +23,88 @@ pub fn handle_key_event(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
     }
 }
 
-fn handle_hex_view(_editor: &mut Editor, _key: KeyEvent) -> Result<bool> {
+fn handle_hex_view(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
+    use crate::hex::BYTES_PER_ROW;
+
+    let byte_count = editor
+        .hex_state
+        .as_ref()
+        .map(|s| s.raw_bytes.len())
+        .unwrap_or(0);
+
+    if byte_count == 0 {
+        match key.code {
+            KeyCode::Esc => editor.toggle_hex_view(),
+            _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('b') => {
+                editor.toggle_hex_view();
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    let max_cursor = byte_count.saturating_sub(1);
+
+    match key.code {
+        KeyCode::Left => {
+            if let Some(state) = &mut editor.hex_state {
+                state.cursor = state.cursor.saturating_sub(1);
+                editor.needs_redraw = true;
+            }
+        }
+        KeyCode::Right => {
+            if let Some(state) = &mut editor.hex_state {
+                state.cursor = (state.cursor + 1).min(max_cursor);
+                editor.needs_redraw = true;
+            }
+        }
+        KeyCode::Up => {
+            if let Some(state) = &mut editor.hex_state {
+                state.cursor = state.cursor.saturating_sub(BYTES_PER_ROW);
+                editor.needs_redraw = true;
+            }
+        }
+        KeyCode::Down => {
+            if let Some(state) = &mut editor.hex_state {
+                state.cursor = (state.cursor + BYTES_PER_ROW).min(max_cursor);
+                editor.needs_redraw = true;
+            }
+        }
+        KeyCode::PageUp => {
+            if let Some(state) = &mut editor.hex_state {
+                let page = 20 * BYTES_PER_ROW;
+                state.cursor = state.cursor.saturating_sub(page);
+                editor.needs_redraw = true;
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(state) = &mut editor.hex_state {
+                let page = 20 * BYTES_PER_ROW;
+                state.cursor = (state.cursor + page).min(max_cursor);
+                editor.needs_redraw = true;
+            }
+        }
+        KeyCode::Esc => {
+            editor.toggle_hex_view();
+        }
+        _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('b') => {
+            editor.toggle_hex_view();
+        }
+        _ => {}
+    }
+
+    // Keep cursor row visible
+    if let Some(state) = &mut editor.hex_state {
+        let cursor_row = state.cursor / BYTES_PER_ROW;
+        if cursor_row < state.scroll_offset {
+            state.scroll_offset = cursor_row;
+        }
+        let visible_rows = 20;
+        if cursor_row >= state.scroll_offset + visible_rows {
+            state.scroll_offset = cursor_row.saturating_sub(visible_rows - 1);
+        }
+    }
+
     Ok(false)
 }
 
@@ -526,6 +607,9 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         }
         (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
             editor.redo();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
+            editor.toggle_hex_view();
         }
 
         // Navigation
