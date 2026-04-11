@@ -1,7 +1,5 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use unicode_width::UnicodeWidthStr;
-
 use crate::editor::{Editor, InputMode};
 use crate::search::{FindNavigationMode, ReplacePhase};
 
@@ -621,9 +619,8 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (_, KeyCode::PageDown) => editor.page_down(),
         (_, KeyCode::Home) => editor.viewport.cursor_pos.1 = 0,
         (_, KeyCode::End) => {
-            if let Some(line) = editor.rope.line(editor.viewport.cursor_pos.0).as_str() {
-                editor.viewport.cursor_pos.1 = line.trim_end_matches('\n').width();
-            }
+            editor.viewport.cursor_pos.1 =
+                crate::editor::line_display_width(&editor.rope, editor.viewport.cursor_pos.0);
         }
 
         // Editing

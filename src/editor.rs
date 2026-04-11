@@ -4,7 +4,7 @@ use std::fs;
 use std::io::stdout;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::{self, Config};
 use crate::constants;
@@ -121,6 +121,17 @@ pub struct Editor {
     pub cache_valid: bool,
     pub hex_state: Option<HexViewState>,
 }
+
+/// Get the display width of a line, handling the case where the line spans chunk boundaries.
+pub fn line_display_width(rope: &Rope, line: usize) -> usize {
+    let rope_line = rope.line(line);
+    if let Some(s) = rope_line.as_str() {
+        s.trim_end_matches('\n').width()
+    } else {
+        rope_line.chars().filter(|&c| c != '\n').map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum()
+    }
+}
+
 
 impl Editor {
     pub fn new() -> Self {
@@ -306,12 +317,7 @@ impl Editor {
             if pos > 0 {
                 self.save_undo_state();
 
-                let prev_line = self.rope.line(self.viewport.cursor_pos.0 - 1);
-                let junction_col = if let Some(line_str) = prev_line.as_str() {
-                    line_str.trim_end_matches('\n').len()
-                } else {
-                    0
-                };
+                let junction_col = line_display_width(&self.rope, self.viewport.cursor_pos.0 - 1);
 
                 self.rope.remove(pos - 1..pos);
                 self.mark_document_changed(self.viewport.cursor_pos.0 - 1);
@@ -354,24 +360,20 @@ impl Editor {
             self.needs_redraw = true;
         } else if self.viewport.cursor_pos.0 > 0 {
             self.viewport.cursor_pos.0 -= 1;
-            if let Some(line) = self.rope.line(self.viewport.cursor_pos.0).as_str() {
-                self.viewport.cursor_pos.1 = line.trim_end_matches('\n').width();
-            }
+            self.viewport.cursor_pos.1 = line_display_width(&self.rope, self.viewport.cursor_pos.0);
             self.needs_redraw = true;
         }
     }
 
     pub fn move_cursor_right(&mut self) {
-        if let Some(line) = self.rope.line(self.viewport.cursor_pos.0).as_str() {
-            let line_len = line.trim_end_matches('\n').width();
-            if self.viewport.cursor_pos.1 < line_len {
-                self.viewport.cursor_pos.1 += 1;
-                self.needs_redraw = true;
-            } else if self.viewport.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
-                self.viewport.cursor_pos.0 += 1;
-                self.viewport.cursor_pos.1 = 0;
-                self.needs_redraw = true;
-            }
+        let line_len = line_display_width(&self.rope, self.viewport.cursor_pos.0);
+        if self.viewport.cursor_pos.1 < line_len {
+            self.viewport.cursor_pos.1 += 1;
+            self.needs_redraw = true;
+        } else if self.viewport.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
+            self.viewport.cursor_pos.0 += 1;
+            self.viewport.cursor_pos.1 = 0;
+            self.needs_redraw = true;
         }
     }
 
@@ -391,41 +393,57 @@ impl Editor {
     }
 
     pub fn clamp_cursor_to_line(&mut self) {
-        if let Some(line) = self.rope.line(self.viewport.cursor_pos.0).as_str() {
-            let line_len = line.trim_end_matches('\n').width();
-            self.viewport.cursor_pos.1 = self.viewport.cursor_pos.1.min(line_len);
-        }
+        let line_len = line_display_width(&self.rope, self.viewport.cursor_pos.0);
+        self.viewport.cursor_pos.1 = self.viewport.cursor_pos.1.min(line_len);
     }
 
     pub fn line_col_to_char_idx(&self, line: usize, col: usize) -> usize {
         let line_start = self.rope.line_to_char(line);
-        if let Some(line_str) = self.rope.line(line).as_str() {
-            let mut char_idx = 0;
-            let mut display_col = 0;
-            for (i, ch) in line_str.chars().enumerate() {
-                if display_col >= col || ch == '\n' {
-                    break;
-                }
-                char_idx = i + 1;
-                display_col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        let rope_line = self.rope.line(line);
+        let mut char_idx = 0;
+        let mut display_col = 0;
+        for (i, ch) in rope_line.chars().enumerate() {
+            if display_col >= col || ch == '\n' {
+                break;
             }
-            line_start + char_idx
-        } else {
-            line_start
+            char_idx = i + 1;
+            display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
         }
+        line_start + char_idx
     }
 
-    pub fn update_viewport(&mut self, _terminal_width: u16, terminal_height: u16) {
-        let editor_height = terminal_height.saturating_sub(2) as usize;
+    /// Update viewport scroll offset to keep cursor visible within the given editor area height.
+    /// This must be called with the actual rendered area height to avoid mismatches.
+    pub fn update_viewport_for_height(&mut self, editor_height: usize) {
+        if editor_height == 0 {
+            return;
+        }
 
+        // Clamp cursor line to valid document range
+        let max_line = self.rope.len_lines().saturating_sub(1);
+        if self.viewport.cursor_pos.0 > max_line {
+            self.viewport.cursor_pos.0 = max_line;
+            self.clamp_cursor_to_line();
+        }
+
+        // Scroll up if cursor is above viewport
         if self.viewport.cursor_pos.0 < self.viewport.viewport_offset.0 {
             self.viewport.viewport_offset.0 = self.viewport.cursor_pos.0;
-        } else if self.viewport.cursor_pos.0 >= self.viewport.viewport_offset.0 + editor_height {
+        }
+
+        // Scroll down if cursor is below viewport
+        if self.viewport.cursor_pos.0 >= self.viewport.viewport_offset.0 + editor_height {
             self.viewport.viewport_offset.0 = self
                 .viewport
                 .cursor_pos
                 .0
                 .saturating_sub(editor_height.saturating_sub(1));
+        }
+
+        // Clamp viewport offset so we don't scroll past the end of the document
+        let max_offset = max_line.saturating_sub(editor_height.saturating_sub(1));
+        if self.viewport.viewport_offset.0 > max_offset {
+            self.viewport.viewport_offset.0 = max_offset;
         }
     }
 
@@ -562,41 +580,53 @@ impl Editor {
 
     pub fn toggle_hex_view(&mut self) {
         if self.input_mode == InputMode::HexView {
+            // Restore text cursor from hex cursor byte offset
+            if let Some(state) = &self.hex_state {
+                let byte_offset = state.cursor;
+                // Convert byte offset to char index, then to (line, col)
+                let text = self.rope.to_string();
+                let char_idx = text[..byte_offset.min(text.len())]
+                    .chars()
+                    .count();
+                let line = self.rope.char_to_line(char_idx.min(self.rope.len_chars().saturating_sub(1)));
+                let line_start = self.rope.line_to_char(line);
+                let col_chars = char_idx.saturating_sub(line_start);
+                // Convert char offset within line to display column
+                let mut display_col = 0;
+                for (i, ch) in self.rope.line(line).chars().enumerate() {
+                    if i >= col_chars || ch == '\n' {
+                        break;
+                    }
+                    display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+                }
+                self.viewport.cursor_pos = (line, display_col);
+            }
             self.hex_state = None;
             self.input_mode = InputMode::Normal;
             self.needs_redraw = true;
             return;
         }
 
-        let path = match &self.file_path {
-            Some(p) => p.clone(),
-            None => {
-                self.set_temporary_status_message(
-                    "No file to view in hex mode".to_string(),
-                );
-                return;
-            }
-        };
+        // Get bytes from the live rope content
+        let bytes = self.rope.to_string().into_bytes();
 
-        if self.modified {
-            self.set_temporary_status_message(
-                "Save changes before hex view".to_string(),
-            );
-            return;
-        }
+        // Convert text cursor position to byte offset
+        let char_idx = self.line_col_to_char_idx(
+            self.viewport.cursor_pos.0,
+            self.viewport.cursor_pos.1,
+        );
+        let text = self.rope.to_string();
+        let byte_offset = text
+            .char_indices()
+            .nth(char_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
 
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                self.hex_state = Some(HexViewState::new(bytes));
-                self.input_mode = InputMode::HexView;
-                self.needs_redraw = true;
-            }
-            Err(e) => {
-                self.set_temporary_status_message(
-                    format!("Failed to read file: {e}"),
-                );
-            }
-        }
+        let mut state = HexViewState::new(bytes);
+        state.cursor = byte_offset.min(state.raw_bytes.len().saturating_sub(1));
+        self.hex_state = Some(state);
+        self.input_mode = InputMode::HexView;
+        self.needs_redraw = true;
     }
 
     pub fn perform_find(&mut self, search_term: &str) -> bool {

@@ -57,22 +57,29 @@ impl SearchState {
         let mut matches = Vec::new();
 
         for line_idx in 0..rope.len_lines() {
-            if let Some(line_slice) = rope.line(line_idx).as_str() {
-                let line_content = line_slice.trim_end_matches('\n');
+            let rope_line = rope.line(line_idx);
+            let owned_line: String;
+            let line_str = match rope_line.as_str() {
+                Some(s) => s,
+                None => {
+                    owned_line = rope_line.chars().collect::<String>();
+                    &owned_line
+                }
+            };
+            let line_content = line_str.trim_end_matches('\n');
 
-                let line_matches = if self.case_sensitive {
-                    find_matches_in_line(line_content, search_term)
-                } else {
-                    find_matches_in_line(
-                        &line_content.to_lowercase(),
-                        &search_term.to_lowercase(),
-                    )
-                };
+            let line_matches = if self.case_sensitive {
+                find_matches_in_line(line_content, search_term)
+            } else {
+                find_matches_in_line(
+                    &line_content.to_lowercase(),
+                    &search_term.to_lowercase(),
+                )
+            };
 
-                for col in line_matches {
-                    if validate_match(rope, line_idx, col, search_term, self.case_sensitive) {
-                        matches.push((line_idx, col));
-                    }
+            for col in line_matches {
+                if validate_match(rope, line_idx, col, search_term, self.case_sensitive) {
+                    matches.push((line_idx, col));
                 }
             }
         }
@@ -186,12 +193,17 @@ pub fn validate_match(
     search_term: &str,
     case_sensitive: bool,
 ) -> bool {
-    if let Some(line_slice) = rope.line(line_idx).as_str() {
-        let line_content = line_slice.trim_end_matches('\n');
-        validate_match_at_position(line_content, col, search_term, case_sensitive)
-    } else {
-        false
-    }
+    let rope_line = rope.line(line_idx);
+    let owned_line: String;
+    let line_str = match rope_line.as_str() {
+        Some(s) => s,
+        None => {
+            owned_line = rope_line.chars().collect::<String>();
+            &owned_line
+        }
+    };
+    let line_content = line_str.trim_end_matches('\n');
+    validate_match_at_position(line_content, col, search_term, case_sensitive)
 }
 
 /// Validate that text at a given character position matches the search term

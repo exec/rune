@@ -82,6 +82,10 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         height: help_height,
     };
 
+    // Update viewport using the actual rendered editor area height —
+    // this ensures the viewport calculation matches the rendering exactly.
+    editor.update_viewport_for_height(editor_area.height as usize);
+
     if editor.input_mode == InputMode::HexView {
         if let Some(state) = &mut editor.hex_state {
             crate::hex::draw_hex_view(f, editor_area, state);
@@ -99,30 +103,40 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         for i in 0..visible_lines {
             let line_idx = editor.viewport.viewport_offset.0 + i;
             if line_idx < editor.rope.len_lines() {
-                if let Some(line_text) = editor.rope.line(line_idx).as_str() {
-                    let highlighted_spans: Rc<Vec<(Style, String)>> = editor.highlighter.highlight_line(line_idx, line_text);
-
-                    let mut styled_spans: Vec<Span> = vec![];
-
-                    if editor.config.show_line_numbers {
-                        let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
-                        styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+                // Get line text — use as_str() for zero-copy when possible,
+                // fall back to collecting chars when the line spans chunk boundaries.
+                let rope_line = editor.rope.line(line_idx);
+                let owned_line: String;
+                let line_text = match rope_line.as_str() {
+                    Some(s) => s,
+                    None => {
+                        owned_line = rope_line.chars().collect::<String>();
+                        &owned_line
                     }
+                };
 
-                    let line_content = line_text.trim_end_matches('\n');
+                let highlighted_spans: Rc<Vec<(Style, String)>> = editor.highlighter.highlight_line(line_idx, line_text);
 
-                    styled_spans.extend(apply_search_highlighting(
-                        &highlighted_spans,
-                        line_content,
-                        line_idx,
-                        &editor.search.search_buffer,
-                        &editor.search.search_matches,
-                        editor.search.current_match_index,
-                        editor.search.case_sensitive,
-                    ));
+                let mut styled_spans: Vec<Span> = vec![];
 
-                    lines.push(Line::from(styled_spans));
+                if editor.config.show_line_numbers {
+                    let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
+                    styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
                 }
+
+                let line_content = line_text.trim_end_matches('\n');
+
+                styled_spans.extend(apply_search_highlighting(
+                    &highlighted_spans,
+                    line_content,
+                    line_idx,
+                    &editor.search.search_buffer,
+                    &editor.search.search_matches,
+                    editor.search.current_match_index,
+                    editor.search.case_sensitive,
+                ));
+
+                lines.push(Line::from(styled_spans));
             } else {
                 let mut styled_spans: Vec<Span> = vec![];
 
@@ -300,7 +314,7 @@ Arrows   Move cursor
 ─────────────────────────────────────────
                   VIEW
 ─────────────────────────────────────────
-^B       Hex view (read-only)
+^B       Hex view (live buffer)
 
 ─────────────────────────────────────────
                 OPTIONS

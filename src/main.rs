@@ -70,8 +70,6 @@ fn run_editor(
     editor: &mut editor::Editor,
 ) -> Result<()> {
     loop {
-        editor.update_viewport(terminal.size()?.width, terminal.size()?.height);
-
         if editor.needs_redraw {
             #[cfg(target_os = "macos")]
             {
@@ -108,7 +106,8 @@ fn run_editor(
                 }
                 Event::Mouse(mouse) => {
                     if editor.config.mouse_enabled {
-                        editor.handle_mouse_event(mouse, terminal.size()?.height as usize);
+                        let size = terminal.size()?;
+                        editor.handle_mouse_event(mouse, size.height as usize);
                     }
                 }
                 Event::Resize(_, _) => {
