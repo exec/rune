@@ -10,6 +10,9 @@ pub struct Config {
     pub show_line_numbers: bool,
     pub tab_width: usize,
     pub word_wrap: bool,
+    pub auto_indent: bool,
+    pub show_whitespace: bool,
+    pub constant_cursor_position: bool,
 }
 
 impl Default for Config {
@@ -19,6 +22,9 @@ impl Default for Config {
             show_line_numbers: false,
             tab_width: super::constants::DEFAULT_TAB_WIDTH,
             word_wrap: false,
+            auto_indent: true,
+            show_whitespace: false,
+            constant_cursor_position: false,
         }
     }
 }

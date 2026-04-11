@@ -120,6 +120,9 @@ pub struct Editor {
     pub cached_text: Option<String>,
     pub cache_valid: bool,
     pub hex_state: Option<HexViewState>,
+    pub clipboard: Vec<String>,
+    pub last_cut_line: Option<usize>,
+    pub mark_anchor: Option<(usize, usize)>,
 }
 
 /// Get the display width of a line, handling the case where the line spans chunk boundaries.
@@ -156,6 +159,36 @@ impl Editor {
             cached_text: None,
             cache_valid: false,
             hex_state: None,
+            clipboard: Vec::new(),
+            last_cut_line: None,
+            mark_anchor: None,
+        }
+    }
+
+    pub fn new_for_test() -> Self {
+        Self {
+            rope: Rope::new(),
+            viewport: ViewportState::default(),
+            file_path: None,
+            modified: false,
+            status_message: String::new(),
+            status_message_time: None,
+            status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
+            highlighter: SyntaxHighlighter::new(),
+            syntax_name: None,
+            input_mode: InputMode::Normal,
+            filename_buffer: String::new(),
+            quit_after_save: false,
+            config: Config::default(),
+            search: SearchState::default(),
+            undo_manager: UndoManager::default(),
+            needs_redraw: true,
+            cached_text: None,
+            cache_valid: false,
+            hex_state: None,
+            clipboard: Vec::new(),
+            last_cut_line: None,
+            mark_anchor: None,
         }
     }
 
@@ -294,6 +327,7 @@ impl Editor {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        self.mark_anchor = None;
         self.save_undo_state();
         let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
         self.rope.insert_char(pos, c);
@@ -303,6 +337,7 @@ impl Editor {
     }
 
     pub fn delete_char(&mut self) {
+        self.mark_anchor = None;
         if self.viewport.cursor_pos.1 > 0 {
             let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
             if pos > 0 {
@@ -329,13 +364,42 @@ impl Editor {
     }
 
     pub fn insert_newline(&mut self) {
+        self.mark_anchor = None;
         self.save_undo_state();
         let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
-        self.rope.insert_char(pos, '\n');
+
+        // Collect leading whitespace from current line if auto_indent is enabled
+        let indent = if self.config.auto_indent {
+            let line = self.rope.line(self.viewport.cursor_pos.0);
+            let mut ws = String::new();
+            for ch in line.chars() {
+                if ch == ' ' || ch == '\t' {
+                    ws.push(ch);
+                } else {
+                    break;
+                }
+            }
+            ws
+        } else {
+            String::new()
+        };
+
+        let insert_str = format!("\n{}", indent);
+        self.rope.insert(pos, &insert_str);
         self.mark_document_changed(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.0 += 1;
-        self.viewport.cursor_pos.1 = 0;
+        self.viewport.cursor_pos.1 = indent.len();
         self.modified = true;
+    }
+
+    pub fn delete_char_forward(&mut self) {
+        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        if pos < self.rope.len_chars() {
+            self.save_undo_state();
+            self.rope.remove(pos..pos + 1);
+            self.mark_document_changed(self.viewport.cursor_pos.0);
+            self.modified = true;
+        }
     }
 
     pub fn move_cursor_up(&mut self) {
@@ -829,5 +893,57 @@ impl Editor {
         self.highlighter.invalidate_cache_from_line(from_line);
         self.invalidate_cache();
         self.needs_redraw = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_delete_forward() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.delete_char_forward();
+        assert_eq!(e.rope.to_string(), "ello\n");
+    }
+
+    #[test]
+    fn test_delete_forward_joins_lines() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("ab\ncd\n");
+        e.viewport.cursor_pos = (0, 2);
+        e.delete_char_forward();
+        assert_eq!(e.rope.to_string(), "abcd\n");
+    }
+
+    #[test]
+    fn test_delete_forward_at_end_of_document() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hi");
+        e.viewport.cursor_pos = (0, 2);
+        e.delete_char_forward();
+        assert_eq!(e.rope.to_string(), "hi");
+    }
+
+    #[test]
+    fn test_auto_indent() {
+        let mut e = Editor::new_for_test();
+        e.config.auto_indent = true;
+        e.rope = Rope::from_str("    hello\n");
+        e.viewport.cursor_pos = (0, 9);
+        e.insert_newline();
+        assert!(e.rope.to_string().starts_with("    hello\n    "));
+    }
+
+    #[test]
+    fn test_no_auto_indent_when_disabled() {
+        let mut e = Editor::new_for_test();
+        e.config.auto_indent = false;
+        e.rope = Rope::from_str("    hello\n");
+        e.viewport.cursor_pos = (0, 9);
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "    hello\n\n");
     }
 }

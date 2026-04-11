@@ -165,6 +165,24 @@ fn handle_options_menu(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
             editor.input_mode = InputMode::Normal;
             editor.needs_redraw = true;
         }
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            editor.config.auto_indent = !editor.config.auto_indent;
+            editor.set_temporary_status_message(format!(
+                "Auto-indent: {}",
+                if editor.config.auto_indent { "ON" } else { "OFF" }
+            ));
+            editor.input_mode = InputMode::Normal;
+            editor.needs_redraw = true;
+        }
+        KeyCode::Char('p') | KeyCode::Char('P') => {
+            editor.config.show_whitespace = !editor.config.show_whitespace;
+            editor.set_temporary_status_message(format!(
+                "Whitespace display: {}",
+                if editor.config.show_whitespace { "ON" } else { "OFF" }
+            ));
+            editor.input_mode = InputMode::Normal;
+            editor.needs_redraw = true;
+        }
         KeyCode::Esc => {
             editor.save_config();
             editor.input_mode = InputMode::Normal;
@@ -609,6 +627,14 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
             editor.toggle_hex_view();
         }
+        (KeyModifiers::ALT, KeyCode::Char('p')) => {
+            editor.config.show_whitespace = !editor.config.show_whitespace;
+            editor.set_temporary_status_message(format!(
+                "Whitespace display: {}",
+                if editor.config.show_whitespace { "ON" } else { "OFF" }
+            ));
+            editor.needs_redraw = true;
+        }
 
         // Navigation
         (_, KeyCode::Up) => editor.move_cursor_up(),
@@ -630,6 +656,7 @@ fn handle_normal(editor: &mut Editor, key: KeyEvent) -> Result<bool> {
         }
         (_, KeyCode::Enter) => editor.insert_newline(),
         (_, KeyCode::Backspace) => editor.delete_char(),
+        (_, KeyCode::Delete) => editor.delete_char_forward(),
         (_, KeyCode::Esc) => {}
 
         _ => {}
