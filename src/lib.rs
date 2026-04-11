@@ -7,7 +7,6 @@ pub mod constants {
     pub const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
     pub const SCROLL_SPEED: usize = 3;
     pub const SEARCH_HISTORY_LIMIT: usize = 50;
-    pub const HELP_MODAL_WIDTH: u16 = 48;
     pub const UNDO_STACK_LIMIT: usize = 100;
 }
 
@@ -17,4 +16,5 @@ pub mod hex;
 pub mod input;
 pub mod search;
 pub mod syntax;
+pub mod tabs;
 pub mod ui;

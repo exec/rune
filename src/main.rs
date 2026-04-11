@@ -10,8 +10,8 @@ use std::io::{self, stdout};
 use std::path::PathBuf;
 
 use rune::constants;
-use rune::editor;
 use rune::input;
+use rune::tabs;
 use rune::ui;
 
 #[derive(Parser)]
@@ -30,17 +30,18 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
 
-    let mut editor = editor::Editor::new();
+    let mut tab_manager = tabs::TabManager::new();
 
-    if editor.config.mouse_enabled {
+    if tab_manager.config.mouse_enabled {
         crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture)?;
     }
 
     if let Some(file) = cli.file {
-        editor.load_file(file)?;
+        tab_manager.active_editor_mut().load_file(file)?;
+        tab_manager.resolve_display_names();
     }
 
-    let result = run_editor(&mut terminal, &mut editor);
+    let result = run_editor(&mut terminal, &mut tab_manager);
 
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen)?;
@@ -51,17 +52,17 @@ fn main() -> Result<()> {
 
 fn run_editor(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    editor: &mut editor::Editor,
+    tabs: &mut tabs::TabManager,
 ) -> Result<()> {
     loop {
-        if editor.needs_redraw {
+        if tabs.needs_redraw {
             #[cfg(target_os = "macos")]
             {
                 use crossterm::{execute, terminal::BeginSynchronizedUpdate};
                 let _ = execute!(stdout(), BeginSynchronizedUpdate);
             }
 
-            terminal.draw(|f| ui::draw_ui(f, editor))?;
+            terminal.draw(|f| ui::draw_ui(f, tabs))?;
 
             #[cfg(target_os = "macos")]
             {
@@ -71,31 +72,31 @@ fn run_editor(
                 let _ = stdout().flush();
             }
 
-            editor.needs_redraw = false;
+            tabs.needs_redraw = false;
         }
 
-        let status_timeout = editor.check_status_message_timeout();
+        let status_timeout = tabs.check_status_message_timeout();
         if status_timeout {
-            editor.needs_redraw = true;
+            tabs.needs_redraw = true;
         }
 
         if event::poll(constants::EVENT_POLL_INTERVAL)? {
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind == KeyEventKind::Press
-                        && input::handle_key_event(editor, key)?
+                        && input::handle_key_event(tabs, key)?
                     {
                         break;
                     }
                 }
                 Event::Mouse(mouse) => {
-                    if editor.config.mouse_enabled {
+                    if tabs.config.mouse_enabled {
                         let size = terminal.size()?;
-                        editor.handle_mouse_event(mouse, size.height as usize);
+                        tabs.handle_mouse_event(mouse, size.height as usize);
                     }
                 }
                 Event::Resize(_, _) => {
-                    editor.needs_redraw = true;
+                    tabs.needs_redraw = true;
                 }
                 _ => {}
             }

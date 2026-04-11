@@ -1,18 +1,18 @@
 use ratatui::{
     prelude::*,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 use std::rc::Rc;
 
-use crate::constants::HELP_MODAL_WIDTH;
 use crate::editor::{Editor, InputMode};
 use crate::search::validate_match_at_position;
+use crate::tabs::TabManager;
 
-pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
+pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
     let area = f.area();
 
-    let (help_left, help_right) = match editor.input_mode {
+    let (help_left, help_right) = match tabs.input_mode {
         InputMode::ConfirmQuit => (
             "Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel".to_string(),
             String::new(),
@@ -82,43 +82,51 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         height: help_height,
     };
 
-    let line_num_width = if editor.config.show_line_numbers {
-        editor.rope.len_lines().to_string().len() + 1
+    let show_line_numbers = tabs.config.show_line_numbers;
+    let word_wrap = tabs.config.word_wrap;
+    let input_mode = tabs.input_mode.clone();
+
+    let line_num_width = if show_line_numbers {
+        tabs.active_editor().rope.len_lines().to_string().len() + 1
     } else {
         0
     };
 
-    // Update viewport using the actual rendered editor area dimensions —
-    // this ensures the viewport calculation matches the rendering exactly.
-    editor.update_viewport_for_size(
+    // Update viewport using the actual rendered editor area dimensions
+    tabs.active_editor_mut().update_viewport_for_size(
         editor_area.height as usize,
         editor_area.width as usize,
         line_num_width,
+        word_wrap,
     );
 
-    if editor.input_mode == InputMode::HexView {
-        if let Some(state) = &mut editor.hex_state {
+    if input_mode == InputMode::Help {
+        draw_help_fullscreen(f, tabs, editor_area);
+    } else if input_mode == InputMode::HexView {
+        if let Some(state) = &mut tabs.active_editor_mut().hex_state {
             crate::hex::draw_hex_view(f, editor_area, state);
         }
-    } else if editor.config.word_wrap {
-        draw_editor_word_wrap(f, editor, editor_area, line_num_width);
+    } else if word_wrap {
+        draw_editor_word_wrap(f, tabs, editor_area, line_num_width);
     } else {
-        draw_editor_horizontal_scroll(f, editor, editor_area, line_num_width);
+        draw_editor_horizontal_scroll(f, tabs, editor_area, line_num_width);
     }
 
     // Draw status bar
-    let status_text = if !editor.status_message.is_empty() {
-        if editor.config.constant_cursor_position {
+    let status_text = if !tabs.status_message.is_empty() {
+        if tabs.config.constant_cursor_position {
+            let editor = tabs.active_editor();
             format!(
                 "{} | Ln {}, Col {}",
-                editor.status_message,
+                tabs.status_message,
                 editor.viewport.cursor_pos.0 + 1,
                 editor.viewport.cursor_pos.1 + 1
             )
         } else {
-            editor.status_message.clone()
+            tabs.status_message.clone()
         }
-    } else if editor.input_mode == InputMode::HexView {
+    } else if tabs.input_mode == InputMode::HexView {
+        let editor = tabs.active_editor();
         if let Some(state) = &editor.hex_state {
             let filename = editor
                 .file_path
@@ -136,13 +144,14 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             String::new()
         }
     } else {
+        let editor = tabs.active_editor();
         let modified_indicator = if editor.modified { "[+]" } else { "" };
         let filename = editor
             .file_path
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "[No Name]".to_string());
-        let search_modes = if editor.input_mode == InputMode::Find {
+        let search_modes = if tabs.input_mode == InputMode::Find {
             format!(
                 " | Search: {} {}",
                 if editor.search.use_regex {
@@ -166,7 +175,7 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             modified_indicator,
             editor.viewport.cursor_pos.0 + 1,
             editor.viewport.cursor_pos.1 + 1,
-            if editor.config.mouse_enabled {
+            if tabs.config.mouse_enabled {
                 "ON"
             } else {
                 "OFF"
@@ -197,20 +206,19 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     let help_widget =
         Paragraph::new(help_line).style(Style::default().bg(Color::Cyan).fg(Color::Black));
     f.render_widget(help_widget, help_area);
-
-    // Draw help modal if in help mode
-    if editor.input_mode == InputMode::Help {
-        draw_help_modal(f, area);
-    }
 }
 
 /// Render editor content with horizontal scrolling (word_wrap OFF).
 fn draw_editor_horizontal_scroll(
     f: &mut Frame,
-    editor: &mut Editor,
+    tabs: &mut TabManager,
     editor_area: Rect,
     line_num_width: usize,
 ) {
+    let show_line_numbers = tabs.config.show_line_numbers;
+    let show_whitespace = tabs.config.show_whitespace;
+    let editor = tabs.active_editor_mut();
+
     let mut lines = vec![];
     let visible_lines = editor_area.height as usize;
     let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
@@ -234,7 +242,7 @@ fn draw_editor_horizontal_scroll(
 
             let mut styled_spans: Vec<Span> = vec![];
 
-            if editor.config.show_line_numbers {
+            if show_line_numbers {
                 let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
                 styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
             }
@@ -251,7 +259,7 @@ fn draw_editor_horizontal_scroll(
                 editor.search.case_sensitive,
             );
 
-            if editor.config.show_whitespace {
+            if show_whitespace {
                 for span in &mut search_spans {
                     let rendered = render_whitespace(&span.content);
                     if rendered != span.content.as_ref() {
@@ -270,7 +278,7 @@ fn draw_editor_horizontal_scroll(
         } else {
             let mut styled_spans: Vec<Span> = vec![];
 
-            if editor.config.show_line_numbers {
+            if show_line_numbers {
                 let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
                 styled_spans.push(Span::styled(
                     empty_line_num,
@@ -287,18 +295,14 @@ fn draw_editor_horizontal_scroll(
     let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     f.render_widget(editor_widget, editor_area);
 
-    // Draw cursor — account for horizontal offset
+    // Draw cursor -- account for horizontal offset
     let cursor_screen_y = editor
         .viewport
         .cursor_pos
         .0
         .saturating_sub(editor.viewport.viewport_offset.0);
     if cursor_screen_y < visible_lines {
-        let cursor_col_on_screen = editor
-            .viewport
-            .cursor_pos
-            .1
-            .saturating_sub(h_offset);
+        let cursor_col_on_screen = editor.viewport.cursor_pos.1.saturating_sub(h_offset);
         let cursor_x = cursor_col_on_screen as u16 + line_num_width as u16;
         f.set_cursor_position(Position::new(cursor_x, cursor_screen_y as u16));
     }
@@ -307,15 +311,17 @@ fn draw_editor_horizontal_scroll(
 /// Render editor content with word wrapping (word_wrap ON).
 fn draw_editor_word_wrap(
     f: &mut Frame,
-    editor: &mut Editor,
+    tabs: &mut TabManager,
     editor_area: Rect,
     line_num_width: usize,
 ) {
+    let show_line_numbers = tabs.config.show_line_numbers;
+    let show_whitespace = tabs.config.show_whitespace;
+    let editor = tabs.active_editor_mut();
 
     let visible_lines = editor_area.height as usize;
     let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
 
-    // Build lines that fit within the visible screen rows, accounting for wrapping
     let mut lines: Vec<Line> = vec![];
     let mut screen_row = 0;
     let mut cursor_screen_y: Option<usize> = None;
@@ -347,7 +353,7 @@ fn draw_editor_word_wrap(
             editor.search.case_sensitive,
         );
 
-        if editor.config.show_whitespace {
+        if show_whitespace {
             for span in &mut search_spans {
                 let rendered = render_whitespace(&span.content);
                 if rendered != span.content.as_ref() {
@@ -358,9 +364,11 @@ fn draw_editor_word_wrap(
 
         let final_spans = apply_selection_highlighting(search_spans, line_idx, editor);
 
-        // Calculate how many screen rows this line occupies when wrapped
         let line_width = line_content.len().max(
-            final_spans.iter().map(|s| s.content.len()).sum::<usize>()
+            final_spans
+                .iter()
+                .map(|s| s.content.len())
+                .sum::<usize>(),
         );
         let rows_needed = if content_width == 0 || line_width == 0 {
             1
@@ -368,7 +376,6 @@ fn draw_editor_word_wrap(
             line_width.div_ceil(content_width)
         };
 
-        // Track cursor position
         if line_idx == editor.viewport.cursor_pos.0 {
             let cursor_sub_row = if content_width > 0 {
                 editor.viewport.cursor_pos.1 / content_width
@@ -378,7 +385,6 @@ fn draw_editor_word_wrap(
             cursor_screen_y = Some(screen_row + cursor_sub_row);
         }
 
-        // Split this line into wrapped screen rows
         let all_chars: Vec<(char, Style)> = collect_span_chars(&final_spans);
 
         for sub_row in 0..rows_needed {
@@ -388,7 +394,7 @@ fn draw_editor_word_wrap(
 
             let mut styled_spans: Vec<Span> = vec![];
 
-            if editor.config.show_line_numbers {
+            if show_line_numbers {
                 if sub_row == 0 {
                     let line_num =
                         format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
@@ -401,13 +407,11 @@ fn draw_editor_word_wrap(
                 }
             }
 
-            // Extract the characters for this sub-row
             let start_col = sub_row * content_width;
             let end_col = (start_col + content_width).min(all_chars.len());
 
             if start_col < all_chars.len() {
                 let sub_chars = &all_chars[start_col..end_col];
-                // Group consecutive chars with the same style into spans
                 styled_spans.extend(group_chars_into_spans(sub_chars));
             }
 
@@ -422,7 +426,7 @@ fn draw_editor_word_wrap(
     while screen_row < visible_lines {
         let mut styled_spans: Vec<Span> = vec![];
 
-        if editor.config.show_line_numbers {
+        if show_line_numbers {
             let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
             styled_spans.push(Span::styled(
                 empty_line_num,
@@ -454,13 +458,12 @@ fn draw_editor_word_wrap(
 
 /// Slice a list of spans to only include characters in the display column range
 /// [h_offset, h_offset + width). This handles multi-char spans that straddle the boundary.
-fn slice_spans_horizontal(
-    spans: &[Span<'_>],
-    h_offset: usize,
-    width: usize,
-) -> Vec<Span<'static>> {
+fn slice_spans_horizontal(spans: &[Span<'_>], h_offset: usize, width: usize) -> Vec<Span<'static>> {
     if h_offset == 0 && width == usize::MAX {
-        return spans.iter().map(|s| Span::styled(s.content.to_string(), s.style)).collect();
+        return spans
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), s.style))
+            .collect();
     }
 
     let mut result = Vec::new();
@@ -473,18 +476,12 @@ fn slice_spans_horizontal(
         let span_end = col + span_len;
 
         if span_end <= h_offset || col >= end {
-            // Entirely outside visible range
             col = span_end;
             continue;
         }
 
-        // Calculate the visible portion of this span
         let start_in_span = h_offset.saturating_sub(col);
-        let end_in_span = if span_end > end {
-            end - col
-        } else {
-            span_len
-        };
+        let end_in_span = if span_end > end { end - col } else { span_len };
 
         if start_in_span < end_in_span {
             let visible: String = span_chars[start_in_span..end_in_span].iter().collect();
@@ -537,103 +534,82 @@ fn group_chars_into_spans(chars: &[(char, Style)]) -> Vec<Span<'static>> {
     result
 }
 
-fn draw_help_modal(f: &mut Frame, area: Rect) {
-    let modal_width = HELP_MODAL_WIDTH;
-    let modal_height = (area.height as f32 * 0.8) as u16;
-    let modal_x = (area.width - modal_width) / 2;
-    let modal_y = (area.height - modal_height) / 2;
+fn help_lines() -> Vec<&'static str> {
+    vec![
+        "               FILE OPERATIONS",
+        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        "^Q / ^X  Quit editor",
+        "^S       Save file",
+        "^W       Save as (write file)",
+        "^O       Options menu",
+        "",
+        "                 EDITING",
+        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        "^Z       Undo",
+        "^R       Redo",
+        "^K       Cut line/selection",
+        "^U       Paste",
+        "M-6      Copy line/selection",
+        "M-A      Toggle mark (selection)",
+        "M-}      Indent selection",
+        "M-{      Unindent selection",
+        "M-;      Toggle comment",
+        "Delete   Delete forward",
+        "",
+        "               NAVIGATION",
+        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        "^F       Find text",
+        "^\\       Replace text",
+        "^G       Go to line",
+        "^C       Cursor position info",
+        "^V       Page down",
+        "^Y       Page up",
+        "^Home    Start of file",
+        "^End     End of file",
+        "^Left    Previous word",
+        "^Right   Next word",
+        "M-]      Match bracket",
+        "Arrows   Move cursor",
+        "",
+        "                  VIEW",
+        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        "^B       Hex view (live buffer)",
+        "M-P      Toggle whitespace display",
+        "",
+        "                OPTIONS",
+        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        "^O       Open options menu",
+        "  M      Toggle mouse mode",
+        "  L      Toggle line numbers",
+        "  W      Toggle word wrap",
+        "  T      Set tab width",
+        "  I      Toggle auto-indent",
+        "  P      Toggle whitespace",
+        "",
+        "Note: M- prefix means Alt/Meta key.",
+        "      ^ prefix means Ctrl key.",
+    ]
+}
 
-    let modal_area = Rect {
-        x: modal_x,
-        y: modal_y,
-        width: modal_width,
-        height: modal_height,
-    };
+fn draw_help_fullscreen(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
+    let lines = help_lines();
+    let visible_height = area.height as usize;
+    let max_scroll = lines.len().saturating_sub(visible_height);
+    if tabs.help_scroll > max_scroll {
+        tabs.help_scroll = max_scroll;
+    }
 
-    let help_content = r#"
- __________ ____ _____________________________
- \______   \    |   \      \   \_   _____/
-  |       _/    |   /   |   \   |    __)_
-  |    |   \    |  /    |    \  |        \
-  |____|_  /______/\____|__  / /_______  /
-         \/                \/          \/
+    let display_lines: Vec<Line> = lines
+        .iter()
+        .skip(tabs.help_scroll)
+        .take(visible_height)
+        .map(|l| Line::from(Span::raw(*l)))
+        .collect();
 
-         A nano-inspired text editor
-
-─────────────────────────────────────────
-               FILE OPERATIONS
-─────────────────────────────────────────
-^Q / ^X  Quit editor
-^S       Save file
-^W       Save as (write file)
-^O       Options menu
-
-─────────────────────────────────────────
-                 EDITING
-─────────────────────────────────────────
-^Z       Undo
-^R       Redo
-^K       Cut line/selection
-^U       Paste
-M-6      Copy line/selection
-M-A      Toggle mark (selection)
-M-}      Indent selection
-M-{      Unindent selection
-M-;      Toggle comment
-Delete   Delete forward
-
-─────────────────────────────────────────
-               NAVIGATION
-─────────────────────────────────────────
-^F       Find text
-^\       Replace text
-^G       Go to line
-^C       Cursor position info
-^V       Page down
-^Y       Page up
-^Home    Start of file
-^End     End of file
-^Left    Previous word
-^Right   Next word
-M-]      Match bracket
-Arrows   Move cursor
-
-─────────────────────────────────────────
-                  VIEW
-─────────────────────────────────────────
-^B       Hex view (live buffer)
-M-P      Toggle whitespace display
-
-─────────────────────────────────────────
-                OPTIONS
-─────────────────────────────────────────
-^O       Open options menu
-  M      Toggle mouse mode
-  L      Toggle line numbers
-  W      Toggle word wrap
-  T      Set tab width
-  I      Toggle auto-indent
-  P      Toggle whitespace
-
-─────────────────────────────────────────
-   Note: M- prefix means Alt/Meta key
-─────────────────────────────────────────
-          Press ^H or Esc to close
-─────────────────────────────────────────"#;
-
-    let clear = Clear;
-    f.render_widget(clear, modal_area);
-
-    let help_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .style(Style::default().bg(Color::Black).fg(Color::White));
-
-    let help_paragraph = Paragraph::new(help_content)
-        .block(help_block)
-        .alignment(ratatui::layout::Alignment::Center);
-
-    f.render_widget(help_paragraph, modal_area);
+    let help_widget = Paragraph::new(display_lines)
+        .style(Style::default().fg(Color::White))
+        .block(Block::default().borders(Borders::NONE));
+    f.render_widget(help_widget, area);
 }
 
 fn apply_search_highlighting(
@@ -788,7 +764,6 @@ fn apply_selection_highlighting(
                 span.style.bg(Color::White).fg(Color::Black),
             ));
         } else {
-            // Partially inside — split the span
             let chars: Vec<char> = span.content.chars().collect();
             let mut i = 0;
             while i < chars.len() {
