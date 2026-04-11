@@ -12,6 +12,7 @@ pub mod constants {
 
 pub mod config;
 pub mod editor;
+pub mod fuzzy;
 pub mod hex;
 pub mod input;
 pub mod search;

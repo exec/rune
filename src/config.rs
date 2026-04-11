@@ -13,6 +13,8 @@ pub struct Config {
     pub auto_indent: bool,
     pub show_whitespace: bool,
     pub constant_cursor_position: bool,
+    #[serde(default)]
+    pub backup_on_save: bool,
 }
 
 impl Default for Config {
@@ -25,6 +27,7 @@ impl Default for Config {
             auto_indent: true,
             show_whitespace: false,
             constant_cursor_position: false,
+            backup_on_save: false,
         }
     }
 }

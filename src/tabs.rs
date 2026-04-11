@@ -17,7 +17,6 @@ pub struct TabManager {
     pub status_message_timeout: Duration,
     pub filename_buffer: String,
     pub quit_after_save: bool,
-    pub help_scroll: usize,
     pub needs_redraw: bool,
     // Fuzzy finder state
     pub fuzzy_query: String,
@@ -46,7 +45,7 @@ impl TabManager {
             status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
             filename_buffer: String::new(),
             quit_after_save: false,
-            help_scroll: 0,
+
             needs_redraw: true,
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
@@ -67,7 +66,7 @@ impl TabManager {
             status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
             filename_buffer: String::new(),
             quit_after_save: false,
-            help_scroll: 0,
+
             needs_redraw: true,
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
@@ -97,6 +96,24 @@ impl TabManager {
         self.active_editor_mut().load_file(path)?;
         self.needs_redraw = true;
         Ok(())
+    }
+
+    /// Open (or switch to) a [Help] tab showing the key-binding reference.
+    pub fn open_help_tab(&mut self) {
+        // If a help tab already exists, just switch to it.
+        if let Some(idx) = self.tabs.iter().position(|t| t.display_name == "[Help]") {
+            self.active_tab = idx;
+            self.needs_redraw = true;
+            return;
+        }
+
+        let help_text = crate::ui::help_lines().join("\n");
+        let mut editor = Editor::new_buffer();
+        editor.rope = ropey::Rope::from_str(&help_text);
+        editor.display_name = "[Help]".to_string();
+        self.tabs.push(editor);
+        self.active_tab = self.tabs.len() - 1;
+        self.needs_redraw = true;
     }
 
     /// Create a new empty tab.
@@ -249,6 +266,12 @@ impl TabManager {
     pub fn perform_save(&mut self, path: PathBuf) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+
+        // Create backup if enabled
+        if self.config.backup_on_save && path.exists() {
+            let backup_path = PathBuf::from(format!("{}~", path.display()));
+            let _ = std::fs::copy(&path, &backup_path);
         }
 
         let editor = self.active_editor_mut();
@@ -801,9 +824,32 @@ impl TabManager {
         event: crossterm::event::MouseEvent,
         terminal_height: usize,
     ) {
+        // Row 0 is the tab bar -- adjust event row to account for it
+        let mut adjusted = event;
+        if adjusted.row == 0 {
+            // Click on tab bar -- switch to clicked tab
+            self.handle_tab_bar_click(adjusted.column as usize);
+            self.needs_redraw = true;
+            return;
+        }
+        adjusted.row = adjusted.row.saturating_sub(1);
         let editor = self.active_editor_mut();
-        editor.handle_mouse_event(event, terminal_height);
+        editor.handle_mouse_event(adjusted, terminal_height);
         self.needs_redraw = true;
+    }
+
+    fn handle_tab_bar_click(&mut self, click_col: usize) {
+        let mut col = 0;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let modified = if tab.modified { "*" } else { "" };
+            let title = format!(" {}{} ", tab.display_name, modified);
+            let title_len = title.len();
+            if click_col >= col && click_col < col + title_len {
+                self.active_tab = i;
+                return;
+            }
+            col += title_len;
+        }
     }
 }
 
