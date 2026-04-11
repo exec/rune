@@ -8,17 +8,21 @@ use crate::tabs::TabManager;
 pub fn handle_key_event(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     match tabs.input_mode {
         InputMode::ConfirmQuit => handle_confirm_quit(tabs, key),
+        InputMode::ConfirmCloseTab => handle_confirm_close_tab(tabs, key),
         InputMode::OptionsMenu => handle_options_menu(tabs, key),
         InputMode::FindOptionsMenu => handle_find_options_menu(tabs, key),
         InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
             handle_filename_input(tabs, key)
         }
+        InputMode::OpenFileCurrentTab | InputMode::OpenFileNewTab => {
+            handle_open_file_input(tabs, key)
+        }
         InputMode::Find => handle_find(tabs, key),
         InputMode::Replace => handle_replace(tabs, key),
         InputMode::ReplaceConfirm => handle_replace_confirm(tabs, key),
         InputMode::GoToLine => handle_goto_line(tabs, key),
-        InputMode::Help => handle_help(tabs, key),
         InputMode::HexView => handle_hex_view(tabs, key),
+        InputMode::FuzzyFinder => handle_fuzzy_finder(tabs, key),
         InputMode::Normal => handle_normal(tabs, key),
     }
 }
@@ -128,6 +132,39 @@ fn handle_confirm_quit(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
+fn handle_confirm_close_tab(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let path = tabs.active_editor().file_path.clone();
+            if let Some(path) = path {
+                tabs.perform_save(path)?;
+            }
+            tabs.input_mode = InputMode::Normal;
+            if tabs.close_tab() {
+                return Ok(true);
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            tabs.input_mode = InputMode::Normal;
+            if tabs.close_tab() {
+                return Ok(true);
+            }
+        }
+        KeyCode::Esc => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.status_message = "Cancelled".to_string();
+            tabs.needs_redraw = true;
+        }
+        _ if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.status_message = "Cancelled".to_string();
+            tabs.needs_redraw = true;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 fn handle_options_menu(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Char('m') | KeyCode::Char('M') => {
@@ -193,6 +230,18 @@ fn handle_options_menu(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.input_mode = InputMode::Normal;
             tabs.needs_redraw = true;
         }
+        KeyCode::Char('o') | KeyCode::Char('O') => {
+            tabs.input_mode = InputMode::OpenFileCurrentTab;
+            tabs.filename_buffer.clear();
+            tabs.status_message = "Open file: ".to_string();
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            tabs.input_mode = InputMode::OpenFileNewTab;
+            tabs.filename_buffer.clear();
+            tabs.status_message = "Open in new tab: ".to_string();
+            tabs.needs_redraw = true;
+        }
         KeyCode::Esc => {
             tabs.save_config();
             tabs.input_mode = InputMode::Normal;
@@ -255,6 +304,67 @@ fn handle_filename_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         KeyCode::Char(c) => {
             tabs.filename_buffer.push(c);
             tabs.status_message = format!("File Name to Write: {}", tabs.filename_buffer);
+            tabs.needs_redraw = true;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    let is_new_tab = tabs.input_mode == InputMode::OpenFileNewTab;
+    let prompt = if is_new_tab {
+        "Open in new tab: "
+    } else {
+        "Open file: "
+    };
+    match key.code {
+        KeyCode::Enter => {
+            if tabs.filename_buffer.is_empty() {
+                tabs.input_mode = InputMode::Normal;
+                tabs.status_message = "Cancelled".to_string();
+                tabs.needs_redraw = true;
+                return Ok(false);
+            }
+            let path = std::path::PathBuf::from(&tabs.filename_buffer);
+            if is_new_tab {
+                match tabs.open_in_new_tab(path) {
+                    Ok(()) => {
+                        tabs.resolve_display_names();
+                        tabs.set_temporary_status_message("Opened in new tab".to_string());
+                    }
+                    Err(e) => {
+                        tabs.set_temporary_status_message(format!("Error: {e}"));
+                    }
+                }
+            } else {
+                match tabs.open_in_current_tab(path) {
+                    Ok(()) => {
+                        tabs.resolve_display_names();
+                        tabs.set_temporary_status_message("File opened".to_string());
+                    }
+                    Err(e) => {
+                        tabs.set_temporary_status_message(format!("Error: {e}"));
+                    }
+                }
+            }
+            tabs.input_mode = InputMode::Normal;
+            tabs.filename_buffer.clear();
+        }
+        KeyCode::Esc => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.filename_buffer.clear();
+            tabs.status_message = "Cancelled".to_string();
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Backspace => {
+            tabs.filename_buffer.pop();
+            tabs.status_message = format!("{}{}", prompt, tabs.filename_buffer);
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Char(c) => {
+            tabs.filename_buffer.push(c);
+            tabs.status_message = format!("{}{}", prompt, tabs.filename_buffer);
             tabs.needs_redraw = true;
         }
         _ => {}
@@ -642,42 +752,9 @@ fn handle_goto_line(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
-fn handle_help(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
-    match key.code {
-        KeyCode::Esc => {
-            tabs.input_mode = InputMode::Normal;
-            tabs.needs_redraw = true;
-        }
-        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
-            tabs.input_mode = InputMode::Normal;
-            tabs.needs_redraw = true;
-        }
-        KeyCode::Char('h') if key.modifiers == KeyModifiers::CONTROL => {
-            tabs.input_mode = InputMode::Normal;
-            tabs.needs_redraw = true;
-        }
-        KeyCode::Up => {
-            tabs.help_scroll = tabs.help_scroll.saturating_sub(1);
-            tabs.needs_redraw = true;
-        }
-        KeyCode::Down => {
-            tabs.help_scroll += 1;
-            tabs.needs_redraw = true;
-        }
-        KeyCode::PageUp => {
-            tabs.help_scroll = tabs.help_scroll.saturating_sub(20);
-            tabs.needs_redraw = true;
-        }
-        KeyCode::PageDown => {
-            tabs.help_scroll += 20;
-            tabs.needs_redraw = true;
-        }
-        _ => {}
-    }
-    Ok(false)
-}
-
 fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    let is_read_only = tabs.active_editor().display_name == "[Help]";
+
     // Reset cut accumulation for any key that isn't Ctrl+K
     if !(key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('k')) {
         tabs.reset_cut_tracking();
@@ -700,11 +777,9 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.open_options_menu();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
-            tabs.help_scroll = 0;
-            tabs.input_mode = InputMode::Help;
-            tabs.needs_redraw = true;
+            tabs.open_help_tab();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('z')) if !is_read_only => {
             tabs.undo();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
@@ -720,16 +795,42 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
             tabs.start_goto_line();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('r')) if !is_read_only => {
             tabs.redo();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
             tabs.toggle_hex_view();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
+            tabs.new_tab();
+            tabs.set_temporary_status_message("New tab".to_string());
+        }
+        (KeyModifiers::ALT, KeyCode::Left) => {
+            tabs.prev_tab();
+        }
+        (KeyModifiers::ALT, KeyCode::Right) => {
+            tabs.next_tab();
+        }
+        (KeyModifiers::ALT, KeyCode::Char('w')) => {
+            if tabs.active_editor().modified {
+                tabs.input_mode = InputMode::ConfirmCloseTab;
+                tabs.status_message =
+                    "Save modified buffer before closing? (Y/N/Ctrl+C)".to_string();
+                tabs.needs_redraw = true;
+            } else if tabs.close_tab() {
+                return Ok(true);
+            }
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+            tabs.input_mode = InputMode::FuzzyFinder;
+            tabs.fuzzy_query.clear();
+            tabs.fuzzy_selected = 0;
+            tabs.needs_redraw = true;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) if !is_read_only => {
             tabs.cut();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) if !is_read_only => {
             tabs.paste_inline();
         }
         (KeyModifiers::ALT, KeyCode::Char('6')) => {
@@ -751,14 +852,18 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.needs_redraw = true;
         }
 
-        (KeyModifiers::ALT, KeyCode::Char('}')) => {
+        (KeyModifiers::ALT, KeyCode::Char('}')) if !is_read_only => {
             tabs.indent_lines();
         }
-        (KeyModifiers::ALT, KeyCode::Char('{')) => {
+        (KeyModifiers::ALT, KeyCode::Char('{')) if !is_read_only => {
             tabs.unindent_lines();
         }
-        (KeyModifiers::ALT, KeyCode::Char(';')) => {
+        (KeyModifiers::ALT, KeyCode::Char(';')) if !is_read_only => {
             tabs.toggle_comment();
+            tabs.needs_redraw = true;
+        }
+        (KeyModifiers::ALT, KeyCode::Char('\\')) => {
+            tabs.active_editor_mut().word_complete();
             tabs.needs_redraw = true;
         }
 
@@ -819,7 +924,13 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.needs_redraw = true;
         }
 
-        // Editing
+        // Editing (blocked for read-only tabs like [Help])
+        (_, KeyCode::Char(_))
+        | (_, KeyCode::Tab)
+        | (_, KeyCode::Enter)
+        | (_, KeyCode::Backspace)
+        | (_, KeyCode::Delete)
+            if is_read_only => {}
         (_, KeyCode::Char(c)) => {
             tabs.active_editor_mut().insert_char(c);
             tabs.needs_redraw = true;
@@ -845,5 +956,48 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         _ => {}
     }
 
+    Ok(false)
+}
+
+fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            tabs.input_mode = InputMode::Normal;
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Enter => {
+            let candidates: Vec<(usize, String)> = tabs
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i, t.display_name.clone()))
+                .collect();
+            let filtered = crate::fuzzy::fuzzy_filter(&tabs.fuzzy_query, &candidates);
+            if let Some((tab_idx, _, _)) = filtered.get(tabs.fuzzy_selected) {
+                tabs.active_tab = *tab_idx;
+            }
+            tabs.input_mode = InputMode::Normal;
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Up => {
+            tabs.fuzzy_selected = tabs.fuzzy_selected.saturating_sub(1);
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Down => {
+            tabs.fuzzy_selected += 1;
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Backspace => {
+            tabs.fuzzy_query.pop();
+            tabs.fuzzy_selected = 0;
+            tabs.needs_redraw = true;
+        }
+        KeyCode::Char(c) => {
+            tabs.fuzzy_query.push(c);
+            tabs.fuzzy_selected = 0;
+            tabs.needs_redraw = true;
+        }
+        _ => {}
+    }
     Ok(false)
 }

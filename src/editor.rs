@@ -86,14 +86,17 @@ pub enum InputMode {
     EnteringFilename,
     EnteringSaveAs,
     ConfirmQuit,
+    ConfirmCloseTab,
     OptionsMenu,
     Find,
     FindOptionsMenu,
     Replace,
     ReplaceConfirm,
     GoToLine,
-    Help,
     HexView,
+    OpenFileCurrentTab,
+    OpenFileNewTab,
+    FuzzyFinder,
 }
 
 /// Main editor state — represents a single buffer/tab.
@@ -883,6 +886,51 @@ impl Editor {
         }
     }
 
+    /// Word completion: find the partial word before cursor and complete it
+    /// from the first matching word in the buffer.
+    pub fn word_complete(&mut self) {
+        let line_idx = self.viewport.cursor_pos.0;
+        let col = self.viewport.cursor_pos.1;
+        let rope_line = self.rope.line(line_idx);
+        let line_content: String = rope_line.chars().collect();
+        let before_cursor = &line_content[..col.min(line_content.len())];
+
+        // Find the word prefix (alphanumeric + underscore)
+        let prefix: String = before_cursor
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+
+        if prefix.is_empty() {
+            return;
+        }
+
+        // Scan all words in the document for matches
+        let text = self.rope.to_string();
+        let mut found: Option<&str> = None;
+        for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            if word.starts_with(prefix.as_str()) && word != prefix && word.len() > prefix.len() {
+                found = Some(word);
+                break;
+            }
+        }
+
+        if let Some(completion) = found {
+            let suffix = &completion[prefix.len()..];
+            self.save_undo_state();
+            let pos =
+                self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+            self.rope.insert(pos, suffix);
+            self.mark_document_changed(self.viewport.cursor_pos.0);
+            self.viewport.cursor_pos.1 += suffix.len();
+            self.modified = true;
+        }
+    }
+
     pub fn invalidate_cache(&mut self) {
         self.cache_valid = false;
         self.cached_text = None;
@@ -1045,6 +1093,44 @@ mod tests {
         e.viewport.cursor_pos = (0, 0);
         e.toggle_comment();
         assert_eq!(content(&e), "# hello\n");
+    }
+
+    #[test]
+    fn test_word_complete_basic() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello world help\n");
+        // Place cursor after "hel" (col 3 on second word area won't work, let's type on a new line)
+        e.rope = Rope::from_str("hello\nhel\n");
+        e.viewport.cursor_pos = (1, 3); // after "hel"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "hello\nhello\n");
+    }
+
+    #[test]
+    fn test_word_complete_no_prefix() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\n\n");
+        e.viewport.cursor_pos = (1, 0); // empty line, no prefix
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "hello\n\n"); // unchanged
+    }
+
+    #[test]
+    fn test_word_complete_no_match() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("hello\nxyz\n");
+        e.viewport.cursor_pos = (1, 3); // after "xyz"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "hello\nxyz\n"); // unchanged, no match
+    }
+
+    #[test]
+    fn test_word_complete_with_underscore() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("my_variable\nmy_\n");
+        e.viewport.cursor_pos = (1, 3); // after "my_"
+        e.word_complete();
+        assert_eq!(e.rope.to_string(), "my_variable\nmy_variable\n");
     }
 }
 

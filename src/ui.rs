@@ -54,10 +54,6 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
             "Enter: Go  Esc/^C: Cancel  Type line number".to_string(),
             String::new(),
         ),
-        InputMode::Help => (
-            "^H Help".to_string(),
-            format!("Rune v{}", env!("CARGO_PKG_VERSION")),
-        ),
         InputMode::HexView => (
             "Arrows: Navigate  PgUp/PgDn: Page  ^B/Esc: Exit".to_string(),
             String::new(),
@@ -119,9 +115,7 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
         word_wrap,
     );
 
-    if input_mode == InputMode::Help {
-        draw_help_fullscreen(f, tabs, editor_area);
-    } else if input_mode == InputMode::HexView {
+    if input_mode == InputMode::HexView {
         if let Some(state) = &mut tabs.active_editor_mut().hex_state {
             crate::hex::draw_hex_view(f, editor_area, state);
         }
@@ -225,6 +219,11 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
     let help_widget =
         Paragraph::new(help_line).style(Style::default().bg(Color::Cyan).fg(Color::Black));
     f.render_widget(help_widget, help_area);
+
+    // Draw fuzzy finder overlay
+    if input_mode == InputMode::FuzzyFinder {
+        draw_fuzzy_finder(f, tabs, area);
+    }
 }
 
 /// Render the tab bar at the top of the screen.
@@ -357,7 +356,10 @@ fn draw_editor_horizontal_scroll(
     if cursor_screen_y < visible_lines {
         let cursor_col_on_screen = editor.viewport.cursor_pos.1.saturating_sub(h_offset);
         let cursor_x = cursor_col_on_screen as u16 + line_num_width as u16;
-        f.set_cursor_position(Position::new(cursor_x, cursor_screen_y as u16));
+        f.set_cursor_position(Position::new(
+                cursor_x,
+                cursor_screen_y as u16 + editor_area.y,
+            ));
     }
 }
 
@@ -504,7 +506,10 @@ fn draw_editor_word_wrap(
                 editor.viewport.cursor_pos.1
             };
             let cursor_x = cursor_col_in_row as u16 + line_num_width as u16;
-            f.set_cursor_position(Position::new(cursor_x, screen_y as u16));
+            f.set_cursor_position(Position::new(
+                    cursor_x,
+                    screen_y as u16 + editor_area.y,
+                ));
         }
     }
 }
@@ -587,7 +592,7 @@ fn group_chars_into_spans(chars: &[(char, Style)]) -> Vec<Span<'static>> {
     result
 }
 
-fn help_lines() -> Vec<&'static str> {
+pub fn help_lines() -> Vec<&'static str> {
     vec![
         "               FILE OPERATIONS",
         "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
@@ -656,27 +661,6 @@ fn help_lines() -> Vec<&'static str> {
         "Note: M- prefix means Alt/Meta key.",
         "      ^ prefix means Ctrl key.",
     ]
-}
-
-fn draw_help_fullscreen(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
-    let lines = help_lines();
-    let visible_height = area.height as usize;
-    let max_scroll = lines.len().saturating_sub(visible_height);
-    if tabs.help_scroll > max_scroll {
-        tabs.help_scroll = max_scroll;
-    }
-
-    let display_lines: Vec<Line> = lines
-        .iter()
-        .skip(tabs.help_scroll)
-        .take(visible_height)
-        .map(|l| Line::from(Span::raw(*l)))
-        .collect();
-
-    let help_widget = Paragraph::new(display_lines)
-        .style(Style::default().fg(Color::White))
-        .block(Block::default().borders(Borders::NONE));
-    f.render_widget(help_widget, area);
 }
 
 fn apply_search_highlighting(
@@ -857,4 +841,95 @@ fn apply_selection_highlighting(
         char_pos = span_end;
     }
     result
+}
+
+/// Render the fuzzy finder as a centered overlay.
+fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
+    use ratatui::widgets::Clear;
+
+    let width = 50u16.min(area.width.saturating_sub(4));
+    let max_results = 10usize;
+    let height = (max_results as u16 + 3).min(area.height.saturating_sub(4)); // +3 for border + input line
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 3; // position in upper third
+
+    let overlay_area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    // Clear the area behind the overlay
+    f.render_widget(Clear, overlay_area);
+
+    // Build the candidate list and filter
+    let candidates: Vec<(usize, String)> = tabs
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i, t.display_name.clone()))
+        .collect();
+    let filtered = crate::fuzzy::fuzzy_filter(&tabs.fuzzy_query, &candidates);
+
+    // Clamp selection
+    let selected = if filtered.is_empty() {
+        0
+    } else {
+        tabs.fuzzy_selected.min(filtered.len() - 1)
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Input line
+    let input_line = format!("> {}", tabs.fuzzy_query);
+    lines.push(Line::from(Span::styled(
+        input_line,
+        Style::default().fg(Color::White),
+    )));
+
+    // Separator
+    let sep = "\u{2500}".repeat((width as usize).saturating_sub(2));
+    lines.push(Line::from(Span::styled(
+        sep,
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Results
+    let visible_results = (height as usize).saturating_sub(4); // borders + input + separator
+    for (i, (tab_idx, name, _score)) in filtered.iter().take(visible_results).enumerate() {
+        let modified = if tabs.tabs[*tab_idx].modified {
+            " [+]"
+        } else {
+            ""
+        };
+        let label = format!(" {}: {}{}", tab_idx + 1, name, modified);
+        let truncated = if label.len() > (width as usize).saturating_sub(2) {
+            format!("{}...", &label[..(width as usize).saturating_sub(5)])
+        } else {
+            label
+        };
+
+        let style = if i == selected {
+            Style::default().bg(Color::Cyan).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(Span::styled(truncated, style)));
+    }
+
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " No matching tabs",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Switch Tab ")
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, overlay_area);
 }
