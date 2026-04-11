@@ -1,6 +1,6 @@
 mod helpers;
-use helpers::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use helpers::*;
 
 #[test]
 fn test_word_right() {

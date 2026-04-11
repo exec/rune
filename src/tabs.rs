@@ -296,9 +296,7 @@ impl TabManager {
             .as_str()
             .map(|s| s.trim_end_matches('\n'));
         editor.syntax_name = editor.highlighter.detect_syntax(Some(&path), first_line);
-        editor
-            .highlighter
-            .set_syntax(editor.syntax_name.as_deref());
+        editor.highlighter.set_syntax(editor.syntax_name.as_deref());
 
         // Update display name
         editor.display_name = path
@@ -416,16 +414,10 @@ impl TabManager {
         self.config.mouse_enabled = !self.config.mouse_enabled;
 
         if self.config.mouse_enabled {
-            let _ = crossterm::execute!(
-                std::io::stdout(),
-                crossterm::event::EnableMouseCapture
-            );
+            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
             self.set_temporary_status_message("Mouse mode enabled".to_string());
         } else {
-            let _ = crossterm::execute!(
-                std::io::stdout(),
-                crossterm::event::DisableMouseCapture
-            );
+            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
             self.set_temporary_status_message("Mouse mode disabled".to_string());
         }
     }
@@ -464,8 +456,7 @@ impl TabManager {
         editor.search.search_buffer.clear();
         editor.search.search_matches.clear();
         editor.search.current_match_index = None;
-        editor.search.find_navigation_mode =
-            crate::search::FindNavigationMode::HistoryBrowsing;
+        editor.search.find_navigation_mode = crate::search::FindNavigationMode::HistoryBrowsing;
         self.status_message = "Find: ".to_string();
         self.needs_redraw = true;
     }
@@ -559,10 +550,8 @@ impl TabManager {
         let col = editor.viewport.cursor_pos.1 + 1;
         let total_lines = editor.rope.len_lines();
         let total_chars = editor.rope.len_chars();
-        let char_idx = editor.line_col_to_char_idx(
-            editor.viewport.cursor_pos.0,
-            editor.viewport.cursor_pos.1,
-        );
+        let char_idx =
+            editor.line_col_to_char_idx(editor.viewport.cursor_pos.0, editor.viewport.cursor_pos.1);
         self.set_temporary_status_message(format!(
             "Line: {}/{} | Col: {} | Char: {}/{}",
             line,

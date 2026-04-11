@@ -53,9 +53,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 pub fn fuzzy_filter(query: &str, candidates: &[(usize, String)]) -> Vec<(usize, String, i32)> {
     let mut scored: Vec<(usize, String, i32)> = candidates
         .iter()
-        .filter_map(|(idx, name)| {
-            fuzzy_score(query, name).map(|score| (*idx, name.clone(), score))
-        })
+        .filter_map(|(idx, name)| fuzzy_score(query, name).map(|score| (*idx, name.clone(), score)))
         .collect();
 
     scored.sort_by(|a, b| b.2.cmp(&a.2)); // highest score first
@@ -135,20 +133,14 @@ mod tests {
 
     #[test]
     fn test_fuzzy_filter_excludes_non_matches() {
-        let candidates = vec![
-            (0, "alpha.rs".to_string()),
-            (1, "beta.rs".to_string()),
-        ];
+        let candidates = vec![(0, "alpha.rs".to_string()), (1, "beta.rs".to_string())];
         let results = fuzzy_filter("xyz", &candidates);
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_fuzzy_filter_empty_query_returns_all() {
-        let candidates = vec![
-            (0, "a.rs".to_string()),
-            (1, "b.rs".to_string()),
-        ];
+        let candidates = vec![(0, "a.rs".to_string()), (1, "b.rs".to_string())];
         let results = fuzzy_filter("", &candidates);
         assert_eq!(results.len(), 2);
     }

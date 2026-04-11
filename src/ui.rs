@@ -276,7 +276,9 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
             let remaining_after = num_tabs - i - 1;
             let right_reserve = if remaining_after > 0 { 4 } else { 0 };
 
-            if used + tab_widths[i] > available_width.saturating_sub(right_reserve) && i != tabs.tab_scroll_offset {
+            if used + tab_widths[i] > available_width.saturating_sub(right_reserve)
+                && i != tabs.tab_scroll_offset
+            {
                 break;
             }
             if i == active {
@@ -442,9 +444,9 @@ fn draw_editor_horizontal_scroll(
         let cursor_col_on_screen = editor.viewport.cursor_pos.1.saturating_sub(h_offset);
         let cursor_x = cursor_col_on_screen as u16 + line_num_width as u16;
         f.set_cursor_position(Position::new(
-                cursor_x,
-                cursor_screen_y as u16 + editor_area.y,
-            ));
+            cursor_x,
+            cursor_screen_y as u16 + editor_area.y,
+        ));
     }
 }
 
@@ -504,12 +506,9 @@ fn draw_editor_word_wrap(
 
         let final_spans = apply_selection_highlighting(search_spans, line_idx, editor);
 
-        let line_width = line_content.len().max(
-            final_spans
-                .iter()
-                .map(|s| s.content.len())
-                .sum::<usize>(),
-        );
+        let line_width = line_content
+            .len()
+            .max(final_spans.iter().map(|s| s.content.len()).sum::<usize>());
         let rows_needed = if content_width == 0 || line_width == 0 {
             1
         } else {
@@ -536,14 +535,14 @@ fn draw_editor_word_wrap(
 
             if show_line_numbers {
                 if sub_row == 0 {
-                    let line_num =
-                        format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
-                    styled_spans
-                        .push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+                    let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
+                    styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
                 } else {
                     let empty_num = format!("{:width$} ", "", width = line_num_width - 1);
-                    styled_spans
-                        .push(Span::styled(empty_num, Style::default().fg(Color::DarkGray)));
+                    styled_spans.push(Span::styled(
+                        empty_num,
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
             }
 
@@ -591,10 +590,7 @@ fn draw_editor_word_wrap(
                 editor.viewport.cursor_pos.1
             };
             let cursor_x = cursor_col_in_row as u16 + line_num_width as u16;
-            f.set_cursor_position(Position::new(
-                    cursor_x,
-                    screen_y as u16 + editor_area.y,
-                ));
+            f.set_cursor_position(Position::new(cursor_x, screen_y as u16 + editor_area.y));
         }
     }
 }

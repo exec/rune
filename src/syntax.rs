@@ -8,8 +8,8 @@ const MAX_CACHE_ENTRIES: usize = 1000;
 #[derive(Clone)]
 pub struct HighlightedLine {
     pub spans: Rc<Vec<(Style, String)>>,
-    pub version: u64,       // For cache invalidation
-    pub access_order: u64,  // For LRU eviction
+    pub version: u64,      // For cache invalidation
+    pub access_order: u64, // For LRU eviction
 }
 
 pub struct SyntaxHighlighter {
@@ -493,7 +493,6 @@ impl SyntaxHighlighter {
             _ => Style::default(),
         }
     }
-
 }
 
 impl Default for SyntaxHighlighter {

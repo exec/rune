@@ -1,6 +1,6 @@
 mod helpers;
-use helpers::*;
 use crossterm::event::KeyCode;
+use helpers::*;
 
 #[test]
 fn test_insert_char() {

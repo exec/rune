@@ -165,9 +165,7 @@ fn run_editor(
         if event::poll(constants::EVENT_POLL_INTERVAL)? {
             match event::read()? {
                 Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press
-                        && input::handle_key_event(tabs, key)?
-                    {
+                    if key.kind == KeyEventKind::Press && input::handle_key_event(tabs, key)? {
                         break;
                     }
                 }

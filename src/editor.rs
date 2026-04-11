@@ -45,12 +45,7 @@ impl UndoManager {
     }
 
     /// Apply undo or redo. `is_undo=true` pops from undo_stack, pushes to redo_stack.
-    fn apply(
-        &mut self,
-        is_undo: bool,
-        rope: &mut Rope,
-        cursor_pos: &mut (usize, usize),
-    ) -> bool {
+    fn apply(&mut self, is_undo: bool, rope: &mut Rope, cursor_pos: &mut (usize, usize)) -> bool {
         let (from, to) = if is_undo {
             (&mut self.undo_stack, &mut self.redo_stack)
         } else {
@@ -167,11 +162,7 @@ impl Editor {
         let content = fs::read_to_string(&path)?;
         self.rope = Rope::from_str(&content);
 
-        let first_line = self
-            .rope
-            .line(0)
-            .as_str()
-            .map(|s| s.trim_end_matches('\n'));
+        let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
         self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
         self.highlighter.set_syntax(self.syntax_name.as_deref());
 
@@ -211,8 +202,7 @@ impl Editor {
             if pos > 0 {
                 self.save_undo_state();
 
-                let junction_col =
-                    line_display_width(&self.rope, self.viewport.cursor_pos.0 - 1);
+                let junction_col = line_display_width(&self.rope, self.viewport.cursor_pos.0 - 1);
 
                 self.rope.remove(pos - 1..pos);
                 self.mark_document_changed(self.viewport.cursor_pos.0 - 1);
@@ -281,8 +271,7 @@ impl Editor {
             self.viewport.cursor_pos.1 -= 1;
         } else if self.viewport.cursor_pos.0 > 0 {
             self.viewport.cursor_pos.0 -= 1;
-            self.viewport.cursor_pos.1 =
-                line_display_width(&self.rope, self.viewport.cursor_pos.0);
+            self.viewport.cursor_pos.1 = line_display_width(&self.rope, self.viewport.cursor_pos.0);
         }
     }
 
@@ -473,8 +462,7 @@ impl Editor {
             MouseEventKind::Down(_) => {
                 let clicked_line = self.viewport.viewport_offset.0 + event.row as usize;
                 // Subtract gutter width and add horizontal scroll offset
-                let clicked_col = (event.column as usize)
-                    .saturating_sub(line_num_width)
+                let clicked_col = (event.column as usize).saturating_sub(line_num_width)
                     + self.viewport.viewport_offset.1;
 
                 if clicked_line < self.rope.len_lines() {
@@ -533,10 +521,8 @@ impl Editor {
         let bytes = text.as_bytes().to_vec();
 
         // Convert text cursor position to byte offset
-        let char_idx = self.line_col_to_char_idx(
-            self.viewport.cursor_pos.0,
-            self.viewport.cursor_pos.1,
-        );
+        let char_idx =
+            self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
         let byte_offset = text
             .char_indices()
             .nth(char_idx)
@@ -560,10 +546,8 @@ impl Editor {
         self.search.search_matches = self.search.find_all_matches(&self.rope);
 
         if !self.search.search_matches.is_empty() {
-            let cursor_char_idx = self.line_col_to_char_idx(
-                self.viewport.cursor_pos.0,
-                self.viewport.cursor_pos.1,
-            );
+            let cursor_char_idx =
+                self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
 
             self.search.current_match_index = self
                 .search
@@ -709,10 +693,16 @@ impl Editor {
     pub fn toggle_comment(&mut self) {
         let comment_str = match self.syntax_name.as_deref() {
             Some("Rust") | Some("C") | Some("C++") | Some("Go") | Some("JavaScript")
-            | Some("TypeScript") | Some("Java") | Some("Swift") | Some("Kotlin")
-            | Some("Zig") => "// ",
-            Some("Python") | Some("Ruby") | Some("Shell Script (Bash)") | Some("Perl")
-            | Some("R") | Some("YAML") | Some("TOML") => "# ",
+            | Some("TypeScript") | Some("Java") | Some("Swift") | Some("Kotlin") | Some("Zig") => {
+                "// "
+            }
+            Some("Python")
+            | Some("Ruby")
+            | Some("Shell Script (Bash)")
+            | Some("Perl")
+            | Some("R")
+            | Some("YAML")
+            | Some("TOML") => "# ",
             Some("Lua") | Some("SQL") => "-- ",
             Some("HTML") | Some("XML") | Some("CSS") => return,
             _ => "// ",
@@ -830,7 +820,10 @@ impl Editor {
             dcol += UnicodeWidthChar::width(ch).unwrap_or(0);
         }
 
-        while col > 0 && line_chars.get(col.saturating_sub(1)).is_some_and(|c| c.is_whitespace())
+        while col > 0
+            && line_chars
+                .get(col.saturating_sub(1))
+                .is_some_and(|c| c.is_whitespace())
         {
             col -= 1;
         }

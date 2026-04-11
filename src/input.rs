@@ -11,9 +11,7 @@ pub fn handle_key_event(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         InputMode::ConfirmCloseTab => handle_confirm_close_tab(tabs, key),
         InputMode::OptionsMenu => handle_options_menu(tabs, key),
         InputMode::FindOptionsMenu => handle_find_options_menu(tabs, key),
-        InputMode::EnteringFilename | InputMode::EnteringSaveAs => {
-            handle_filename_input(tabs, key)
-        }
+        InputMode::EnteringFilename | InputMode::EnteringSaveAs => handle_filename_input(tabs, key),
         InputMode::OpenFileCurrentTab | InputMode::OpenFileNewTab => {
             handle_open_file_input(tabs, key)
         }
@@ -212,11 +210,7 @@ fn handle_options_menu(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.config.auto_indent = !tabs.config.auto_indent;
             tabs.set_temporary_status_message(format!(
                 "Auto-indent: {}",
-                if tabs.config.auto_indent {
-                    "ON"
-                } else {
-                    "OFF"
-                }
+                if tabs.config.auto_indent { "ON" } else { "OFF" }
             ));
             tabs.input_mode = InputMode::Normal;
             tabs.needs_redraw = true;
@@ -458,11 +452,7 @@ fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 && tabs.active_editor().search.find_navigation_mode
                     == FindNavigationMode::HistoryBrowsing
             {
-                if tabs
-                    .active_editor_mut()
-                    .search
-                    .navigate_search_history_up()
-                {
+                if tabs.active_editor_mut().search.navigate_search_history_up() {
                     let search_buf = tabs.active_editor().search.search_buffer.clone();
                     tabs.status_message = format!("Find: {}", search_buf);
                     tabs.needs_redraw = true;
@@ -651,8 +641,7 @@ fn handle_replace(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 tabs.active_editor_mut().search.replace_buffer.pop();
                 let search_buf = tabs.active_editor().search.search_buffer.clone();
                 let replace_buf = tabs.active_editor().search.replace_buffer.clone();
-                tabs.status_message =
-                    format!("Replace '{}' with: {}", search_buf, replace_buf);
+                tabs.status_message = format!("Replace '{}' with: {}", search_buf, replace_buf);
                 tabs.needs_redraw = true;
             }
         },
@@ -667,8 +656,7 @@ fn handle_replace(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 tabs.active_editor_mut().search.replace_buffer.push(c);
                 let search_buf = tabs.active_editor().search.search_buffer.clone();
                 let replace_buf = tabs.active_editor().search.replace_buffer.clone();
-                tabs.status_message =
-                    format!("Replace '{}' with: {}", search_buf, replace_buf);
+                tabs.status_message = format!("Replace '{}' with: {}", search_buf, replace_buf);
                 tabs.needs_redraw = true;
             }
         },
@@ -1047,10 +1035,8 @@ fn handle_verbatim_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         KeyCode::Tab => {
             let editor = tabs.active_editor_mut();
             editor.save_undo_state();
-            let pos = editor.line_col_to_char_idx(
-                editor.viewport.cursor_pos.0,
-                editor.viewport.cursor_pos.1,
-            );
+            let pos = editor
+                .line_col_to_char_idx(editor.viewport.cursor_pos.0, editor.viewport.cursor_pos.1);
             editor.rope.insert_char(pos, '\t');
             editor.mark_document_changed(editor.viewport.cursor_pos.0);
             editor.viewport.cursor_pos.1 += 1;
@@ -1120,16 +1106,16 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             };
 
             // Check if there's a selection
-            let selection_text =
-                tabs.active_editor()
-                    .get_selection_range()
-                    .map(|(start, end)| {
-                        tabs.active_editor()
-                            .rope
-                            .slice(start..end)
-                            .chars()
-                            .collect::<String>()
-                    });
+            let selection_text = tabs
+                .active_editor()
+                .get_selection_range()
+                .map(|(start, end)| {
+                    tabs.active_editor()
+                        .rope
+                        .slice(start..end)
+                        .chars()
+                        .collect::<String>()
+                });
 
             // Execute the command with timeout
             use std::process::{Command, Stdio};
@@ -1219,8 +1205,7 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                         let clamped = end_pos.min(char_count.saturating_sub(1));
                         let line = editor.rope.char_to_line(clamped);
                         let line_start = editor.rope.line_to_char(line);
-                        editor.viewport.cursor_pos =
-                            (line, end_pos.saturating_sub(line_start));
+                        editor.viewport.cursor_pos = (line, end_pos.saturating_sub(line_start));
                     } else {
                         // Insert output at cursor
                         let editor = tabs.active_editor_mut();

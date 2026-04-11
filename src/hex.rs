@@ -20,7 +20,6 @@ impl HexViewState {
             scroll_offset: 0,
         }
     }
-
 }
 
 fn byte_to_ascii_char(b: u8) -> char {

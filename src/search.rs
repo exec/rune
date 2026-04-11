@@ -77,10 +77,7 @@ impl SearchState {
             let line_matches = if self.case_sensitive {
                 find_matches_in_line(line_content, search_term)
             } else {
-                find_matches_in_line(
-                    &line_content.to_lowercase(),
-                    &search_term.to_lowercase(),
-                )
+                find_matches_in_line(&line_content.to_lowercase(), &search_term.to_lowercase())
             };
 
             for col in line_matches {
