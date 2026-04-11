@@ -94,10 +94,26 @@ fn main() -> Result<()> {
     let files = expand_paths(&cli.files, cli.recursive);
 
     for (i, file) in files.into_iter().enumerate() {
-        if i == 0 {
-            tab_manager.active_editor_mut().load_file(file)?;
+        if file.exists() {
+            if i == 0 {
+                if let Err(e) = tab_manager.active_editor_mut().load_file(file) {
+                    tab_manager.set_temporary_status_message(format!("Error: {e}"));
+                }
+            } else if let Err(e) = tab_manager.open_in_new_tab(file) {
+                tab_manager.set_temporary_status_message(format!("Error: {e}"));
+            }
         } else {
-            tab_manager.open_in_new_tab(file)?;
+            // New file — set the path so it saves there, but don't try to read
+            if i == 0 {
+                let editor = tab_manager.active_editor_mut();
+                editor.display_name = file.display().to_string();
+                editor.file_path = Some(file);
+            } else {
+                let mut editor = rune::editor::Editor::new_buffer();
+                editor.display_name = file.display().to_string();
+                editor.file_path = Some(file);
+                tab_manager.tabs.push(editor);
+            }
         }
     }
 
@@ -108,9 +124,10 @@ fn main() -> Result<()> {
 
     let result = run_editor(&mut terminal, &mut tab_manager);
 
-    disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen)?;
-    crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture)?;
+    // Always clean up terminal state, even if run_editor returned an error
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout(), LeaveAlternateScreen);
+    let _ = crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture);
 
     result
 }

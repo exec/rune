@@ -235,18 +235,91 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
 }
 
 /// Render the tab bar at the top of the screen.
-fn draw_tab_bar(f: &mut Frame, tabs: &TabManager, area: Rect) {
-    let mut spans: Vec<Span> = Vec::new();
+fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     let available_width = area.width as usize;
+    let active = tabs.active_tab;
+    let num_tabs = tabs.tabs.len();
+
+    // Pre-compute tab title widths
+    let tab_titles: Vec<String> = tabs
+        .tabs
+        .iter()
+        .map(|tab| {
+            let modified = if tab.modified { "*" } else { "" };
+            format!(" {}{} ", tab.display_name, modified)
+        })
+        .collect();
+    let tab_widths: Vec<usize> = tab_titles.iter().map(|t| t.len()).collect();
+
+    // Adjust scroll offset so the active tab is always visible.
+    // 1) If active tab is before the scroll offset, scroll left.
+    if active < tabs.tab_scroll_offset {
+        tabs.tab_scroll_offset = active;
+    }
+
+    // 2) If active tab is past the right edge, scroll right until it fits.
+    loop {
+        let left_indicator_width = if tabs.tab_scroll_offset > 0 {
+            format!(" <{} ", tabs.tab_scroll_offset).len()
+        } else {
+            0
+        };
+
+        let mut used = left_indicator_width;
+        let mut active_fits = false;
+        for i in tabs.tab_scroll_offset..num_tabs {
+            // Reserve space for right overflow indicator
+            let remaining_after = num_tabs - i - 1;
+            let right_reserve = if remaining_after > 0 { 4 } else { 0 };
+
+            if used + tab_widths[i] > available_width.saturating_sub(right_reserve) && i != tabs.tab_scroll_offset {
+                break;
+            }
+            if i == active {
+                active_fits = true;
+            }
+            used += tab_widths[i];
+        }
+
+        if active_fits || tabs.tab_scroll_offset >= active {
+            break;
+        }
+        tabs.tab_scroll_offset += 1;
+        if tabs.tab_scroll_offset >= num_tabs {
+            tabs.tab_scroll_offset = active;
+            break;
+        }
+    }
+
+    // Clamp scroll offset
+    if tabs.tab_scroll_offset >= num_tabs {
+        tabs.tab_scroll_offset = 0;
+    }
+
+    // Now render
+    let mut spans: Vec<Span> = Vec::new();
     let mut used_width = 0;
 
-    for (i, tab) in tabs.tabs.iter().enumerate() {
-        let modified = if tab.modified { "*" } else { "" };
-        let title = format!(" {}{} ", tab.display_name, modified);
-        let title_len = title.len();
+    // Left overflow indicator
+    if tabs.tab_scroll_offset > 0 {
+        let left_label = format!(" <{} ", tabs.tab_scroll_offset);
+        used_width += left_label.len();
+        spans.push(Span::styled(
+            left_label,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
 
-        if used_width + title_len > available_width.saturating_sub(4) {
-            let remaining = tabs.tabs.len() - i;
+    for i in tabs.tab_scroll_offset..num_tabs {
+        let title = &tab_titles[i];
+        let title_len = tab_widths[i];
+
+        // Check if this tab fits; reserve space for right overflow indicator
+        let remaining_after = num_tabs - i - 1;
+        let right_reserve = if remaining_after > 0 { 4 } else { 0 };
+
+        if used_width + title_len > available_width.saturating_sub(right_reserve) {
+            let remaining = num_tabs - i;
             spans.push(Span::styled(
                 format!(" +{remaining} "),
                 Style::default().fg(Color::DarkGray),
@@ -254,12 +327,12 @@ fn draw_tab_bar(f: &mut Frame, tabs: &TabManager, area: Rect) {
             break;
         }
 
-        let style = if i == tabs.active_tab {
+        let style = if i == active {
             Style::default().bg(Color::Cyan).fg(Color::Black)
         } else {
             Style::default().bg(Color::DarkGray).fg(Color::White)
         };
-        spans.push(Span::styled(title, style));
+        spans.push(Span::styled(title.clone(), style));
         used_width += title_len;
     }
 
@@ -645,6 +718,10 @@ pub fn help_lines() -> Vec<&'static str> {
         "^T       New tab",
         "M-Left   Previous tab",
         "M-Right  Next tab",
+        "^PgUp    Previous tab",
+        "^PgDn    Next tab",
+        "M-,      Previous tab",
+        "M-.      Next tab",
         "M-W      Close tab",
         "^P       Fuzzy finder (switch tab)",
         "",

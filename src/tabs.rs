@@ -21,6 +21,8 @@ pub struct TabManager {
     // Fuzzy finder state
     pub fuzzy_query: String,
     pub fuzzy_selected: usize,
+    // Tab bar scroll offset (index of first visible tab)
+    pub tab_scroll_offset: usize,
 }
 
 impl Default for TabManager {
@@ -49,6 +51,7 @@ impl TabManager {
             needs_redraw: true,
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
+            tab_scroll_offset: 0,
         }
     }
 
@@ -70,6 +73,7 @@ impl TabManager {
             needs_redraw: true,
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
+            tab_scroll_offset: 0,
         }
     }
 
@@ -330,19 +334,19 @@ impl TabManager {
         self.status_message = "Cancelled".to_string();
     }
 
+    /// Try to quit: close the current tab, then move to the next modified tab.
+    /// Only returns true (quit the app) when the last tab is closed.
     pub fn try_quit(&mut self) -> bool {
         if self.active_editor().modified {
-            self.start_quit_confirmation();
+            let name = self.active_editor().display_name.clone();
+            self.input_mode = InputMode::ConfirmQuit;
+            self.status_message = format!("Save '{name}' before closing? (Y/N/Ctrl+C)");
+            self.needs_redraw = true;
             false
         } else {
-            true
+            // Current tab is clean — close it and continue
+            self.close_current_and_continue()
         }
-    }
-
-    fn start_quit_confirmation(&mut self) {
-        self.input_mode = InputMode::ConfirmQuit;
-        self.status_message = "Save modified buffer? (Y/N/Ctrl+C)".to_string();
-        self.needs_redraw = true;
     }
 
     pub fn handle_quit_confirmation(&mut self, save: bool) -> anyhow::Result<bool> {
@@ -351,19 +355,43 @@ impl TabManager {
         if save {
             if self.active_editor().file_path.is_some() {
                 self.save_file()?;
-                if !self.active_editor().modified {
-                    Ok(true)
-                } else {
-                    Ok(false)
+                if self.active_editor().modified {
+                    // Save failed — don't close
+                    return Ok(false);
                 }
             } else {
                 self.quit_after_save = true;
                 self.start_filename_input();
-                Ok(false)
+                return Ok(false);
             }
-        } else {
-            Ok(true)
         }
+
+        // Tab is either saved or user chose not to save — close it
+        Ok(self.close_current_and_continue())
+    }
+
+    /// Close the current tab. If more tabs remain, move to the next one
+    /// (prompting for unsaved changes if needed). Returns true only when
+    /// the very last tab has been closed (meaning the app should exit).
+    fn close_current_and_continue(&mut self) -> bool {
+        if self.tabs.len() <= 1 {
+            return true; // last tab — quit the app
+        }
+
+        self.tabs.remove(self.active_tab);
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+        self.needs_redraw = true;
+
+        // Check if the next tab also needs saving
+        if self.active_editor().modified {
+            let name = self.active_editor().display_name.clone();
+            self.input_mode = InputMode::ConfirmQuit;
+            self.status_message = format!("Save '{name}' before closing? (Y/N/Ctrl+C)");
+        }
+
+        false // more tabs remain
     }
 
     pub fn cancel_quit_confirmation(&mut self) {
@@ -824,12 +852,13 @@ impl TabManager {
         event: crossterm::event::MouseEvent,
         terminal_height: usize,
     ) {
-        // Row 0 is the tab bar -- adjust event row to account for it
+        // Row 0 is the tab bar -- only respond to clicks, not hover/drag
         let mut adjusted = event;
         if adjusted.row == 0 {
-            // Click on tab bar -- switch to clicked tab
-            self.handle_tab_bar_click(adjusted.column as usize);
-            self.needs_redraw = true;
+            if matches!(event.kind, crossterm::event::MouseEventKind::Down(_)) {
+                self.handle_tab_bar_click(adjusted.column as usize);
+                self.needs_redraw = true;
+            }
             return;
         }
         adjusted.row = adjusted.row.saturating_sub(1);

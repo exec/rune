@@ -826,6 +826,12 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::ALT, KeyCode::Right) => {
             tabs.next_tab();
         }
+        (KeyModifiers::ALT, KeyCode::Char(',')) => {
+            tabs.prev_tab();
+        }
+        (KeyModifiers::ALT, KeyCode::Char('.')) => {
+            tabs.next_tab();
+        }
         (KeyModifiers::ALT, KeyCode::Char('w')) => {
             if tabs.active_editor().modified {
                 tabs.input_mode = InputMode::ConfirmCloseTab;
@@ -930,6 +936,12 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         (_, KeyCode::Right) => {
             tabs.active_editor_mut().move_cursor_right();
             tabs.needs_redraw = true;
+        }
+        (KeyModifiers::CONTROL, KeyCode::PageUp) => {
+            tabs.prev_tab();
+        }
+        (KeyModifiers::CONTROL, KeyCode::PageDown) => {
+            tabs.next_tab();
         }
         (_, KeyCode::PageUp) => {
             tabs.active_editor_mut().page_up();
