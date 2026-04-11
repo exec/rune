@@ -21,17 +21,6 @@ impl HexViewState {
         }
     }
 
-    pub fn total_rows(&self) -> usize {
-        (self.raw_bytes.len() + BYTES_PER_ROW - 1) / BYTES_PER_ROW
-    }
-
-    pub fn cursor_row(&self) -> usize {
-        self.cursor / BYTES_PER_ROW
-    }
-
-    pub fn cursor_col(&self) -> usize {
-        self.cursor % BYTES_PER_ROW
-    }
 }
 
 fn byte_to_ascii_char(b: u8) -> char {
