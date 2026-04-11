@@ -1,36 +1,34 @@
 use ratatui::style::{Color, Style};
 use std::collections::HashMap;
 use std::path::Path;
-use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
+use std::rc::Rc;
+
+const MAX_CACHE_ENTRIES: usize = 1000;
 
 #[derive(Clone)]
 pub struct HighlightedLine {
-    pub spans: Vec<(Style, String)>,
-    pub version: u64, // For cache invalidation
+    pub spans: Rc<Vec<(Style, String)>>,
+    pub version: u64,       // For cache invalidation
+    pub access_order: u64,  // For LRU eviction
 }
 
 pub struct SyntaxHighlighter {
-    syntax_set: SyntaxSet,
-    #[allow(dead_code)]
-    theme_set: ThemeSet,
     // Cache for highlighted lines
     line_cache: HashMap<usize, HighlightedLine>,
     // Current file version for cache invalidation
     file_version: u64,
+    // Counter for LRU tracking
+    access_counter: u64,
     // Current syntax for language-specific highlighting
     current_syntax: Option<String>,
 }
 
 impl SyntaxHighlighter {
     pub fn new() -> Self {
-        let syntax_set = SyntaxSet::load_defaults_newlines();
-        let theme_set = ThemeSet::load_defaults();
-
         Self {
-            syntax_set,
-            theme_set,
             line_cache: HashMap::new(),
             file_version: 0,
+            access_counter: 0,
             current_syntax: None,
         }
     }
@@ -38,23 +36,48 @@ impl SyntaxHighlighter {
     pub fn detect_syntax(
         &self,
         file_path: Option<&Path>,
-        first_line: Option<&str>,
+        _first_line: Option<&str>,
     ) -> Option<String> {
         if let Some(path) = file_path {
             if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
-                if let Some(syntax) = self.syntax_set.find_syntax_by_extension(extension) {
-                    return Some(syntax.name.clone());
-                }
+                return Self::syntax_name_for_extension(extension);
             }
         }
-
-        if let Some(line) = first_line {
-            if let Some(syntax) = self.syntax_set.find_syntax_by_first_line(line) {
-                return Some(syntax.name.clone());
-            }
-        }
-
         None
+    }
+
+    /// Map file extensions to syntax names without loading SyntaxSet/ThemeSet
+    fn syntax_name_for_extension(ext: &str) -> Option<String> {
+        let name = match ext.to_lowercase().as_str() {
+            "rs" => "Rust",
+            "py" | "pyw" => "Python",
+            "js" | "mjs" | "cjs" => "JavaScript",
+            "ts" | "mts" | "cts" => "TypeScript",
+            "go" => "Go",
+            "sh" | "bash" | "zsh" => "Shell Script (Bash)",
+            "c" => "C",
+            "cpp" | "cc" | "cxx" | "hpp" | "h" => "C++",
+            "json" => "JSON",
+            "yml" | "yaml" => "YAML",
+            "toml" => "TOML",
+            "md" | "markdown" => "Markdown",
+            "html" | "htm" => "HTML",
+            "css" => "CSS",
+            "java" => "Java",
+            "rb" => "Ruby",
+            "php" => "PHP",
+            "swift" => "Swift",
+            "kt" | "kts" => "Kotlin",
+            "dockerfile" => "Dockerfile",
+            "xml" => "XML",
+            "sql" => "SQL",
+            "lua" => "Lua",
+            "r" => "R",
+            "pl" | "pm" => "Perl",
+            "zig" => "Zig",
+            _ => return None,
+        };
+        Some(name.to_string())
     }
 
     pub fn set_syntax(&mut self, syntax_name: Option<&str>) {
@@ -70,25 +93,51 @@ impl SyntaxHighlighter {
         self.file_version += 1;
     }
 
-    pub fn highlight_line(&mut self, line_num: usize, line_text: &str) -> Vec<(Style, String)> {
-        // Check cache first
-        if let Some(cached) = self.line_cache.get(&line_num) {
+    /// Evict least recently used entries when cache exceeds MAX_CACHE_ENTRIES
+    fn evict_lru(&mut self) {
+        if self.line_cache.len() <= MAX_CACHE_ENTRIES {
+            return;
+        }
+        let target = MAX_CACHE_ENTRIES * 3 / 4; // Evict down to 75%
+        let mut entries: Vec<(usize, u64)> = self
+            .line_cache
+            .iter()
+            .map(|(&line, cached)| (line, cached.access_order))
+            .collect();
+        entries.sort_by_key(|&(_, order)| order);
+        let to_remove = self.line_cache.len() - target;
+        for &(line, _) in entries.iter().take(to_remove) {
+            self.line_cache.remove(&line);
+        }
+    }
+
+    pub fn highlight_line(&mut self, line_num: usize, line_text: &str) -> Rc<Vec<(Style, String)>> {
+        // Check cache first — return Rc clone (cheap) instead of deep clone
+        if let Some(cached) = self.line_cache.get_mut(&line_num) {
             if cached.version == self.file_version {
-                return cached.spans.clone();
+                self.access_counter += 1;
+                cached.access_order = self.access_counter;
+                return Rc::clone(&cached.spans);
             }
         }
 
         // Highlight the line using language-aware highlighting
-        let spans = self.highlight_simple(line_text);
+        let spans = Rc::new(self.highlight_simple(line_text));
+
+        self.access_counter += 1;
 
         // Cache the result
         self.line_cache.insert(
             line_num,
             HighlightedLine {
-                spans: spans.clone(),
+                spans: Rc::clone(&spans),
                 version: self.file_version,
+                access_order: self.access_counter,
             },
         );
+
+        // LRU eviction if cache is too large
+        self.evict_lru();
 
         spans
     }
@@ -214,7 +263,26 @@ impl SyntaxHighlighter {
             result.push((style, current_word));
         }
 
-        result
+        // P15: Coalesce adjacent spans with the same style to reduce allocations
+        Self::coalesce_spans(result)
+    }
+
+    /// Merge consecutive spans that share the same style into a single span
+    fn coalesce_spans(spans: Vec<(Style, String)>) -> Vec<(Style, String)> {
+        if spans.len() <= 1 {
+            return spans;
+        }
+        let mut coalesced: Vec<(Style, String)> = Vec::with_capacity(spans.len());
+        for (style, text) in spans {
+            if let Some(last) = coalesced.last_mut() {
+                if last.0 == style {
+                    last.1.push_str(&text);
+                    continue;
+                }
+            }
+            coalesced.push((style, text));
+        }
+        coalesced
     }
 
     fn get_keyword_style(&self, word: &str) -> Style {
@@ -426,16 +494,6 @@ impl SyntaxHighlighter {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn get_cache_size(&self) -> usize {
-        self.line_cache.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_cache(&mut self) {
-        self.line_cache.clear();
-        self.file_version += 1;
-    }
 }
 
 impl Default for SyntaxHighlighter {
