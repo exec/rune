@@ -312,7 +312,7 @@ impl TabManager {
 
     pub fn finish_filename_input(&mut self) -> anyhow::Result<bool> {
         if self.filename_buffer.is_empty() {
-            self.status_message = "Cancelled".to_string();
+            self.set_temporary_status_message("Cancelled".to_string());
             self.input_mode = InputMode::Normal;
             self.quit_after_save = false;
             return Ok(false);
@@ -338,7 +338,7 @@ impl TabManager {
         self.input_mode = InputMode::Normal;
         self.filename_buffer.clear();
         self.quit_after_save = false;
-        self.status_message = "Cancelled".to_string();
+        self.set_temporary_status_message("Cancelled".to_string());
     }
 
     /// Try to quit: close the current tab, then move to the next modified tab.
@@ -403,8 +403,7 @@ impl TabManager {
 
     pub fn cancel_quit_confirmation(&mut self) {
         self.input_mode = InputMode::Normal;
-        self.status_message = "Cancelled".to_string();
-        self.needs_redraw = true;
+        self.set_temporary_status_message("Cancelled".to_string());
     }
 
     pub fn open_options_menu(&mut self) {
