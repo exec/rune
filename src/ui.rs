@@ -22,7 +22,7 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
             String::new(),
         ),
         InputMode::OptionsMenu => (
-            "M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  Esc: Back".to_string(),
+            "M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  I: Auto-indent  P: Whitespace  Esc: Back".to_string(),
             String::new(),
         ),
         InputMode::Find => (
@@ -126,7 +126,7 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
 
                 let line_content = line_text.trim_end_matches('\n');
 
-                styled_spans.extend(apply_search_highlighting(
+                let mut search_spans = apply_search_highlighting(
                     &highlighted_spans,
                     line_content,
                     line_idx,
@@ -134,7 +134,18 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
                     &editor.search.search_matches,
                     editor.search.current_match_index,
                     editor.search.case_sensitive,
-                ));
+                );
+
+                if editor.config.show_whitespace {
+                    for span in &mut search_spans {
+                        let rendered = render_whitespace(&span.content);
+                        if rendered != span.content.as_ref() {
+                            *span = Span::styled(rendered, span.style);
+                        }
+                    }
+                }
+
+                styled_spans.extend(search_spans);
 
                 lines.push(Line::from(styled_spans));
             } else {
@@ -175,7 +186,16 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
 
     // Draw status bar
     let status_text = if !editor.status_message.is_empty() {
-        editor.status_message.clone()
+        if editor.config.constant_cursor_position {
+            format!(
+                "{} | Ln {}, Col {}",
+                editor.status_message,
+                editor.viewport.cursor_pos.0 + 1,
+                editor.viewport.cursor_pos.1 + 1
+            )
+        } else {
+            editor.status_message.clone()
+        }
     } else if editor.input_mode == InputMode::HexView {
         if let Some(state) = &editor.hex_state {
             let filename = editor
@@ -298,8 +318,14 @@ fn draw_help_modal(f: &mut Frame, area: Rect) {
 ─────────────────────────────────────────
 ^Z       Undo
 ^R       Redo
-^K       Cut line
+^K       Cut line/selection
 ^U       Paste
+M-6      Copy line/selection
+M-A      Toggle mark (selection)
+M-}      Indent selection
+M-{      Unindent selection
+M-;      Toggle comment
+Delete   Delete forward
 
 ─────────────────────────────────────────
                NAVIGATION
@@ -307,14 +333,21 @@ fn draw_help_modal(f: &mut Frame, area: Rect) {
 ^F       Find text
 ^\       Replace text
 ^G       Go to line
+^C       Cursor position info
 ^V       Page down
 ^Y       Page up
+^Home    Start of file
+^End     End of file
+^Left    Previous word
+^Right   Next word
+M-]      Match bracket
 Arrows   Move cursor
 
 ─────────────────────────────────────────
                   VIEW
 ─────────────────────────────────────────
 ^B       Hex view (live buffer)
+M-P      Toggle whitespace display
 
 ─────────────────────────────────────────
                 OPTIONS
@@ -324,7 +357,11 @@ Arrows   Move cursor
   L      Toggle line numbers
   W      Toggle word wrap
   T      Set tab width
+  I      Toggle auto-indent
+  P      Toggle whitespace
 
+─────────────────────────────────────────
+   Note: M- prefix means Alt/Meta key
 ─────────────────────────────────────────
           Press ^H or Esc to close
 ─────────────────────────────────────────"#;
@@ -431,6 +468,10 @@ fn apply_search_highlighting(
     }
 
     result_spans
+}
+
+fn render_whitespace(text: &str) -> String {
+    text.replace(' ', "\u{00B7}").replace('\t', "\u{2192}")
 }
 
 fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usize) -> Style {
