@@ -24,6 +24,7 @@ pub mod constants {
 
 mod config;
 mod editor;
+mod hex;
 mod input;
 mod search;
 mod syntax;
