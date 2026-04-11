@@ -718,7 +718,7 @@ fn handle_goto_line(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
 }
 
 fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
-    let is_read_only = tabs.active_editor().display_name == "[Help]";
+    let is_read_only = tabs.read_only || tabs.active_editor().display_name == "[Help]";
 
     // Reset cut accumulation for any key that isn't Ctrl+K
     if !(key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('k')) {

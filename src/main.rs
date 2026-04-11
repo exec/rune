@@ -24,6 +24,22 @@ struct Cli {
     /// Recursively open files in directories
     #[arg(short, long)]
     recursive: bool,
+
+    /// Open in read-only (view) mode
+    #[arg(short = 'v', long = "view")]
+    view: bool,
+
+    /// Start with line numbers enabled
+    #[arg(long = "line-numbers")]
+    line_numbers: bool,
+
+    /// Start with word wrap enabled
+    #[arg(long = "word-wrap")]
+    word_wrap: bool,
+
+    /// Start with mouse support disabled
+    #[arg(long = "no-mouse")]
+    no_mouse: bool,
 }
 
 /// Expand a list of paths into individual files.
@@ -76,8 +92,30 @@ fn is_binary(path: &PathBuf) -> bool {
     buf[..n].contains(&0)
 }
 
+/// Extract `+LINE` or `+LINE,COL` positional arguments from argv before clap parsing.
+fn extract_position(args: &mut Vec<String>) -> Option<(usize, Option<usize>)> {
+    let mut pos = None;
+    args.retain(|arg| {
+        if let Some(rest) = arg.strip_prefix('+') {
+            if let Some((line, col)) = rest.split_once(',') {
+                if let (Ok(l), Ok(c)) = (line.parse::<usize>(), col.parse::<usize>()) {
+                    pos = Some((l, Some(c)));
+                    return false;
+                }
+            } else if let Ok(l) = rest.parse::<usize>() {
+                pos = Some((l, None));
+                return false;
+            }
+        }
+        true
+    });
+    pos
+}
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut args: Vec<String> = std::env::args().collect();
+    let position = extract_position(&mut args);
+    let cli = Cli::parse_from(args);
 
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
@@ -86,6 +124,20 @@ fn main() -> Result<()> {
     terminal.clear()?;
 
     let mut tab_manager = tabs::TabManager::new();
+
+    // Apply CLI flag overrides
+    if cli.view {
+        tab_manager.read_only = true;
+    }
+    if cli.line_numbers {
+        tab_manager.config.show_line_numbers = true;
+    }
+    if cli.word_wrap {
+        tab_manager.config.word_wrap = true;
+    }
+    if cli.no_mouse {
+        tab_manager.config.mouse_enabled = false;
+    }
 
     if tab_manager.config.mouse_enabled {
         crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture)?;
@@ -120,6 +172,17 @@ fn main() -> Result<()> {
     if !cli.files.is_empty() {
         tab_manager.active_tab = 0;
         tab_manager.resolve_display_names();
+    }
+
+    // Apply +LINE or +LINE,COL positioning
+    if let Some((line, col)) = position {
+        tab_manager.goto_line(line);
+        if let Some(c) = col {
+            let editor = tab_manager.active_editor_mut();
+            if c > 0 {
+                editor.viewport.cursor_pos.1 = c - 1;
+            }
+        }
     }
 
     let result = run_editor(&mut terminal, &mut tab_manager);
@@ -278,5 +341,53 @@ mod tests {
         let file = dir.path().join("bin.dat");
         fs::write(&file, b"\x00\x01\x02").unwrap();
         assert!(is_binary(&file));
+    }
+
+    #[test]
+    fn test_extract_position_line_only() {
+        let mut args = vec!["rune".to_string(), "+42".to_string(), "main.rs".to_string()];
+        let pos = extract_position(&mut args);
+        assert_eq!(pos, Some((42, None)));
+        assert_eq!(args, vec!["rune", "main.rs"]);
+    }
+
+    #[test]
+    fn test_extract_position_line_and_col() {
+        let mut args = vec![
+            "rune".to_string(),
+            "+42,10".to_string(),
+            "main.rs".to_string(),
+        ];
+        let pos = extract_position(&mut args);
+        assert_eq!(pos, Some((42, Some(10))));
+        assert_eq!(args, vec!["rune", "main.rs"]);
+    }
+
+    #[test]
+    fn test_extract_position_none() {
+        let mut args = vec!["rune".to_string(), "main.rs".to_string()];
+        let pos = extract_position(&mut args);
+        assert_eq!(pos, None);
+        assert_eq!(args, vec!["rune", "main.rs"]);
+    }
+
+    #[test]
+    fn test_extract_position_after_file() {
+        let mut args = vec![
+            "rune".to_string(),
+            "main.rs".to_string(),
+            "+100".to_string(),
+        ];
+        let pos = extract_position(&mut args);
+        assert_eq!(pos, Some((100, None)));
+        assert_eq!(args, vec!["rune", "main.rs"]);
+    }
+
+    #[test]
+    fn test_view_flag_sets_read_only() {
+        let mut tab_manager = tabs::TabManager::new();
+        assert!(!tab_manager.read_only);
+        tab_manager.read_only = true;
+        assert!(tab_manager.read_only);
     }
 }

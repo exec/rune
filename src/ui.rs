@@ -194,8 +194,9 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
             String::new()
         };
 
+        let view_mode = if tabs.read_only { " | VIEW MODE" } else { "" };
         format!(
-            "{} {} | Ln {}, Col {} | Mouse: {}{}",
+            "{} {} | Ln {}, Col {} | Mouse: {}{}{}",
             filename,
             modified_indicator,
             editor.viewport.cursor_pos.0 + 1,
@@ -205,7 +206,8 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
             } else {
                 "OFF"
             },
-            search_modes
+            search_modes,
+            view_mode
         )
     };
 

@@ -25,6 +25,8 @@ pub struct TabManager {
     pub tab_scroll_offset: usize,
     // Pending command for execute confirmation
     pub pending_command: Option<String>,
+    // Global read-only mode (--view flag)
+    pub read_only: bool,
 }
 
 impl Default for TabManager {
@@ -55,6 +57,7 @@ impl TabManager {
             fuzzy_selected: 0,
             tab_scroll_offset: 0,
             pending_command: None,
+            read_only: false,
         }
     }
 
@@ -78,6 +81,7 @@ impl TabManager {
             fuzzy_selected: 0,
             tab_scroll_offset: 0,
             pending_command: None,
+            read_only: false,
         }
     }
 
