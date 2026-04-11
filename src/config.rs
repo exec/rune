@@ -58,3 +58,40 @@ pub fn save_config(config: &Config) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default_values() {
+        let config = Config::default();
+        assert!(config.mouse_enabled);
+        assert!(!config.show_line_numbers);
+        assert_eq!(config.tab_width, super::super::constants::DEFAULT_TAB_WIDTH);
+        assert!(!config.word_wrap);
+        assert!(config.auto_indent);
+        assert!(!config.show_whitespace);
+        assert!(!config.constant_cursor_position);
+        assert!(!config.backup_on_save);
+    }
+
+    #[test]
+    fn test_config_round_trip() {
+        let mut config = Config::default();
+        config.tab_width = 8;
+        config.word_wrap = true;
+        config.show_line_numbers = true;
+        config.backup_on_save = true;
+
+        let serialized = toml::to_string(&config).expect("serialize");
+        let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
+
+        assert_eq!(deserialized.tab_width, 8);
+        assert!(deserialized.word_wrap);
+        assert!(deserialized.show_line_numbers);
+        assert!(deserialized.backup_on_save);
+        assert_eq!(deserialized.mouse_enabled, config.mouse_enabled);
+        assert_eq!(deserialized.auto_indent, config.auto_indent);
+    }
+}

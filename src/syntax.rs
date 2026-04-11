@@ -500,3 +500,66 @@ impl Default for SyntaxHighlighter {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_detect_syntax_rust() {
+        let h = SyntaxHighlighter::new();
+        let result = h.detect_syntax(Some(Path::new("main.rs")), None);
+        assert_eq!(result, Some("Rust".to_string()));
+    }
+
+    #[test]
+    fn test_detect_syntax_python() {
+        let h = SyntaxHighlighter::new();
+        let result = h.detect_syntax(Some(Path::new("script.py")), None);
+        assert_eq!(result, Some("Python".to_string()));
+    }
+
+    #[test]
+    fn test_detect_syntax_javascript() {
+        let h = SyntaxHighlighter::new();
+        let result = h.detect_syntax(Some(Path::new("app.js")), None);
+        assert_eq!(result, Some("JavaScript".to_string()));
+    }
+
+    #[test]
+    fn test_detect_syntax_unknown() {
+        let h = SyntaxHighlighter::new();
+        let result = h.detect_syntax(Some(Path::new("file.xyz")), None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_get_rust_keyword_style() {
+        let mut h = SyntaxHighlighter::new();
+        h.set_syntax(Some("Rust"));
+        let kw_style = h.get_rust_keyword_style("fn");
+        assert_eq!(kw_style.fg, Some(Color::Magenta));
+        let ctrl_style = h.get_rust_keyword_style("if");
+        assert_eq!(ctrl_style.fg, Some(Color::Yellow));
+        let type_style = h.get_rust_keyword_style("String");
+        assert_eq!(type_style.fg, Some(Color::Blue));
+        let plain_style = h.get_rust_keyword_style("foobar");
+        assert_eq!(plain_style, Style::default());
+    }
+
+    #[test]
+    fn test_highlight_line_returns_non_empty_spans() {
+        let mut h = SyntaxHighlighter::new();
+        h.set_syntax(Some("Rust"));
+        let spans = h.highlight_line(0, "fn main() { let x = 42; }");
+        assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn test_highlight_line_empty_input() {
+        let mut h = SyntaxHighlighter::new();
+        let spans = h.highlight_line(0, "");
+        assert!(spans.is_empty());
+    }
+}
