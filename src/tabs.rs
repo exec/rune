@@ -1052,4 +1052,50 @@ mod tests {
         assert!(t.status_message.contains("Line: 2"));
         assert!(t.status_message.contains("Col: 4"));
     }
+
+    #[test]
+    fn test_backup_on_save() {
+        let dir = std::env::temp_dir().join("rune_test_backup");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("test_backup.txt");
+        let backup_path = dir.join("test_backup.txt~");
+
+        // Write initial content
+        std::fs::write(&file_path, "original").unwrap();
+
+        let mut t = make_tabs("modified content");
+        t.config.backup_on_save = true;
+        t.active_editor_mut().file_path = Some(file_path.clone());
+        t.perform_save(file_path.clone()).unwrap();
+
+        // Backup should exist with original content
+        assert!(backup_path.exists());
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "modified content"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_no_backup_when_disabled() {
+        let dir = std::env::temp_dir().join("rune_test_no_backup");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("test_no_backup.txt");
+        let backup_path = dir.join("test_no_backup.txt~");
+
+        std::fs::write(&file_path, "original").unwrap();
+
+        let mut t = make_tabs("modified");
+        t.config.backup_on_save = false;
+        t.active_editor_mut().file_path = Some(file_path.clone());
+        t.perform_save(file_path.clone()).unwrap();
+
+        assert!(!backup_path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

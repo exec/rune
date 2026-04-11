@@ -242,6 +242,19 @@ fn handle_options_menu(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.status_message = "Open in new tab: ".to_string();
             tabs.needs_redraw = true;
         }
+        KeyCode::Char('b') | KeyCode::Char('B') => {
+            tabs.config.backup_on_save = !tabs.config.backup_on_save;
+            tabs.set_temporary_status_message(format!(
+                "Backup on save: {}",
+                if tabs.config.backup_on_save {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+            ));
+            tabs.input_mode = InputMode::Normal;
+            tabs.needs_redraw = true;
+        }
         KeyCode::Esc => {
             tabs.save_config();
             tabs.input_mode = InputMode::Normal;
