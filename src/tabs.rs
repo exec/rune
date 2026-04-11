@@ -322,9 +322,7 @@ impl TabManager {
         if self.config.backup_on_save && path.exists() {
             let backup_path = PathBuf::from(format!("{}~", path.display()));
             if let Err(e) = std::fs::copy(&path, &backup_path) {
-                self.set_temporary_status_message(format!(
-                    "Warning: backup failed: {e}"
-                ));
+                self.set_temporary_status_message(format!("Warning: backup failed: {e}"));
             }
         }
 

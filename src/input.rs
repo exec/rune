@@ -986,9 +986,7 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 .map(|(i, t)| (i, t.display_name.clone()))
                 .collect();
             let filtered = crate::fuzzy::fuzzy_filter(&tabs.fuzzy_query, &candidates);
-            tabs.fuzzy_selected = tabs
-                .fuzzy_selected
-                .min(filtered.len().saturating_sub(1));
+            tabs.fuzzy_selected = tabs.fuzzy_selected.min(filtered.len().saturating_sub(1));
             tabs.needs_redraw = true;
         }
         KeyCode::Backspace => {
