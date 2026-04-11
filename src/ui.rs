@@ -82,112 +82,28 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
         height: help_height,
     };
 
-    // Update viewport using the actual rendered editor area height —
+    let line_num_width = if editor.config.show_line_numbers {
+        editor.rope.len_lines().to_string().len() + 1
+    } else {
+        0
+    };
+
+    // Update viewport using the actual rendered editor area dimensions —
     // this ensures the viewport calculation matches the rendering exactly.
-    editor.update_viewport_for_height(editor_area.height as usize);
+    editor.update_viewport_for_size(
+        editor_area.height as usize,
+        editor_area.width as usize,
+        line_num_width,
+    );
 
     if editor.input_mode == InputMode::HexView {
         if let Some(state) = &mut editor.hex_state {
             crate::hex::draw_hex_view(f, editor_area, state);
         }
+    } else if editor.config.word_wrap {
+        draw_editor_word_wrap(f, editor, editor_area, line_num_width);
     } else {
-        let line_num_width = if editor.config.show_line_numbers {
-            editor.rope.len_lines().to_string().len() + 1
-        } else {
-            0
-        };
-
-        let mut lines = vec![];
-        let visible_lines = editor_area.height as usize;
-
-        for i in 0..visible_lines {
-            let line_idx = editor.viewport.viewport_offset.0 + i;
-            if line_idx < editor.rope.len_lines() {
-                // Get line text — use as_str() for zero-copy when possible,
-                // fall back to collecting chars when the line spans chunk boundaries.
-                let rope_line = editor.rope.line(line_idx);
-                let owned_line: String;
-                let line_text = match rope_line.as_str() {
-                    Some(s) => s,
-                    None => {
-                        owned_line = rope_line.chars().collect::<String>();
-                        &owned_line
-                    }
-                };
-
-                let highlighted_spans: Rc<Vec<(Style, String)>> = editor.highlighter.highlight_line(line_idx, line_text);
-
-                let mut styled_spans: Vec<Span> = vec![];
-
-                if editor.config.show_line_numbers {
-                    let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
-                    styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
-                }
-
-                let line_content = line_text.trim_end_matches('\n');
-
-                let mut search_spans = apply_search_highlighting(
-                    &highlighted_spans,
-                    line_content,
-                    line_idx,
-                    &editor.search.search_buffer,
-                    &editor.search.search_matches,
-                    editor.search.current_match_index,
-                    editor.search.case_sensitive,
-                );
-
-                if editor.config.show_whitespace {
-                    for span in &mut search_spans {
-                        let rendered = render_whitespace(&span.content);
-                        if rendered != span.content.as_ref() {
-                            *span = Span::styled(rendered, span.style);
-                        }
-                    }
-                }
-
-                let final_spans = apply_selection_highlighting(
-                    search_spans,
-                    line_idx,
-                    editor,
-                );
-
-                styled_spans.extend(final_spans);
-
-                lines.push(Line::from(styled_spans));
-            } else {
-                let mut styled_spans: Vec<Span> = vec![];
-
-                if editor.config.show_line_numbers {
-                    let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
-                    styled_spans.push(Span::styled(
-                        empty_line_num,
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-
-                styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
-
-                lines.push(Line::from(styled_spans));
-            }
-        }
-
-        let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
-        f.render_widget(editor_widget, editor_area);
-
-        // Draw cursor
-        let cursor_screen_y = editor
-            .viewport
-            .cursor_pos
-            .0
-            .saturating_sub(editor.viewport.viewport_offset.0);
-        if cursor_screen_y < visible_lines {
-            let cursor_x = if editor.config.show_line_numbers {
-                editor.viewport.cursor_pos.1 as u16 + line_num_width as u16
-            } else {
-                editor.viewport.cursor_pos.1 as u16
-            };
-            f.set_cursor_position(Position::new(cursor_x, cursor_screen_y as u16));
-        }
+        draw_editor_horizontal_scroll(f, editor, editor_area, line_num_width);
     }
 
     // Draw status bar
@@ -286,6 +202,339 @@ pub fn draw_ui(f: &mut Frame, editor: &mut Editor) {
     if editor.input_mode == InputMode::Help {
         draw_help_modal(f, area);
     }
+}
+
+/// Render editor content with horizontal scrolling (word_wrap OFF).
+fn draw_editor_horizontal_scroll(
+    f: &mut Frame,
+    editor: &mut Editor,
+    editor_area: Rect,
+    line_num_width: usize,
+) {
+    let mut lines = vec![];
+    let visible_lines = editor_area.height as usize;
+    let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
+    let h_offset = editor.viewport.viewport_offset.1;
+
+    for i in 0..visible_lines {
+        let line_idx = editor.viewport.viewport_offset.0 + i;
+        if line_idx < editor.rope.len_lines() {
+            let rope_line = editor.rope.line(line_idx);
+            let owned_line: String;
+            let line_text = match rope_line.as_str() {
+                Some(s) => s,
+                None => {
+                    owned_line = rope_line.chars().collect::<String>();
+                    &owned_line
+                }
+            };
+
+            let highlighted_spans: Rc<Vec<(Style, String)>> =
+                editor.highlighter.highlight_line(line_idx, line_text);
+
+            let mut styled_spans: Vec<Span> = vec![];
+
+            if editor.config.show_line_numbers {
+                let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
+                styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+            }
+
+            let line_content = line_text.trim_end_matches('\n');
+
+            let mut search_spans = apply_search_highlighting(
+                &highlighted_spans,
+                line_content,
+                line_idx,
+                &editor.search.search_buffer,
+                &editor.search.search_matches,
+                editor.search.current_match_index,
+                editor.search.case_sensitive,
+            );
+
+            if editor.config.show_whitespace {
+                for span in &mut search_spans {
+                    let rendered = render_whitespace(&span.content);
+                    if rendered != span.content.as_ref() {
+                        *span = Span::styled(rendered, span.style);
+                    }
+                }
+            }
+
+            let final_spans = apply_selection_highlighting(search_spans, line_idx, editor);
+
+            // Apply horizontal scrolling: slice spans to show only the visible portion
+            let sliced = slice_spans_horizontal(&final_spans, h_offset, content_width);
+            styled_spans.extend(sliced);
+
+            lines.push(Line::from(styled_spans));
+        } else {
+            let mut styled_spans: Vec<Span> = vec![];
+
+            if editor.config.show_line_numbers {
+                let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
+                styled_spans.push(Span::styled(
+                    empty_line_num,
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
+
+            lines.push(Line::from(styled_spans));
+        }
+    }
+
+    let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
+    f.render_widget(editor_widget, editor_area);
+
+    // Draw cursor — account for horizontal offset
+    let cursor_screen_y = editor
+        .viewport
+        .cursor_pos
+        .0
+        .saturating_sub(editor.viewport.viewport_offset.0);
+    if cursor_screen_y < visible_lines {
+        let cursor_col_on_screen = editor
+            .viewport
+            .cursor_pos
+            .1
+            .saturating_sub(h_offset);
+        let cursor_x = cursor_col_on_screen as u16 + line_num_width as u16;
+        f.set_cursor_position(Position::new(cursor_x, cursor_screen_y as u16));
+    }
+}
+
+/// Render editor content with word wrapping (word_wrap ON).
+fn draw_editor_word_wrap(
+    f: &mut Frame,
+    editor: &mut Editor,
+    editor_area: Rect,
+    line_num_width: usize,
+) {
+
+    let visible_lines = editor_area.height as usize;
+    let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
+
+    // Build lines that fit within the visible screen rows, accounting for wrapping
+    let mut lines: Vec<Line> = vec![];
+    let mut screen_row = 0;
+    let mut cursor_screen_y: Option<usize> = None;
+    let mut line_idx = editor.viewport.viewport_offset.0;
+
+    while screen_row < visible_lines && line_idx < editor.rope.len_lines() {
+        let rope_line = editor.rope.line(line_idx);
+        let owned_line: String;
+        let line_text = match rope_line.as_str() {
+            Some(s) => s,
+            None => {
+                owned_line = rope_line.chars().collect::<String>();
+                &owned_line
+            }
+        };
+
+        let highlighted_spans: Rc<Vec<(Style, String)>> =
+            editor.highlighter.highlight_line(line_idx, line_text);
+
+        let line_content = line_text.trim_end_matches('\n');
+
+        let mut search_spans = apply_search_highlighting(
+            &highlighted_spans,
+            line_content,
+            line_idx,
+            &editor.search.search_buffer,
+            &editor.search.search_matches,
+            editor.search.current_match_index,
+            editor.search.case_sensitive,
+        );
+
+        if editor.config.show_whitespace {
+            for span in &mut search_spans {
+                let rendered = render_whitespace(&span.content);
+                if rendered != span.content.as_ref() {
+                    *span = Span::styled(rendered, span.style);
+                }
+            }
+        }
+
+        let final_spans = apply_selection_highlighting(search_spans, line_idx, editor);
+
+        // Calculate how many screen rows this line occupies when wrapped
+        let line_width = line_content.len().max(
+            final_spans.iter().map(|s| s.content.len()).sum::<usize>()
+        );
+        let rows_needed = if content_width == 0 || line_width == 0 {
+            1
+        } else {
+            line_width.div_ceil(content_width)
+        };
+
+        // Track cursor position
+        if line_idx == editor.viewport.cursor_pos.0 {
+            let cursor_sub_row = if content_width > 0 {
+                editor.viewport.cursor_pos.1 / content_width
+            } else {
+                0
+            };
+            cursor_screen_y = Some(screen_row + cursor_sub_row);
+        }
+
+        // Split this line into wrapped screen rows
+        let all_chars: Vec<(char, Style)> = collect_span_chars(&final_spans);
+
+        for sub_row in 0..rows_needed {
+            if screen_row >= visible_lines {
+                break;
+            }
+
+            let mut styled_spans: Vec<Span> = vec![];
+
+            if editor.config.show_line_numbers {
+                if sub_row == 0 {
+                    let line_num =
+                        format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
+                    styled_spans
+                        .push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+                } else {
+                    let empty_num = format!("{:width$} ", "", width = line_num_width - 1);
+                    styled_spans
+                        .push(Span::styled(empty_num, Style::default().fg(Color::DarkGray)));
+                }
+            }
+
+            // Extract the characters for this sub-row
+            let start_col = sub_row * content_width;
+            let end_col = (start_col + content_width).min(all_chars.len());
+
+            if start_col < all_chars.len() {
+                let sub_chars = &all_chars[start_col..end_col];
+                // Group consecutive chars with the same style into spans
+                styled_spans.extend(group_chars_into_spans(sub_chars));
+            }
+
+            lines.push(Line::from(styled_spans));
+            screen_row += 1;
+        }
+
+        line_idx += 1;
+    }
+
+    // Fill remaining rows with tilde markers
+    while screen_row < visible_lines {
+        let mut styled_spans: Vec<Span> = vec![];
+
+        if editor.config.show_line_numbers {
+            let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
+            styled_spans.push(Span::styled(
+                empty_line_num,
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
+        lines.push(Line::from(styled_spans));
+        screen_row += 1;
+    }
+
+    let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
+    f.render_widget(editor_widget, editor_area);
+
+    // Draw cursor
+    if let Some(screen_y) = cursor_screen_y {
+        if screen_y < visible_lines {
+            let cursor_col_in_row = if content_width > 0 {
+                editor.viewport.cursor_pos.1 % content_width
+            } else {
+                editor.viewport.cursor_pos.1
+            };
+            let cursor_x = cursor_col_in_row as u16 + line_num_width as u16;
+            f.set_cursor_position(Position::new(cursor_x, screen_y as u16));
+        }
+    }
+}
+
+/// Slice a list of spans to only include characters in the display column range
+/// [h_offset, h_offset + width). This handles multi-char spans that straddle the boundary.
+fn slice_spans_horizontal(
+    spans: &[Span<'_>],
+    h_offset: usize,
+    width: usize,
+) -> Vec<Span<'static>> {
+    if h_offset == 0 && width == usize::MAX {
+        return spans.iter().map(|s| Span::styled(s.content.to_string(), s.style)).collect();
+    }
+
+    let mut result = Vec::new();
+    let mut col = 0;
+    let end = h_offset + width;
+
+    for span in spans {
+        let span_chars: Vec<char> = span.content.chars().collect();
+        let span_len = span_chars.len();
+        let span_end = col + span_len;
+
+        if span_end <= h_offset || col >= end {
+            // Entirely outside visible range
+            col = span_end;
+            continue;
+        }
+
+        // Calculate the visible portion of this span
+        let start_in_span = h_offset.saturating_sub(col);
+        let end_in_span = if span_end > end {
+            end - col
+        } else {
+            span_len
+        };
+
+        if start_in_span < end_in_span {
+            let visible: String = span_chars[start_in_span..end_in_span].iter().collect();
+            result.push(Span::styled(visible, span.style));
+        }
+
+        col = span_end;
+    }
+
+    result
+}
+
+/// Collect all characters with their styles from a list of spans.
+fn collect_span_chars(spans: &[Span<'_>]) -> Vec<(char, Style)> {
+    let mut chars = Vec::new();
+    for span in spans {
+        for ch in span.content.chars() {
+            chars.push((ch, span.style));
+        }
+    }
+    chars
+}
+
+/// Group consecutive (char, Style) pairs with the same style into Spans.
+fn group_chars_into_spans(chars: &[(char, Style)]) -> Vec<Span<'static>> {
+    let mut result = Vec::new();
+    if chars.is_empty() {
+        return result;
+    }
+
+    let mut current_text = String::new();
+    let mut current_style = chars[0].1;
+    current_text.push(chars[0].0);
+
+    for &(ch, style) in &chars[1..] {
+        if style == current_style {
+            current_text.push(ch);
+        } else {
+            result.push(Span::styled(current_text.clone(), current_style));
+            current_text.clear();
+            current_text.push(ch);
+            current_style = style;
+        }
+    }
+
+    if !current_text.is_empty() {
+        result.push(Span::styled(current_text, current_style));
+    }
+
+    result
 }
 
 fn draw_help_modal(f: &mut Frame, area: Rect) {

@@ -136,6 +136,12 @@ pub fn line_display_width(rope: &Rope, line: usize) -> usize {
 }
 
 
+impl Default for Editor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Editor {
     pub fn new() -> Self {
         let config = config::load_config();
@@ -479,6 +485,17 @@ impl Editor {
     /// Update viewport scroll offset to keep cursor visible within the given editor area height.
     /// This must be called with the actual rendered area height to avoid mismatches.
     pub fn update_viewport_for_height(&mut self, editor_height: usize) {
+        self.update_viewport_for_size(editor_height, 0, 0);
+    }
+
+    /// Update viewport scroll offsets (both vertical and horizontal) to keep cursor visible.
+    /// `editor_width` and `line_num_width` are needed for horizontal scrolling.
+    pub fn update_viewport_for_size(
+        &mut self,
+        editor_height: usize,
+        editor_width: usize,
+        line_num_width: usize,
+    ) {
         if editor_height == 0 {
             return;
         }
@@ -490,24 +507,114 @@ impl Editor {
             self.clamp_cursor_to_line();
         }
 
-        // Scroll up if cursor is above viewport
-        if self.viewport.cursor_pos.0 < self.viewport.viewport_offset.0 {
-            self.viewport.viewport_offset.0 = self.viewport.cursor_pos.0;
+        let content_width = editor_width.saturating_sub(line_num_width);
+
+        if self.config.word_wrap {
+            // Word wrap mode: no horizontal scrolling
+            self.viewport.viewport_offset.1 = 0;
+
+            // For word wrap, we need to account for wrapped lines in vertical scrolling.
+            // Count screen rows consumed by lines above cursor to determine viewport offset.
+            self.update_viewport_vertical_word_wrap(editor_height, content_width);
+        } else {
+            // No word wrap: use horizontal scrolling
+
+            // Vertical scrolling (same as before)
+            if self.viewport.cursor_pos.0 < self.viewport.viewport_offset.0 {
+                self.viewport.viewport_offset.0 = self.viewport.cursor_pos.0;
+            }
+            if self.viewport.cursor_pos.0 >= self.viewport.viewport_offset.0 + editor_height {
+                self.viewport.viewport_offset.0 = self
+                    .viewport
+                    .cursor_pos
+                    .0
+                    .saturating_sub(editor_height.saturating_sub(1));
+            }
+            let max_offset = max_line.saturating_sub(editor_height.saturating_sub(1));
+            if self.viewport.viewport_offset.0 > max_offset {
+                self.viewport.viewport_offset.0 = max_offset;
+            }
+
+            // Horizontal scrolling
+            if content_width > 0 {
+                let cursor_col = self.viewport.cursor_pos.1;
+                // Scroll left if cursor is to the left of the visible area
+                if cursor_col < self.viewport.viewport_offset.1 {
+                    self.viewport.viewport_offset.1 = cursor_col;
+                }
+                // Scroll right if cursor is past the right edge
+                if cursor_col >= self.viewport.viewport_offset.1 + content_width {
+                    self.viewport.viewport_offset.1 =
+                        cursor_col.saturating_sub(content_width.saturating_sub(1));
+                }
+            }
+        }
+    }
+
+    /// Vertical viewport adjustment for word-wrap mode.
+    /// In word-wrap mode, each document line may occupy multiple screen rows.
+    fn update_viewport_vertical_word_wrap(
+        &mut self,
+        editor_height: usize,
+        content_width: usize,
+    ) {
+        if content_width == 0 {
+            return;
         }
 
-        // Scroll down if cursor is below viewport
-        if self.viewport.cursor_pos.0 >= self.viewport.viewport_offset.0 + editor_height {
-            self.viewport.viewport_offset.0 = self
-                .viewport
-                .cursor_pos
-                .0
-                .saturating_sub(editor_height.saturating_sub(1));
+        let cursor_line = self.viewport.cursor_pos.0;
+
+        // If the cursor line is above the current viewport top, scroll up to it.
+        if cursor_line < self.viewport.viewport_offset.0 {
+            self.viewport.viewport_offset.0 = cursor_line;
         }
 
-        // Clamp viewport offset so we don't scroll past the end of the document
-        let max_offset = max_line.saturating_sub(editor_height.saturating_sub(1));
-        if self.viewport.viewport_offset.0 > max_offset {
-            self.viewport.viewport_offset.0 = max_offset;
+        // Count screen rows from viewport_offset.0 to cursor_line (inclusive).
+        // If the cursor would be below the visible area, increase viewport_offset.0.
+        loop {
+            let mut screen_rows = 0;
+            let mut found_cursor = false;
+            for line_idx in self.viewport.viewport_offset.0..self.rope.len_lines() {
+                let rows = self.wrapped_line_height(line_idx, content_width);
+                if line_idx == cursor_line {
+                    // The cursor is on this line. We need the cursor's sub-row to be visible.
+                    let cursor_sub_row = self.viewport.cursor_pos.1 / content_width;
+                    let cursor_screen_y = screen_rows + cursor_sub_row;
+                    if cursor_screen_y < editor_height {
+                        found_cursor = true;
+                    }
+                    break;
+                }
+                screen_rows += rows;
+                if screen_rows >= editor_height {
+                    break;
+                }
+            }
+
+            if found_cursor {
+                break;
+            }
+
+            // Scroll down by one line
+            self.viewport.viewport_offset.0 += 1;
+            if self.viewport.viewport_offset.0 > cursor_line {
+                // Safety: cursor line should always be the viewport top at minimum
+                self.viewport.viewport_offset.0 = cursor_line;
+                break;
+            }
+        }
+    }
+
+    /// Calculate how many screen rows a line occupies when wrapped.
+    pub fn wrapped_line_height(&self, line_idx: usize, content_width: usize) -> usize {
+        if content_width == 0 {
+            return 1;
+        }
+        let width = line_display_width(&self.rope, line_idx);
+        if width == 0 {
+            1
+        } else {
+            width.div_ceil(content_width)
         }
     }
 
@@ -1248,11 +1355,11 @@ impl Editor {
         }
 
         // Move back past whitespace
-        while col > 0 && line_chars.get(col.saturating_sub(1)).map_or(false, |c| c.is_whitespace()) {
+        while col > 0 && line_chars.get(col.saturating_sub(1)).is_some_and(|c| c.is_whitespace()) {
             col -= 1;
         }
         // Move back past word characters
-        while col > 0 && line_chars.get(col.saturating_sub(1)).map_or(false, |c| !c.is_whitespace()) {
+        while col > 0 && line_chars.get(col.saturating_sub(1)).is_some_and(|c| !c.is_whitespace()) {
             col -= 1;
         }
 
@@ -1819,5 +1926,136 @@ mod navigation_tests {
         e.show_cursor_info();
         assert!(e.status_message.contains("Line: 2"));
         assert!(e.status_message.contains("Col: 4"));
+    }
+
+    // ── Horizontal scrolling tests ──
+
+    #[test]
+    fn test_horizontal_scroll_cursor_right_past_edge() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = false;
+        // 50-char line
+        e.rope = Rope::from_str(&"x".repeat(50));
+        e.viewport.cursor_pos = (0, 30);
+        // editor_width=20, line_num_width=0 => content_width=20
+        e.update_viewport_for_size(10, 20, 0);
+        // cursor_col=30 >= viewport_offset.1(0) + 20 => should scroll right
+        assert_eq!(e.viewport.viewport_offset.1, 11); // 30 - 20 + 1
+    }
+
+    #[test]
+    fn test_horizontal_scroll_cursor_left_past_edge() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = false;
+        e.rope = Rope::from_str(&"x".repeat(50));
+        e.viewport.viewport_offset.1 = 20;
+        e.viewport.cursor_pos = (0, 10);
+        e.update_viewport_for_size(10, 20, 0);
+        // cursor_col=10 < viewport_offset.1(20) => should scroll left
+        assert_eq!(e.viewport.viewport_offset.1, 10);
+    }
+
+    #[test]
+    fn test_horizontal_scroll_no_scroll_needed() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = false;
+        e.rope = Rope::from_str("short\n");
+        e.viewport.cursor_pos = (0, 3);
+        e.update_viewport_for_size(10, 20, 0);
+        assert_eq!(e.viewport.viewport_offset.1, 0);
+    }
+
+    #[test]
+    fn test_horizontal_scroll_with_line_numbers() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = false;
+        e.config.show_line_numbers = true;
+        e.rope = Rope::from_str(&"x".repeat(50));
+        e.viewport.cursor_pos = (0, 18);
+        // editor_width=20, line_num_width=3 => content_width=17
+        e.update_viewport_for_size(10, 20, 3);
+        // cursor at 18 >= 0 + 17, need to scroll
+        assert_eq!(e.viewport.viewport_offset.1, 2);
+    }
+
+    #[test]
+    fn test_horizontal_scroll_cursor_at_end_of_long_line() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = false;
+        e.rope = Rope::from_str(&"a".repeat(200));
+        e.viewport.cursor_pos = (0, 200);
+        e.update_viewport_for_size(10, 80, 0);
+        assert_eq!(e.viewport.viewport_offset.1, 121); // 200 - 80 + 1
+    }
+
+    #[test]
+    fn test_word_wrap_resets_horizontal_offset() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = false;
+        e.rope = Rope::from_str(&"x".repeat(50));
+        e.viewport.cursor_pos = (0, 30);
+        e.update_viewport_for_size(10, 20, 0);
+        assert!(e.viewport.viewport_offset.1 > 0);
+
+        // Enable word wrap: horizontal offset should reset
+        e.config.word_wrap = true;
+        e.update_viewport_for_size(10, 20, 0);
+        assert_eq!(e.viewport.viewport_offset.1, 0);
+    }
+
+    // ── Word wrap tests ──
+
+    #[test]
+    fn test_wrapped_line_height_short_line() {
+        let e = Editor::new_for_test();
+        // Empty rope has one empty line
+        assert_eq!(e.wrapped_line_height(0, 80), 1);
+    }
+
+    #[test]
+    fn test_wrapped_line_height_exact_width() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str(&"a".repeat(20));
+        assert_eq!(e.wrapped_line_height(0, 20), 1);
+    }
+
+    #[test]
+    fn test_wrapped_line_height_needs_two_rows() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str(&"a".repeat(25));
+        assert_eq!(e.wrapped_line_height(0, 20), 2);
+    }
+
+    #[test]
+    fn test_wrapped_line_height_needs_three_rows() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str(&"a".repeat(50));
+        assert_eq!(e.wrapped_line_height(0, 20), 3);
+    }
+
+    #[test]
+    fn test_word_wrap_viewport_cursor_on_second_wrap_row() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = true;
+        // Line that wraps: 30 chars in a 20-char-wide viewport
+        e.rope = Rope::from_str(&"a".repeat(30));
+        e.viewport.cursor_pos = (0, 25); // on the second sub-row
+        e.update_viewport_for_size(10, 20, 0);
+        assert_eq!(e.viewport.viewport_offset.0, 0);
+        assert_eq!(e.viewport.viewport_offset.1, 0);
+    }
+
+    #[test]
+    fn test_word_wrap_viewport_scrolls_down() {
+        let mut e = Editor::new_for_test();
+        e.config.word_wrap = true;
+        // 5 lines, each 30 chars, in a 20-wide viewport => each takes 2 rows
+        let content: String = (0..5).map(|_| "a".repeat(30) + "\n").collect();
+        e.rope = Rope::from_str(&content);
+        e.viewport.cursor_pos = (4, 0); // last line
+        // editor_height=6 => only 3 wrapped lines fit (6 / 2)
+        e.update_viewport_for_size(6, 20, 0);
+        // viewport should scroll so cursor line is visible
+        assert!(e.viewport.viewport_offset.0 >= 2);
     }
 }
