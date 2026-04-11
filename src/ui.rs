@@ -17,12 +17,20 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
             "Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel".to_string(),
             String::new(),
         ),
+        InputMode::ConfirmCloseTab => (
+            "Y: Save and close  N: Close without saving  ^C/Esc: Cancel".to_string(),
+            String::new(),
+        ),
         InputMode::EnteringFilename | InputMode::EnteringSaveAs => (
             "Enter: Confirm  Esc: Cancel  Type filename".to_string(),
             String::new(),
         ),
+        InputMode::OpenFileCurrentTab | InputMode::OpenFileNewTab => (
+            "Enter: Open  Esc: Cancel  Type file path".to_string(),
+            String::new(),
+        ),
         InputMode::OptionsMenu => (
-            "M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  I: Auto-indent  P: Whitespace  Esc: Back".to_string(),
+            "M: Mouse  L: Line Numbers  W: Word Wrap  T: Tab Width  I: Auto-indent  P: Whitespace  O: Open File  N: New Tab File  Esc: Back".to_string(),
             String::new(),
         ),
         InputMode::Find => (
@@ -55,17 +63,25 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
             String::new(),
         ),
         _ => (
-            "^H Help".to_string(),
+            "^H Help  ^T New Tab  ^P Finder".to_string(),
             format!("Rune v{}", env!("CARGO_PKG_VERSION")),
         ),
     };
     let help_height = 1u16;
+    let tab_bar_height = 1u16;
 
-    let editor_area = Rect {
+    let tab_bar_area = Rect {
         x: area.x,
         y: area.y,
         width: area.width,
-        height: area.height.saturating_sub(1 + help_height),
+        height: tab_bar_height,
+    };
+
+    let editor_area = Rect {
+        x: area.x,
+        y: area.y + tab_bar_height,
+        width: area.width,
+        height: area.height.saturating_sub(1 + help_height + tab_bar_height),
     };
 
     let status_area = Rect {
@@ -81,6 +97,9 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
         width: area.width,
         height: help_height,
     };
+
+    // Draw tab bar
+    draw_tab_bar(f, tabs, tab_bar_area);
 
     let show_line_numbers = tabs.config.show_line_numbers;
     let word_wrap = tabs.config.word_wrap;
@@ -206,6 +225,40 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
     let help_widget =
         Paragraph::new(help_line).style(Style::default().bg(Color::Cyan).fg(Color::Black));
     f.render_widget(help_widget, help_area);
+}
+
+/// Render the tab bar at the top of the screen.
+fn draw_tab_bar(f: &mut Frame, tabs: &TabManager, area: Rect) {
+    let mut spans: Vec<Span> = Vec::new();
+    let available_width = area.width as usize;
+    let mut used_width = 0;
+
+    for (i, tab) in tabs.tabs.iter().enumerate() {
+        let modified = if tab.modified { "*" } else { "" };
+        let title = format!(" {}{} ", tab.display_name, modified);
+        let title_len = title.len();
+
+        if used_width + title_len > available_width.saturating_sub(4) {
+            let remaining = tabs.tabs.len() - i;
+            spans.push(Span::styled(
+                format!(" +{remaining} "),
+                Style::default().fg(Color::DarkGray),
+            ));
+            break;
+        }
+
+        let style = if i == tabs.active_tab {
+            Style::default().bg(Color::Cyan).fg(Color::Black)
+        } else {
+            Style::default().bg(Color::DarkGray).fg(Color::White)
+        };
+        spans.push(Span::styled(title, style));
+        used_width += title_len;
+    }
+
+    let tab_line = Line::from(spans);
+    let tab_widget = Paragraph::new(tab_line).style(Style::default().bg(Color::Black));
+    f.render_widget(tab_widget, area);
 }
 
 /// Render editor content with horizontal scrolling (word_wrap OFF).
@@ -555,6 +608,9 @@ fn help_lines() -> Vec<&'static str> {
         "M-{      Unindent selection",
         "M-;      Toggle comment",
         "Delete   Delete forward",
+        "M-\\      Word completion",
+        "M-V      Verbatim input (raw char)",
+        "^E       Execute command",
         "",
         "               NAVIGATION",
         "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
@@ -571,6 +627,14 @@ fn help_lines() -> Vec<&'static str> {
         "M-]      Match bracket",
         "Arrows   Move cursor",
         "",
+        "                  TABS",
+        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        "^T       New tab",
+        "M-Left   Previous tab",
+        "M-Right  Next tab",
+        "M-W      Close tab",
+        "^P       Fuzzy finder (switch tab)",
+        "",
         "                  VIEW",
         "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
         "^B       Hex view (live buffer)",
@@ -585,6 +649,9 @@ fn help_lines() -> Vec<&'static str> {
         "  T      Set tab width",
         "  I      Toggle auto-indent",
         "  P      Toggle whitespace",
+        "  O      Open file in current tab",
+        "  N      Open file in new tab",
+        "  B      Toggle backup on save",
         "",
         "Note: M- prefix means Alt/Meta key.",
         "      ^ prefix means Ctrl key.",
