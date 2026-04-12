@@ -1,6 +1,10 @@
 use regex::Regex;
 use std::collections::HashMap;
 
+/// Maximum number of matches returned by a single search. Beyond this,
+/// accumulation stops and the caller is expected to notify the user.
+pub const MAX_SEARCH_MATCHES: usize = 10_000;
+
 /// Navigation mode within find functionality
 #[derive(Debug, Clone, PartialEq)]
 pub enum FindNavigationMode {
@@ -20,6 +24,9 @@ pub struct SearchState {
     pub search_buffer: String,
     pub replace_buffer: String,
     pub search_matches: Vec<(usize, usize)>,
+    /// True when the most recent `find_all_matches` call hit
+    /// `MAX_SEARCH_MATCHES` and stopped accumulating.
+    pub search_matches_truncated: bool,
     pub current_match_index: Option<usize>,
     pub search_start_pos: (usize, usize),
     pub use_regex: bool,
@@ -39,6 +46,7 @@ impl Default for SearchState {
             search_buffer: String::new(),
             replace_buffer: String::new(),
             search_matches: Vec::new(),
+            search_matches_truncated: false,
             current_match_index: None,
             search_start_pos: (0, 0),
             use_regex: false,
@@ -56,6 +64,7 @@ impl Default for SearchState {
 
 impl SearchState {
     pub fn find_all_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
+        self.search_matches_truncated = false;
         if self.search_buffer.is_empty() {
             return Vec::new();
         }
@@ -75,7 +84,7 @@ impl SearchState {
         let mut line_cache: HashMap<usize, String> = HashMap::new();
         let mut matches = Vec::new();
 
-        for line_idx in 0..rope.len_lines() {
+        'outer: for line_idx in 0..rope.len_lines() {
             let line_string = line_cache
                 .entry(line_idx)
                 .or_insert_with(|| crate::get_line_str(rope, line_idx));
@@ -90,6 +99,10 @@ impl SearchState {
             for col in line_matches {
                 if validate_match_at_position(line_content, col, &search_term, case_sensitive) {
                     matches.push((line_idx, col));
+                    if matches.len() >= MAX_SEARCH_MATCHES {
+                        self.search_matches_truncated = true;
+                        break 'outer;
+                    }
                 }
             }
         }
@@ -130,13 +143,17 @@ impl SearchState {
 
         let mut matches = Vec::new();
 
-        for line_idx in 0..rope.len_lines() {
+        'outer: for line_idx in 0..rope.len_lines() {
             let line_string = crate::get_line_str(rope, line_idx);
             let line_content = line_string.trim_end_matches('\n');
 
             for m in re.find_iter(line_content) {
                 let char_pos = line_content[..m.start()].chars().count();
                 matches.push((line_idx, char_pos));
+                if matches.len() >= MAX_SEARCH_MATCHES {
+                    self.search_matches_truncated = true;
+                    break 'outer;
+                }
             }
         }
 

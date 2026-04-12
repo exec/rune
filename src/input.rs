@@ -15,8 +15,13 @@ fn format_find_status(tabs: &TabManager) -> String {
         .current_match_index
         .map(|i| i + 1)
         .unwrap_or(1);
+    let match_label = if editor.search.search_matches_truncated {
+        format!("{current}/{matches_count}+ matches, showing first {matches_count}")
+    } else {
+        format!("{current}/{matches_count} matches")
+    };
     format!(
-        "Find: {search_buf} ({current}/{matches_count} matches) - Use \u{2191}\u{2193} to navigate, Enter/Esc to exit"
+        "Find: {search_buf} ({match_label}) - Use \u{2191}\u{2193} to navigate, Enter/Esc to exit"
     )
 }
 

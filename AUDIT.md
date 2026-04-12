@@ -25,6 +25,34 @@ All 125 tests still pass. A criterion bench suite (`benches/editor_perf.rs`) now
 | Performance (6) | 5 | 1 | — |
 | Architecture (17) | 11 | 3 | 3 |
 
+## Status Update (2026-04-12, second perf pass)
+
+A second deep audit found architectural wins beyond the original findings. Measured in a dedicated bench run with machine noise accounted for (untouched benches revealed a ~1.44× environmental offset; real deltas computed by dividing observed ratios by that factor):
+
+- **`search_many_matches/space_50k_lines`: 55.6ms → 1.98ms (~−97%)** — XPERF-8 match cap.
+- `search_literal/50k` and `search_regex_per_keystroke`: both **~−75 to −80%** (indirect XPERF-8 — benches hit the 10k match cap).
+- **`perform_replace_interactive` (10k lines): 20.55µs → 11.37µs (real ~−62%)** — XPERF-2 rewrote the first-match scan to iterate `rope.lines()` instead of materializing the whole document.
+- **`syntax_highlight/50_rust_lines_cold`: ~−37%** — DPERF-1 phf keyword maps + DPERF-3 single-buffer flush.
+- **`syntax_highlight/invalidate_then_rehighlight_50_lines`: ~−36%** — DPERF-2 fixed callers that were passing `0` to `invalidate_cache_from_line`, nuking the whole syntax cache on every edit. Now they pass the actual edited line.
+- **`render_frame/edit_then_draw_100f`: ~−17%**, **`render_frame/single_draw`: ~−14%**, **`render_frame/cursor_move_100f`: ~−6%** — DPERF-4 (thread-local render cache keyed by `dirty_generation` and rope identity, holding post-pipeline spans for the horizontal-scroll path) plus DPERF-5 (reusable `&mut Vec<char>` in `apply_search_highlighting`).
+
+Added bench coverage for this pass: `load_file`, `syntax_highlight/{cold,warm,invalidate_then_rehighlight}`, `render_frame/{single_draw,cursor_move,edit_then_draw}`, `search_many_matches`, `tabmanager_new_for_test_cold`.
+
+### New findings status
+
+| ID | Status | Evidence |
+|----|--------|----------|
+| DPERF-1 | DONE | `phf::Map` per language in `syntax.rs`, shared `TokenKind` enum |
+| DPERF-2 | DONE | Callers of `invalidate_cache_from_line` pass actual edit line (`editor.rs`, `tabs.rs`) |
+| DPERF-3 | DONE | `highlight_simple` uses single reusable buffer, flushes on style change, merges on flush; `coalesce_spans` removed |
+| DPERF-4 | PARTIAL | Thread-local `RenderCache` in `ui.rs` for horizontal-scroll path; word-wrap path deferred (same idea, sub-row layout is trickier) |
+| DPERF-5 | DONE | `apply_search_highlighting` takes `&mut Vec<char>` reused across visible lines |
+| XPERF-2 | DONE | `perform_replace_interactive` iterates `rope.lines()` instead of `rope.to_string()` |
+| XPERF-8 | DONE | `MAX_SEARCH_MATCHES = 10_000` cap with `search_matches_truncated` flag surfaced in find-mode status message |
+| SPERF-1 | N/A | Benchmarked — `TabManager::new_for_test` is already 154ns |
+| SPERF-3 | NOT DONE | Skipped — dedupe would complicate the is_binary/load path for <1% win |
+| SPERF-9 | TESTED AND REVERTED | `Rope::from_reader` regressed `load_file/1mb` by +22% on warm SSD; small wins on 10mb, none on 50mb. Left `fs::read_to_string` + `Rope::from_str` in place. Future work could gate on file size or cold-disk scenarios. |
+
 ### Per-item status
 
 | ID | Status | Evidence |

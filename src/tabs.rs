@@ -777,6 +777,7 @@ impl TabManager {
         let idx = self.active_tab;
         self.tabs[idx].save_undo_state();
         self.tabs[idx].mark_anchor = None;
+        let insert_line = self.tabs[idx].viewport.cursor_pos.0;
         let pos = self.tabs[idx].line_col_to_char_idx(
             self.tabs[idx].viewport.cursor_pos.0,
             self.tabs[idx].viewport.cursor_pos.1,
@@ -795,8 +796,7 @@ impl TabManager {
         let col_chars = end_pos.saturating_sub(line_start);
         let display_col = self.tabs[idx].char_idx_to_display_col(line, col_chars);
         self.tabs[idx].viewport.cursor_pos = (line, display_col);
-        let cursor_line = self.tabs[idx].viewport.cursor_pos.0;
-        self.tabs[idx].mark_document_changed(cursor_line);
+        self.tabs[idx].mark_document_changed(insert_line);
     }
 
     pub fn toggle_mark(&mut self) {

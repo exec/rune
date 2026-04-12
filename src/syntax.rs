@@ -5,6 +5,189 @@ use std::rc::Rc;
 
 const MAX_CACHE_ENTRIES: usize = 1000;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TokenKind {
+    Keyword, // Magenta
+    Control, // Yellow
+    Literal, // Cyan
+    Type,    // Blue
+}
+
+impl TokenKind {
+    #[inline]
+    fn style(self) -> Style {
+        match self {
+            TokenKind::Keyword => Style::default().fg(Color::Magenta),
+            TokenKind::Control => Style::default().fg(Color::Yellow),
+            TokenKind::Literal => Style::default().fg(Color::Cyan),
+            TokenKind::Type => Style::default().fg(Color::Blue),
+        }
+    }
+}
+
+static RUST_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "fn" => TokenKind::Keyword, "let" => TokenKind::Keyword, "mut" => TokenKind::Keyword,
+    "pub" => TokenKind::Keyword, "struct" => TokenKind::Keyword, "enum" => TokenKind::Keyword,
+    "impl" => TokenKind::Keyword, "trait" => TokenKind::Keyword, "use" => TokenKind::Keyword,
+    "mod" => TokenKind::Keyword, "const" => TokenKind::Keyword, "static" => TokenKind::Keyword,
+    "extern" => TokenKind::Keyword, "crate" => TokenKind::Keyword, "super" => TokenKind::Keyword,
+    "self" => TokenKind::Keyword, "Self" => TokenKind::Keyword, "where" => TokenKind::Keyword,
+    "async" => TokenKind::Keyword, "await" => TokenKind::Keyword, "unsafe" => TokenKind::Keyword,
+    "dyn" => TokenKind::Keyword, "ref" => TokenKind::Keyword, "move" => TokenKind::Keyword,
+    "if" => TokenKind::Control, "else" => TokenKind::Control, "match" => TokenKind::Control,
+    "for" => TokenKind::Control, "while" => TokenKind::Control, "loop" => TokenKind::Control,
+    "break" => TokenKind::Control, "continue" => TokenKind::Control, "return" => TokenKind::Control,
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal,
+    "None" => TokenKind::Literal, "Some" => TokenKind::Literal,
+    "String" => TokenKind::Type, "Vec" => TokenKind::Type, "Option" => TokenKind::Type,
+    "Result" => TokenKind::Type, "HashMap" => TokenKind::Type, "HashSet" => TokenKind::Type,
+    "i32" => TokenKind::Type, "u32" => TokenKind::Type, "i64" => TokenKind::Type,
+    "u64" => TokenKind::Type, "f32" => TokenKind::Type, "f64" => TokenKind::Type,
+    "bool" => TokenKind::Type, "char" => TokenKind::Type, "usize" => TokenKind::Type,
+    "isize" => TokenKind::Type, "str" => TokenKind::Type, "Box" => TokenKind::Type,
+    "Rc" => TokenKind::Type, "Arc" => TokenKind::Type, "RefCell" => TokenKind::Type,
+    "Mutex" => TokenKind::Type,
+};
+
+static PYTHON_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "def" => TokenKind::Keyword, "class" => TokenKind::Keyword, "import" => TokenKind::Keyword,
+    "from" => TokenKind::Keyword, "as" => TokenKind::Keyword, "with" => TokenKind::Keyword,
+    "lambda" => TokenKind::Keyword, "async" => TokenKind::Keyword, "await" => TokenKind::Keyword,
+    "global" => TokenKind::Keyword, "nonlocal" => TokenKind::Keyword, "yield" => TokenKind::Keyword,
+    "pass" => TokenKind::Keyword, "del" => TokenKind::Keyword,
+    "if" => TokenKind::Control, "elif" => TokenKind::Control, "else" => TokenKind::Control,
+    "for" => TokenKind::Control, "while" => TokenKind::Control, "break" => TokenKind::Control,
+    "continue" => TokenKind::Control, "return" => TokenKind::Control, "try" => TokenKind::Control,
+    "except" => TokenKind::Control, "finally" => TokenKind::Control, "raise" => TokenKind::Control,
+    "assert" => TokenKind::Control,
+    "True" => TokenKind::Literal, "False" => TokenKind::Literal, "None" => TokenKind::Literal,
+    "str" => TokenKind::Type, "int" => TokenKind::Type, "float" => TokenKind::Type,
+    "bool" => TokenKind::Type, "list" => TokenKind::Type, "dict" => TokenKind::Type,
+    "tuple" => TokenKind::Type, "set" => TokenKind::Type, "len" => TokenKind::Type,
+    "range" => TokenKind::Type, "enumerate" => TokenKind::Type, "zip" => TokenKind::Type,
+    "map" => TokenKind::Type, "filter" => TokenKind::Type, "print" => TokenKind::Type,
+    "open" => TokenKind::Type, "file" => TokenKind::Type, "type" => TokenKind::Type,
+    "isinstance" => TokenKind::Type, "hasattr" => TokenKind::Type,
+};
+
+static JS_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "function" => TokenKind::Keyword, "var" => TokenKind::Keyword, "let" => TokenKind::Keyword,
+    "const" => TokenKind::Keyword, "class" => TokenKind::Keyword, "extends" => TokenKind::Keyword,
+    "import" => TokenKind::Keyword, "export" => TokenKind::Keyword, "async" => TokenKind::Keyword,
+    "await" => TokenKind::Keyword, "yield" => TokenKind::Keyword, "interface" => TokenKind::Keyword,
+    "type" => TokenKind::Keyword, "enum" => TokenKind::Keyword, "namespace" => TokenKind::Keyword,
+    "module" => TokenKind::Keyword, "declare" => TokenKind::Keyword,
+    "if" => TokenKind::Control, "else" => TokenKind::Control, "for" => TokenKind::Control,
+    "while" => TokenKind::Control, "do" => TokenKind::Control, "break" => TokenKind::Control,
+    "continue" => TokenKind::Control, "return" => TokenKind::Control, "try" => TokenKind::Control,
+    "catch" => TokenKind::Control, "finally" => TokenKind::Control, "throw" => TokenKind::Control,
+    "switch" => TokenKind::Control, "case" => TokenKind::Control, "default" => TokenKind::Control,
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal,
+    "null" => TokenKind::Literal, "undefined" => TokenKind::Literal,
+    "string" => TokenKind::Type, "number" => TokenKind::Type, "boolean" => TokenKind::Type,
+    "object" => TokenKind::Type, "Array" => TokenKind::Type, "Object" => TokenKind::Type,
+    "Function" => TokenKind::Type, "Promise" => TokenKind::Type, "Map" => TokenKind::Type,
+    "Set" => TokenKind::Type, "WeakMap" => TokenKind::Type, "WeakSet" => TokenKind::Type,
+    "Symbol" => TokenKind::Type, "BigInt" => TokenKind::Type, "any" => TokenKind::Type,
+    "unknown" => TokenKind::Type, "never" => TokenKind::Type, "void" => TokenKind::Type,
+};
+
+static GO_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "func" => TokenKind::Keyword, "var" => TokenKind::Keyword, "const" => TokenKind::Keyword,
+    "type" => TokenKind::Keyword, "struct" => TokenKind::Keyword, "interface" => TokenKind::Keyword,
+    "package" => TokenKind::Keyword, "import" => TokenKind::Keyword, "go" => TokenKind::Keyword,
+    "defer" => TokenKind::Keyword, "chan" => TokenKind::Keyword, "select" => TokenKind::Keyword,
+    "range" => TokenKind::Keyword, "map" => TokenKind::Keyword, "make" => TokenKind::Keyword,
+    "new" => TokenKind::Keyword,
+    "if" => TokenKind::Control, "else" => TokenKind::Control, "for" => TokenKind::Control,
+    "switch" => TokenKind::Control, "case" => TokenKind::Control, "default" => TokenKind::Control,
+    "break" => TokenKind::Control, "continue" => TokenKind::Control, "return" => TokenKind::Control,
+    "goto" => TokenKind::Control, "fallthrough" => TokenKind::Control,
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal, "nil" => TokenKind::Literal,
+    "string" => TokenKind::Type, "int" => TokenKind::Type, "int8" => TokenKind::Type,
+    "int16" => TokenKind::Type, "int32" => TokenKind::Type, "int64" => TokenKind::Type,
+    "uint" => TokenKind::Type, "uint8" => TokenKind::Type, "uint16" => TokenKind::Type,
+    "uint32" => TokenKind::Type, "uint64" => TokenKind::Type, "bool" => TokenKind::Type,
+    "byte" => TokenKind::Type, "rune" => TokenKind::Type, "float32" => TokenKind::Type,
+    "float64" => TokenKind::Type, "complex64" => TokenKind::Type, "complex128" => TokenKind::Type,
+    "error" => TokenKind::Type,
+};
+
+static SHELL_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "if" => TokenKind::Keyword, "then" => TokenKind::Keyword, "else" => TokenKind::Keyword,
+    "elif" => TokenKind::Keyword, "fi" => TokenKind::Keyword, "case" => TokenKind::Keyword,
+    "esac" => TokenKind::Keyword, "for" => TokenKind::Keyword, "while" => TokenKind::Keyword,
+    "until" => TokenKind::Keyword, "do" => TokenKind::Keyword, "done" => TokenKind::Keyword,
+    "function" => TokenKind::Keyword, "select" => TokenKind::Keyword, "time" => TokenKind::Keyword,
+    "in" => TokenKind::Keyword,
+    "echo" => TokenKind::Control, "printf" => TokenKind::Control, "cat" => TokenKind::Control,
+    "grep" => TokenKind::Control, "awk" => TokenKind::Control, "sed" => TokenKind::Control,
+    "sort" => TokenKind::Control, "uniq" => TokenKind::Control, "cut" => TokenKind::Control,
+    "head" => TokenKind::Control, "tail" => TokenKind::Control, "find" => TokenKind::Control,
+    "xargs" => TokenKind::Control, "ls" => TokenKind::Control, "cd" => TokenKind::Control,
+    "pwd" => TokenKind::Control, "mkdir" => TokenKind::Control, "rm" => TokenKind::Control,
+    "cp" => TokenKind::Control, "mv" => TokenKind::Control, "chmod" => TokenKind::Control,
+    "chown" => TokenKind::Control, "export" => TokenKind::Control, "alias" => TokenKind::Control,
+    "source" => TokenKind::Control, "exec" => TokenKind::Control, "exit" => TokenKind::Control,
+    "return" => TokenKind::Control, "break" => TokenKind::Control, "continue" => TokenKind::Control,
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal,
+};
+
+static C_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "int" => TokenKind::Keyword, "char" => TokenKind::Keyword, "float" => TokenKind::Keyword,
+    "double" => TokenKind::Keyword, "void" => TokenKind::Keyword, "long" => TokenKind::Keyword,
+    "short" => TokenKind::Keyword, "unsigned" => TokenKind::Keyword, "signed" => TokenKind::Keyword,
+    "const" => TokenKind::Keyword, "static" => TokenKind::Keyword, "extern" => TokenKind::Keyword,
+    "volatile" => TokenKind::Keyword, "register" => TokenKind::Keyword, "struct" => TokenKind::Keyword,
+    "union" => TokenKind::Keyword, "enum" => TokenKind::Keyword, "typedef" => TokenKind::Keyword,
+    "sizeof" => TokenKind::Keyword,
+    "class" => TokenKind::Keyword, "public" => TokenKind::Keyword, "private" => TokenKind::Keyword,
+    "protected" => TokenKind::Keyword, "virtual" => TokenKind::Keyword, "override" => TokenKind::Keyword,
+    "namespace" => TokenKind::Keyword, "using" => TokenKind::Keyword, "template" => TokenKind::Keyword,
+    "typename" => TokenKind::Keyword, "new" => TokenKind::Keyword, "delete" => TokenKind::Keyword,
+    "this" => TokenKind::Keyword, "friend" => TokenKind::Keyword, "inline" => TokenKind::Keyword,
+    "explicit" => TokenKind::Keyword, "operator" => TokenKind::Keyword,
+    "if" => TokenKind::Control, "else" => TokenKind::Control, "for" => TokenKind::Control,
+    "while" => TokenKind::Control, "do" => TokenKind::Control, "break" => TokenKind::Control,
+    "continue" => TokenKind::Control, "return" => TokenKind::Control, "switch" => TokenKind::Control,
+    "case" => TokenKind::Control, "default" => TokenKind::Control, "goto" => TokenKind::Control,
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal,
+    "NULL" => TokenKind::Literal, "nullptr" => TokenKind::Literal,
+    "bool" => TokenKind::Type, "size_t" => TokenKind::Type, "uint8_t" => TokenKind::Type,
+    "uint16_t" => TokenKind::Type, "uint32_t" => TokenKind::Type, "uint64_t" => TokenKind::Type,
+    "int8_t" => TokenKind::Type, "int16_t" => TokenKind::Type, "int32_t" => TokenKind::Type,
+    "int64_t" => TokenKind::Type, "string" => TokenKind::Type, "vector" => TokenKind::Type,
+    "map" => TokenKind::Type, "set" => TokenKind::Type, "list" => TokenKind::Type,
+    "array" => TokenKind::Type,
+};
+
+static JSON_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal, "null" => TokenKind::Literal,
+};
+
+static YAML_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal, "null" => TokenKind::Literal,
+    "yes" => TokenKind::Literal, "no" => TokenKind::Literal,
+    "on" => TokenKind::Literal, "off" => TokenKind::Literal,
+};
+
+static DOCKERFILE_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "FROM" => TokenKind::Keyword, "RUN" => TokenKind::Keyword, "CMD" => TokenKind::Keyword,
+    "LABEL" => TokenKind::Keyword, "MAINTAINER" => TokenKind::Keyword, "EXPOSE" => TokenKind::Keyword,
+    "ENV" => TokenKind::Keyword, "ADD" => TokenKind::Keyword, "COPY" => TokenKind::Keyword,
+    "ENTRYPOINT" => TokenKind::Keyword, "VOLUME" => TokenKind::Keyword, "USER" => TokenKind::Keyword,
+    "WORKDIR" => TokenKind::Keyword, "ARG" => TokenKind::Keyword, "ONBUILD" => TokenKind::Keyword,
+    "STOPSIGNAL" => TokenKind::Keyword, "HEALTHCHECK" => TokenKind::Keyword, "SHELL" => TokenKind::Keyword,
+};
+
+static GENERIC_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
+    "if" => TokenKind::Control, "else" => TokenKind::Control, "for" => TokenKind::Control,
+    "while" => TokenKind::Control, "break" => TokenKind::Control, "continue" => TokenKind::Control,
+    "return" => TokenKind::Control,
+    "true" => TokenKind::Literal, "false" => TokenKind::Literal, "null" => TokenKind::Literal,
+    "None" => TokenKind::Literal, "undefined" => TokenKind::Literal, "nil" => TokenKind::Literal,
+};
+
 #[derive(Clone)]
 pub struct HighlightedLine {
     pub spans: Rc<Vec<(Style, String)>>,
@@ -143,354 +326,195 @@ impl SyntaxHighlighter {
     }
 
     fn highlight_simple(&self, line: &str) -> Vec<(Style, String)> {
-        // Enhanced fallback highlighting with string literals, numbers, and comments
-        let mut result = Vec::new();
+        let keyword_map = self.current_keyword_map();
+        let mut result: Vec<(Style, String)> = Vec::new();
+        let mut buf = String::new();
+        let mut buf_style = Style::default();
+
+        // Flush accumulated buffer into result, starting fresh with new style.
+        // Adjacent same-style writes merge into one span automatically.
+        let flush = |result: &mut Vec<(Style, String)>, buf: &mut String, buf_style: &mut Style, new_style: Style| {
+            if !buf.is_empty() {
+                if let Some(last) = result.last_mut() {
+                    if last.0 == *buf_style {
+                        last.1.push_str(buf);
+                        buf.clear();
+                        *buf_style = new_style;
+                        return;
+                    }
+                }
+                result.push((*buf_style, std::mem::take(buf)));
+            }
+            *buf_style = new_style;
+        };
+
+        let default_style = Style::default();
+        let string_style = Style::default().fg(Color::Green);
+        let comment_style = Style::default().fg(Color::DarkGray);
+        let number_style = Style::default().fg(Color::Cyan);
+
         let mut chars = line.chars().peekable();
-        let mut current_word = String::new();
 
         while let Some(ch) = chars.next() {
             if ch.is_alphanumeric() || ch == '_' {
-                current_word.push(ch);
-            } else {
-                // Process accumulated word
-                if !current_word.is_empty() {
-                    let style = self.get_keyword_style(&current_word);
-                    result.push((style, current_word.clone()));
-                    current_word.clear();
+                // Accumulate identifier chars — we need the full word before we know its style.
+                // Collect into a temporary (short-lived) and then flush with correct style.
+                let mut word = String::new();
+                word.push(ch);
+                while let Some(&next_ch) = chars.peek() {
+                    if next_ch.is_alphanumeric() || next_ch == '_' {
+                        word.push(next_ch);
+                        chars.next();
+                    } else {
+                        break;
+                    }
                 }
+                let style = Self::lookup_keyword(keyword_map, &word);
+                if style != buf_style {
+                    flush(&mut result, &mut buf, &mut buf_style, style);
+                }
+                buf.push_str(&word);
+                continue;
+            }
 
-                // Handle special characters
-                match ch {
-                    // String literals
-                    '"' => {
-                        let mut string_literal = String::from('"');
-                        let mut escaped = false;
-                        #[allow(clippy::while_let_on_iterator)]
-                        while let Some(next_ch) = chars.next() {
-                            string_literal.push(next_ch);
-                            if next_ch == '"' && !escaped {
-                                break;
-                            }
-                            escaped = next_ch == '\\' && !escaped;
+            match ch {
+                '"' => {
+                    if buf_style != string_style {
+                        flush(&mut result, &mut buf, &mut buf_style, string_style);
+                    }
+                    buf.push('"');
+                    let mut escaped = false;
+                    for next_ch in chars.by_ref() {
+                        buf.push(next_ch);
+                        if next_ch == '"' && !escaped {
+                            break;
                         }
-                        result.push((Style::default().fg(Color::Green), string_literal));
+                        escaped = next_ch == '\\' && !escaped;
                     }
-                    '\'' => {
-                        let mut char_literal = String::from('\'');
-                        let mut escaped = false;
-                        #[allow(clippy::while_let_on_iterator)]
-                        while let Some(next_ch) = chars.next() {
-                            char_literal.push(next_ch);
-                            if next_ch == '\'' && !escaped {
-                                break;
-                            }
-                            escaped = next_ch == '\\' && !escaped;
+                }
+                '\'' => {
+                    if buf_style != string_style {
+                        flush(&mut result, &mut buf, &mut buf_style, string_style);
+                    }
+                    buf.push('\'');
+                    let mut escaped = false;
+                    for next_ch in chars.by_ref() {
+                        buf.push(next_ch);
+                        if next_ch == '\'' && !escaped {
+                            break;
                         }
-                        result.push((Style::default().fg(Color::Green), char_literal));
+                        escaped = next_ch == '\\' && !escaped;
                     }
-                    // Comments
-                    '/' if chars.peek() == Some(&'/') => {
-                        chars.next(); // consume second '/'
-                        let rest: String = chars.collect();
-                        result.push((Style::default().fg(Color::DarkGray), format!("//{rest}")));
-                        break;
+                }
+                '/' if chars.peek() == Some(&'/') => {
+                    chars.next();
+                    if buf_style != comment_style {
+                        flush(&mut result, &mut buf, &mut buf_style, comment_style);
                     }
-                    '/' if chars.peek() == Some(&'*') => {
-                        chars.next(); // consume '*'
-                        let mut comment = String::from("/*");
-                        let mut found_end = false;
-
-                        while let Some(next_ch) = chars.next() {
-                            comment.push(next_ch);
-                            if next_ch == '*' && chars.peek() == Some(&'/') {
-                                chars.next(); // consume '/'
-                                comment.push('/');
-                                found_end = true;
-                                break;
-                            }
+                    buf.push_str("//");
+                    for c in chars.by_ref() {
+                        buf.push(c);
+                    }
+                    break;
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    if buf_style != comment_style {
+                        flush(&mut result, &mut buf, &mut buf_style, comment_style);
+                    }
+                    buf.push_str("/*");
+                    while let Some(next_ch) = chars.next() {
+                        buf.push(next_ch);
+                        if next_ch == '*' && chars.peek() == Some(&'/') {
+                            chars.next();
+                            buf.push('/');
+                            break;
                         }
-
-                        result.push((Style::default().fg(Color::DarkGray), comment));
-                        if found_end {
-                            // Continue processing if block comment ended on this line
-                            // (chars iterator is consumed, so this will exit the loop)
+                    }
+                    break;
+                }
+                '#' => {
+                    if buf_style != comment_style {
+                        flush(&mut result, &mut buf, &mut buf_style, comment_style);
+                    }
+                    buf.push('#');
+                    for c in chars.by_ref() {
+                        buf.push(c);
+                    }
+                    break;
+                }
+                '-' if chars.peek() == Some(&'-') => {
+                    chars.next();
+                    if buf_style != comment_style {
+                        flush(&mut result, &mut buf, &mut buf_style, comment_style);
+                    }
+                    buf.push_str("--");
+                    for c in chars.by_ref() {
+                        buf.push(c);
+                    }
+                    break;
+                }
+                c if c.is_ascii_digit() => {
+                    if buf_style != number_style {
+                        flush(&mut result, &mut buf, &mut buf_style, number_style);
+                    }
+                    buf.push(c);
+                    while let Some(&next_ch) = chars.peek() {
+                        if next_ch.is_ascii_digit()
+                            || next_ch == '.'
+                            || next_ch == '_'
+                            || next_ch.is_ascii_hexdigit()
+                        {
+                            buf.push(next_ch);
+                            chars.next();
+                        } else {
+                            break;
                         }
-                        break; // End processing for this line
                     }
-                    '#' => {
-                        let rest: String = chars.collect();
-                        result.push((Style::default().fg(Color::DarkGray), format!("#{rest}")));
-                        break;
+                }
+                _ => {
+                    if buf_style != default_style {
+                        flush(&mut result, &mut buf, &mut buf_style, default_style);
                     }
-                    '-' if chars.peek() == Some(&'-') => {
-                        // SQL-style comments
-                        chars.next(); // consume second '-'
-                        let rest: String = chars.collect();
-                        result.push((Style::default().fg(Color::DarkGray), format!("--{rest}")));
-                        break;
-                    }
-                    // Numbers
-                    c if c.is_ascii_digit() => {
-                        let mut number = String::from(c);
-                        while let Some(&next_ch) = chars.peek() {
-                            if next_ch.is_ascii_digit()
-                                || next_ch == '.'
-                                || next_ch == '_'
-                                || next_ch.is_ascii_hexdigit()
-                            {
-                                if let Some(ch) = chars.next() {
-                                    number.push(ch);
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        result.push((Style::default().fg(Color::Cyan), number));
-                    }
-                    // Regular characters and operators
-                    _ => {
-                        result.push((Style::default(), ch.to_string()));
-                    }
+                    buf.push(ch);
                 }
             }
         }
 
-        // Handle final word
-        if !current_word.is_empty() {
-            let style = self.get_keyword_style(&current_word);
-            result.push((style, current_word));
-        }
-
-        // P15: Coalesce adjacent spans with the same style to reduce allocations
-        Self::coalesce_spans(result)
-    }
-
-    /// Merge consecutive spans that share the same style into a single span
-    fn coalesce_spans(spans: Vec<(Style, String)>) -> Vec<(Style, String)> {
-        if spans.len() <= 1 {
-            return spans;
-        }
-        let mut coalesced: Vec<(Style, String)> = Vec::with_capacity(spans.len());
-        for (style, text) in spans {
-            if let Some(last) = coalesced.last_mut() {
-                if last.0 == style {
-                    last.1.push_str(&text);
-                    continue;
+        if !buf.is_empty() {
+            if let Some(last) = result.last_mut() {
+                if last.0 == buf_style {
+                    last.1.push_str(&buf);
+                    return result;
                 }
             }
-            coalesced.push((style, text));
+            result.push((buf_style, buf));
         }
-        coalesced
+
+        result
     }
 
-    fn get_keyword_style(&self, word: &str) -> Style {
-        // Language-specific highlighting based on current syntax
+    #[inline]
+    fn current_keyword_map(&self) -> &'static phf::Map<&'static str, TokenKind> {
         match self.current_syntax.as_deref() {
-            Some("Rust") => self.get_rust_keyword_style(word),
-            Some("Python") => self.get_python_keyword_style(word),
-            Some("JavaScript") | Some("TypeScript") => self.get_js_keyword_style(word),
-            Some("Go") => self.get_go_keyword_style(word),
-            Some("Shell Script (Bash)") | Some("Bourne Again Shell (bash)") => {
-                self.get_shell_keyword_style(word)
-            }
-            Some("C") | Some("C++") => self.get_c_keyword_style(word),
-            Some("JSON") => self.get_json_keyword_style(word),
-            Some("YAML") => self.get_yaml_keyword_style(word),
-            Some("Dockerfile") => self.get_dockerfile_keyword_style(word),
-            _ => self.get_generic_keyword_style(word),
+            Some("Rust") => &RUST_KEYWORDS,
+            Some("Python") => &PYTHON_KEYWORDS,
+            Some("JavaScript") | Some("TypeScript") => &JS_KEYWORDS,
+            Some("Go") => &GO_KEYWORDS,
+            Some("Shell Script (Bash)") | Some("Bourne Again Shell (bash)") => &SHELL_KEYWORDS,
+            Some("C") | Some("C++") => &C_KEYWORDS,
+            Some("JSON") => &JSON_KEYWORDS,
+            Some("YAML") => &YAML_KEYWORDS,
+            Some("Dockerfile") => &DOCKERFILE_KEYWORDS,
+            _ => &GENERIC_KEYWORDS,
         }
     }
 
-    fn get_rust_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // Rust keywords
-            "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait" | "use" | "mod"
-            | "const" | "static" | "extern" | "crate" | "super" | "self" | "Self" | "where"
-            | "async" | "await" | "unsafe" | "dyn" | "ref" | "move" => {
-                Style::default().fg(Color::Magenta)
-            }
-
-            // Control flow
-            "if" | "else" | "match" | "for" | "while" | "loop" | "break" | "continue"
-            | "return" => Style::default().fg(Color::Yellow),
-
-            // Literals
-            "true" | "false" | "None" | "Some" => Style::default().fg(Color::Cyan),
-
-            // Rust types
-            "String" | "Vec" | "Option" | "Result" | "HashMap" | "HashSet" | "i32" | "u32"
-            | "i64" | "u64" | "f32" | "f64" | "bool" | "char" | "usize" | "isize" | "str"
-            | "Box" | "Rc" | "Arc" | "RefCell" | "Mutex" => Style::default().fg(Color::Blue),
-
-            _ => Style::default(),
-        }
-    }
-
-    fn get_python_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // Python keywords
-            "def" | "class" | "import" | "from" | "as" | "with" | "lambda" | "async" | "await"
-            | "global" | "nonlocal" | "yield" | "pass" | "del" => {
-                Style::default().fg(Color::Magenta)
-            }
-
-            // Control flow
-            "if" | "elif" | "else" | "for" | "while" | "break" | "continue" | "return" | "try"
-            | "except" | "finally" | "raise" | "assert" => Style::default().fg(Color::Yellow),
-
-            // Literals
-            "True" | "False" | "None" => Style::default().fg(Color::Cyan),
-
-            // Python built-ins
-            "str" | "int" | "float" | "bool" | "list" | "dict" | "tuple" | "set" | "len"
-            | "range" | "enumerate" | "zip" | "map" | "filter" | "print" | "open" | "file"
-            | "type" | "isinstance" | "hasattr" => Style::default().fg(Color::Blue),
-
-            _ => Style::default(),
-        }
-    }
-
-    fn get_js_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // JavaScript/TypeScript keywords
-            "function" | "var" | "let" | "const" | "class" | "extends" | "import" | "export"
-            | "async" | "await" | "yield" | "interface" | "type" | "enum" | "namespace"
-            | "module" | "declare" => Style::default().fg(Color::Magenta),
-
-            // Control flow
-            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return" | "try"
-            | "catch" | "finally" | "throw" | "switch" | "case" | "default" => {
-                Style::default().fg(Color::Yellow)
-            }
-
-            // Literals
-            "true" | "false" | "null" | "undefined" => Style::default().fg(Color::Cyan),
-
-            // JS/TS types
-            "string" | "number" | "boolean" | "object" | "Array" | "Object" | "Function"
-            | "Promise" | "Map" | "Set" | "WeakMap" | "WeakSet" | "Symbol" | "BigInt" | "any"
-            | "unknown" | "never" | "void" => Style::default().fg(Color::Blue),
-
-            _ => Style::default(),
-        }
-    }
-
-    fn get_go_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // Go keywords
-            "func" | "var" | "const" | "type" | "struct" | "interface" | "package" | "import"
-            | "go" | "defer" | "chan" | "select" | "range" | "map" | "make" | "new" => {
-                Style::default().fg(Color::Magenta)
-            }
-
-            // Control flow
-            "if" | "else" | "for" | "switch" | "case" | "default" | "break" | "continue"
-            | "return" | "goto" | "fallthrough" => Style::default().fg(Color::Yellow),
-
-            // Literals
-            "true" | "false" | "nil" => Style::default().fg(Color::Cyan),
-
-            // Go types
-            "string" | "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
-            | "uint16" | "uint32" | "uint64" | "bool" | "byte" | "rune" | "float32" | "float64"
-            | "complex64" | "complex128" | "error" => Style::default().fg(Color::Blue),
-
-            _ => Style::default(),
-        }
-    }
-
-    fn get_shell_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // Shell keywords
-            "if" | "then" | "else" | "elif" | "fi" | "case" | "esac" | "for" | "while"
-            | "until" | "do" | "done" | "function" | "select" | "time" | "in" => {
-                Style::default().fg(Color::Magenta)
-            }
-
-            // Shell commands
-            "echo" | "printf" | "cat" | "grep" | "awk" | "sed" | "sort" | "uniq" | "cut"
-            | "head" | "tail" | "find" | "xargs" | "ls" | "cd" | "pwd" | "mkdir" | "rm" | "cp"
-            | "mv" | "chmod" | "chown" | "export" | "alias" | "source" | "exec" | "exit"
-            | "return" | "break" | "continue" => Style::default().fg(Color::Yellow),
-
-            // Shell variables/operators
-            "true" | "false" => Style::default().fg(Color::Cyan),
-
-            _ => Style::default(),
-        }
-    }
-
-    fn get_c_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // C/C++ keywords
-            "int" | "char" | "float" | "double" | "void" | "long" | "short" | "unsigned"
-            | "signed" | "const" | "static" | "extern" | "volatile" | "register" | "struct"
-            | "union" | "enum" | "typedef" | "sizeof" => Style::default().fg(Color::Magenta),
-
-            // C++ specific
-            "class" | "public" | "private" | "protected" | "virtual" | "override" | "namespace"
-            | "using" | "template" | "typename" | "new" | "delete" | "this" | "friend"
-            | "inline" | "explicit" | "operator" => Style::default().fg(Color::Magenta),
-
-            // Control flow
-            "if" | "else" | "for" | "while" | "do" | "break" | "continue" | "return" | "switch"
-            | "case" | "default" | "goto" => Style::default().fg(Color::Yellow),
-
-            // Literals
-            "true" | "false" | "NULL" | "nullptr" => Style::default().fg(Color::Cyan),
-
-            // Standard types
-            "bool" | "size_t" | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "int8_t"
-            | "int16_t" | "int32_t" | "int64_t" | "string" | "vector" | "map" | "set" | "list"
-            | "array" => Style::default().fg(Color::Blue),
-
-            _ => Style::default(),
-        }
-    }
-
-    fn get_json_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // JSON literals
-            "true" | "false" | "null" => Style::default().fg(Color::Cyan),
-            _ => Style::default(),
-        }
-    }
-
-    fn get_yaml_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // YAML literals
-            "true" | "false" | "null" | "yes" | "no" | "on" | "off" => {
-                Style::default().fg(Color::Cyan)
-            }
-            _ => Style::default(),
-        }
-    }
-
-    fn get_dockerfile_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // Dockerfile keywords
-            "FROM" | "RUN" | "CMD" | "LABEL" | "MAINTAINER" | "EXPOSE" | "ENV" | "ADD" | "COPY"
-            | "ENTRYPOINT" | "VOLUME" | "USER" | "WORKDIR" | "ARG" | "ONBUILD" | "STOPSIGNAL"
-            | "HEALTHCHECK" | "SHELL" => Style::default().fg(Color::Magenta),
-            _ => Style::default(),
-        }
-    }
-
-    fn get_generic_keyword_style(&self, word: &str) -> Style {
-        match word {
-            // Generic control flow
-            "if" | "else" | "for" | "while" | "break" | "continue" | "return" => {
-                Style::default().fg(Color::Yellow)
-            }
-
-            // Generic literals
-            "true" | "false" | "null" | "None" | "undefined" | "nil" => {
-                Style::default().fg(Color::Cyan)
-            }
-
-            _ => Style::default(),
+    #[inline]
+    fn lookup_keyword(map: &phf::Map<&'static str, TokenKind>, word: &str) -> Style {
+        match map.get(word) {
+            Some(kind) => kind.style(),
+            None => Style::default(),
         }
     }
 }
@@ -538,14 +562,23 @@ mod tests {
     fn test_get_rust_keyword_style() {
         let mut h = SyntaxHighlighter::new();
         h.set_syntax(Some("Rust"));
-        let kw_style = h.get_rust_keyword_style("fn");
-        assert_eq!(kw_style.fg, Some(Color::Magenta));
-        let ctrl_style = h.get_rust_keyword_style("if");
-        assert_eq!(ctrl_style.fg, Some(Color::Yellow));
-        let type_style = h.get_rust_keyword_style("String");
-        assert_eq!(type_style.fg, Some(Color::Blue));
-        let plain_style = h.get_rust_keyword_style("foobar");
-        assert_eq!(plain_style, Style::default());
+        let map = h.current_keyword_map();
+        assert_eq!(
+            SyntaxHighlighter::lookup_keyword(map, "fn").fg,
+            Some(Color::Magenta)
+        );
+        assert_eq!(
+            SyntaxHighlighter::lookup_keyword(map, "if").fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            SyntaxHighlighter::lookup_keyword(map, "String").fg,
+            Some(Color::Blue)
+        );
+        assert_eq!(
+            SyntaxHighlighter::lookup_keyword(map, "foobar"),
+            Style::default()
+        );
     }
 
     #[test]

@@ -3,11 +3,62 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::editor::{Editor, InputMode};
 use crate::get_line_str;
 use crate::tabs::TabManager;
+
+/// Per-line cache of fully-assembled content spans (post-syntax, post-search,
+/// pre-selection, pre-horizontal-slice). Only populated when search and
+/// selection are both inactive — the common cursor-navigation case. The cache
+/// is invalidated whenever `dirty_generation` or the active rope identity
+/// changes, so entries are always valid for the current frame if they exist.
+struct RenderCache {
+    rope_id: usize,
+    rope_len_chars: usize,
+    dirty_generation: u64,
+    show_whitespace: bool,
+    lines: HashMap<usize, Rc<Vec<Span<'static>>>>,
+}
+
+impl RenderCache {
+    fn new() -> Self {
+        Self {
+            rope_id: 0,
+            rope_len_chars: 0,
+            dirty_generation: 0,
+            show_whitespace: false,
+            lines: HashMap::new(),
+        }
+    }
+
+    fn reset_if_stale(
+        &mut self,
+        rope_id: usize,
+        rope_len_chars: usize,
+        dirty_generation: u64,
+        show_whitespace: bool,
+    ) {
+        if self.rope_id != rope_id
+            || self.rope_len_chars != rope_len_chars
+            || self.dirty_generation != dirty_generation
+            || self.show_whitespace != show_whitespace
+        {
+            self.rope_id = rope_id;
+            self.rope_len_chars = rope_len_chars;
+            self.dirty_generation = dirty_generation;
+            self.show_whitespace = show_whitespace;
+            self.lines.clear();
+        }
+    }
+}
+
+thread_local! {
+    static RENDER_CACHE: RefCell<RenderCache> = RefCell::new(RenderCache::new());
+}
 
 pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
     let area = f.area();
@@ -366,15 +417,20 @@ fn draw_editor_horizontal_scroll(
     let h_offset = editor.viewport.viewport_offset.1;
     let search_term_char_len = editor.search.search_buffer.chars().count();
     let selection_range = compute_selection_range(editor);
+    let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
+
+    let rope_id = (&editor.rope as *const _) as usize;
+    let rope_len_chars = editor.rope.len_chars();
+    let dirty_gen = editor.dirty_generation;
+    let can_cache = selection_range.is_none() && search_term_char_len == 0;
+    RENDER_CACHE.with(|c| {
+        c.borrow_mut()
+            .reset_if_stale(rope_id, rope_len_chars, dirty_gen, show_whitespace)
+    });
 
     for i in 0..visible_lines {
         let line_idx = editor.viewport.viewport_offset.0 + i;
         if line_idx < editor.rope.len_lines() {
-            let line_text = get_line_str(&editor.rope, line_idx);
-
-            let highlighted_spans: Rc<Vec<(Style, String)>> =
-                editor.highlighter.highlight_line(line_idx, &line_text);
-
             let mut styled_spans: Vec<Span> = vec![];
 
             if show_line_numbers {
@@ -382,33 +438,57 @@ fn draw_editor_horizontal_scroll(
                 styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
             }
 
-            let line_content = line_text.trim_end_matches('\n');
+            let cached_content: Option<Rc<Vec<Span<'static>>>> = if can_cache {
+                RENDER_CACHE.with(|c| c.borrow().lines.get(&line_idx).cloned())
+            } else {
+                None
+            };
 
-            let line_match_range = line_match_slice(&editor.search.search_matches, line_idx);
-            let mut search_spans = apply_search_highlighting(
-                &highlighted_spans,
-                line_content,
-                line_idx,
-                search_term_char_len,
-                &editor.search.search_matches,
-                editor.search.current_match_index,
-                line_match_range,
-            );
+            let sliced = if let Some(cached) = cached_content {
+                slice_spans_horizontal(cached.as_slice(), h_offset, content_width)
+            } else {
+                let line_text = get_line_str(&editor.rope, line_idx);
 
-            if show_whitespace {
-                for span in &mut search_spans {
-                    let rendered = render_whitespace(&span.content);
-                    if rendered != span.content.as_ref() {
-                        *span = Span::styled(rendered, span.style);
+                let highlighted_spans: Rc<Vec<(Style, String)>> =
+                    editor.highlighter.highlight_line(line_idx, &line_text);
+
+                let line_content = line_text.trim_end_matches('\n');
+
+                let line_match_range = line_match_slice(&editor.search.search_matches, line_idx);
+                let mut search_spans = apply_search_highlighting(
+                    &highlighted_spans,
+                    line_content,
+                    line_idx,
+                    search_term_char_len,
+                    &editor.search.search_matches,
+                    editor.search.current_match_index,
+                    line_match_range,
+                    &mut line_chars_buf,
+                );
+
+                if show_whitespace {
+                    for span in &mut search_spans {
+                        let rendered = render_whitespace(&span.content);
+                        if rendered != span.content.as_ref() {
+                            *span = Span::styled(rendered, span.style);
+                        }
                     }
                 }
-            }
 
-            let final_spans =
-                apply_selection_highlighting(search_spans, line_idx, editor, selection_range);
+                let final_spans =
+                    apply_selection_highlighting(search_spans, line_idx, editor, selection_range);
 
-            // Apply horizontal scrolling: slice spans to show only the visible portion
-            let sliced = slice_spans_horizontal(&final_spans, h_offset, content_width);
+                let sliced = slice_spans_horizontal(&final_spans, h_offset, content_width);
+
+                if can_cache {
+                    RENDER_CACHE.with(|c| {
+                        c.borrow_mut().lines.insert(line_idx, Rc::new(final_spans));
+                    });
+                }
+
+                sliced
+            };
+
             styled_spans.extend(sliced);
 
             lines.push(Line::from(styled_spans));
@@ -468,6 +548,7 @@ fn draw_editor_word_wrap(
     let mut screen_row = 0;
     let mut cursor_screen_y: Option<usize> = None;
     let mut line_idx = editor.viewport.viewport_offset.0;
+    let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
 
     while screen_row < visible_lines && line_idx < editor.rope.len_lines() {
         let line_text = get_line_str(&editor.rope, line_idx);
@@ -486,6 +567,7 @@ fn draw_editor_word_wrap(
             &editor.search.search_matches,
             editor.search.current_match_index,
             line_match_range,
+            &mut line_chars_buf,
         );
 
         if show_whitespace {
@@ -778,6 +860,7 @@ fn apply_search_highlighting(
     search_matches: &[(usize, usize)],
     current_match_index: Option<usize>,
     line_match_range: (usize, usize),
+    line_chars_buf: &mut Vec<char>,
 ) -> Vec<Span<'static>> {
     let (range_start, range_end) = line_match_range;
     if search_term_char_len == 0 || range_start >= range_end {
@@ -798,7 +881,9 @@ fn apply_search_highlighting(
         .map(|(_, match_col)| *match_col);
 
     let mut result_spans = Vec::new();
-    let line_chars: Vec<char> = line_content.chars().collect();
+    line_chars_buf.clear();
+    line_chars_buf.extend(line_content.chars());
+    let line_chars = line_chars_buf.as_slice();
     let mut current_char_pos = 0;
 
     for &(_, match_char_pos) in line_matches {
