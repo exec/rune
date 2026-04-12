@@ -576,7 +576,9 @@ impl Editor {
             return false;
         }
 
-        self.search.search_start_pos = self.viewport.cursor_pos;
+        // `search_start_pos` is set once in `TabManager::start_find` and must
+        // not be clobbered here — otherwise cancel/Esc restores the cursor
+        // to the last match rather than the pre-find position.
         self.search.search_buffer = search_term.to_string();
         self.search.search_matches = self.search.find_all_matches(&self.rope);
 

@@ -332,9 +332,14 @@ impl TabManager {
     }
 
     pub fn perform_save(&mut self, path: PathBuf) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let created_parent: Option<PathBuf> = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                let missing = !parent.is_dir();
+                std::fs::create_dir_all(parent)?;
+                if missing { Some(parent.to_path_buf()) } else { None }
+            }
+            _ => None,
+        };
 
         // Create backup if enabled
         if self.config.backup_on_save && path.exists() {
@@ -365,7 +370,14 @@ impl TabManager {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "[untitled]".to_string());
 
-        self.set_temporary_status_message(format!("Saved: {}", path.display()));
+        match created_parent {
+            Some(parent) => self.set_temporary_status_message(format!(
+                "Saved: {} (created new directory: {})",
+                path.display(),
+                parent.display()
+            )),
+            None => self.set_temporary_status_message(format!("Saved: {}", path.display())),
+        }
         Ok(())
     }
 
@@ -515,6 +527,10 @@ impl TabManager {
     pub fn start_find(&mut self) {
         self.input_mode = InputMode::Find;
         let editor = self.active_editor_mut();
+        // Snapshot the cursor so Esc / cancel_search can restore it. The
+        // snapshot must happen here, NOT on every perform_find call —
+        // otherwise it drifts to the most recent match as the user types.
+        editor.search.search_start_pos = editor.viewport.cursor_pos;
         editor.search.search_buffer.clear();
         editor.search.search_matches.clear();
         editor.search.current_match_index = None;
@@ -526,6 +542,8 @@ impl TabManager {
     pub fn start_replace(&mut self) {
         self.input_mode = InputMode::Replace;
         let editor = self.active_editor_mut();
+        // Snapshot for Esc/cancel restore — see start_find for rationale.
+        editor.search.search_start_pos = editor.viewport.cursor_pos;
         editor.search.search_buffer.clear();
         editor.search.replace_buffer.clear();
         editor.search.replace_phase = crate::search::ReplacePhase::FindPattern;
