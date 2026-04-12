@@ -364,6 +364,8 @@ fn draw_editor_horizontal_scroll(
     let visible_lines = editor_area.height as usize;
     let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
     let h_offset = editor.viewport.viewport_offset.1;
+    let search_term_char_len = editor.search.search_buffer.chars().count();
+    let selection_range = compute_selection_range(editor);
 
     for i in 0..visible_lines {
         let line_idx = editor.viewport.viewport_offset.0 + i;
@@ -382,14 +384,15 @@ fn draw_editor_horizontal_scroll(
 
             let line_content = line_text.trim_end_matches('\n');
 
+            let line_match_range = line_match_slice(&editor.search.search_matches, line_idx);
             let mut search_spans = apply_search_highlighting(
                 &highlighted_spans,
                 line_content,
                 line_idx,
-                &editor.search.search_buffer,
+                search_term_char_len,
                 &editor.search.search_matches,
                 editor.search.current_match_index,
-                editor.search.case_sensitive,
+                line_match_range,
             );
 
             if show_whitespace {
@@ -401,7 +404,8 @@ fn draw_editor_horizontal_scroll(
                 }
             }
 
-            let final_spans = apply_selection_highlighting(search_spans, line_idx, editor);
+            let final_spans =
+                apply_selection_highlighting(search_spans, line_idx, editor, selection_range);
 
             // Apply horizontal scrolling: slice spans to show only the visible portion
             let sliced = slice_spans_horizontal(&final_spans, h_offset, content_width);
@@ -457,6 +461,8 @@ fn draw_editor_word_wrap(
 
     let visible_lines = editor_area.height as usize;
     let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
+    let search_term_char_len = editor.search.search_buffer.chars().count();
+    let selection_range = compute_selection_range(editor);
 
     let mut lines: Vec<Line> = vec![];
     let mut screen_row = 0;
@@ -471,14 +477,15 @@ fn draw_editor_word_wrap(
 
         let line_content = line_text.trim_end_matches('\n');
 
+        let line_match_range = line_match_slice(&editor.search.search_matches, line_idx);
         let mut search_spans = apply_search_highlighting(
             &highlighted_spans,
             line_content,
             line_idx,
-            &editor.search.search_buffer,
+            search_term_char_len,
             &editor.search.search_matches,
             editor.search.current_match_index,
-            editor.search.case_sensitive,
+            line_match_range,
         );
 
         if show_whitespace {
@@ -490,11 +497,11 @@ fn draw_editor_word_wrap(
             }
         }
 
-        let final_spans = apply_selection_highlighting(search_spans, line_idx, editor);
+        let final_spans =
+            apply_selection_highlighting(search_spans, line_idx, editor, selection_range);
 
-        let line_width = line_content
-            .len()
-            .max(final_spans.iter().map(|s| s.content.len()).sum::<usize>());
+        let total_chars: usize = final_spans.iter().map(|s| s.content.chars().count()).sum();
+        let line_width = line_content.chars().count().max(total_chars);
         let rows_needed = if content_width == 0 || line_width == 0 {
             1
         } else {
@@ -509,8 +516,6 @@ fn draw_editor_word_wrap(
             };
             cursor_screen_y = Some(screen_row + cursor_sub_row);
         }
-
-        let all_chars: Vec<(char, Style)> = collect_span_chars(&final_spans);
 
         for sub_row in 0..rows_needed {
             if screen_row >= visible_lines {
@@ -533,11 +538,11 @@ fn draw_editor_word_wrap(
             }
 
             let start_col = sub_row * content_width;
-            let end_col = (start_col + content_width).min(all_chars.len());
+            let end_col = (start_col + content_width).min(total_chars);
 
-            if start_col < all_chars.len() {
-                let sub_chars = &all_chars[start_col..end_col];
-                styled_spans.extend(group_chars_into_spans(sub_chars));
+            if start_col < total_chars {
+                let sub_chars = collect_span_chars_range(&final_spans, start_col, end_col);
+                styled_spans.extend(group_chars_into_spans(&sub_chars));
             }
 
             lines.push(Line::from(styled_spans));
@@ -592,15 +597,18 @@ fn slice_spans_horizontal(spans: &[Span<'_>], h_offset: usize, width: usize) -> 
     }
 
     let mut result = Vec::new();
-    let mut col = 0;
-    let end = h_offset + width;
+    let mut col = 0usize;
+    let end = h_offset.saturating_add(width);
 
     for span in spans {
-        let span_chars: Vec<char> = span.content.chars().collect();
-        let span_len = span_chars.len();
+        if col >= end {
+            break;
+        }
+
+        let span_len = span.content.chars().count();
         let span_end = col + span_len;
 
-        if span_end <= h_offset || col >= end {
+        if span_end <= h_offset {
             col = span_end;
             continue;
         }
@@ -609,7 +617,15 @@ fn slice_spans_horizontal(spans: &[Span<'_>], h_offset: usize, width: usize) -> 
         let end_in_span = if span_end > end { end - col } else { span_len };
 
         if start_in_span < end_in_span {
-            let visible: String = span_chars[start_in_span..end_in_span].iter().collect();
+            let mut visible = String::new();
+            for (i, ch) in span.content.chars().enumerate() {
+                if i >= end_in_span {
+                    break;
+                }
+                if i >= start_in_span {
+                    visible.push(ch);
+                }
+            }
             result.push(Span::styled(visible, span.style));
         }
 
@@ -619,15 +635,35 @@ fn slice_spans_horizontal(spans: &[Span<'_>], h_offset: usize, width: usize) -> 
     result
 }
 
-/// Collect all characters with their styles from a list of spans.
-fn collect_span_chars(spans: &[Span<'_>]) -> Vec<(char, Style)> {
-    let mut chars = Vec::new();
+/// Collect characters with their styles from a list of spans, but only those
+/// whose character index falls in `[start_col, end_col)`. Avoids materializing
+/// the entire line when rendering a single wrapped sub-row.
+fn collect_span_chars_range(
+    spans: &[Span<'_>],
+    start_col: usize,
+    end_col: usize,
+) -> Vec<(char, Style)> {
+    let mut result = Vec::new();
+    if end_col <= start_col {
+        return result;
+    }
+    let mut pos = 0usize;
     for span in spans {
+        if pos >= end_col {
+            break;
+        }
+        let span_style = span.style;
         for ch in span.content.chars() {
-            chars.push((ch, span.style));
+            if pos >= end_col {
+                break;
+            }
+            if pos >= start_col {
+                result.push((ch, span_style));
+            }
+            pos += 1;
         }
     }
-    chars
+    result
 }
 
 /// Group consecutive (char, Style) pairs with the same style into Spans.
@@ -738,12 +774,13 @@ fn apply_search_highlighting(
     syntax_spans: &[(Style, String)],
     line_content: &str,
     line_idx: usize,
-    search_term: &str,
+    search_term_char_len: usize,
     search_matches: &[(usize, usize)],
     current_match_index: Option<usize>,
-    _case_sensitive: bool,
+    line_match_range: (usize, usize),
 ) -> Vec<Span<'static>> {
-    if search_term.is_empty() || search_matches.is_empty() {
+    let (range_start, range_end) = line_match_range;
+    if search_term_char_len == 0 || range_start >= range_end {
         return syntax_spans
             .iter()
             .map(|(style, text)| {
@@ -753,36 +790,21 @@ fn apply_search_highlighting(
             .collect();
     }
 
-    // Trust match positions directly -- they were already validated when find_all_matches ran.
-    let mut validated_matches: Vec<usize> = search_matches
-        .iter()
-        .filter(|(match_line, _)| *match_line == line_idx)
-        .map(|(_, match_col)| *match_col)
-        .collect();
-
-    if validated_matches.is_empty() {
-        return syntax_spans
-            .iter()
-            .map(|(style, text)| {
-                let clean_text = text.trim_end_matches('\n').to_string();
-                Span::styled(clean_text, *style)
-            })
-            .collect();
-    }
-
-    validated_matches.sort_unstable();
-
-    let mut result_spans = Vec::new();
-    let line_chars: Vec<char> = line_content.chars().collect();
-    let search_chars: Vec<char> = search_term.chars().collect();
-    let mut current_char_pos = 0;
+    let line_matches = &search_matches[range_start..range_end];
 
     let current_match_col = current_match_index
         .and_then(|idx| search_matches.get(idx))
         .filter(|(match_line, _)| *match_line == line_idx)
         .map(|(_, match_col)| *match_col);
 
-    for &match_char_pos in &validated_matches {
+    let mut result_spans = Vec::new();
+    let line_chars: Vec<char> = line_content.chars().collect();
+    let mut current_char_pos = 0;
+
+    for &(_, match_char_pos) in line_matches {
+        if match_char_pos < current_char_pos {
+            continue;
+        }
         if match_char_pos > current_char_pos {
             let before_chars: String = line_chars[current_char_pos..match_char_pos]
                 .iter()
@@ -795,7 +817,7 @@ fn apply_search_highlighting(
             }
         }
 
-        let match_end_char = (match_char_pos + search_chars.len()).min(line_chars.len());
+        let match_end_char = (match_char_pos + search_term_char_len).min(line_chars.len());
         let match_chars: String = line_chars[match_char_pos..match_end_char].iter().collect();
 
         let highlight_style = if Some(match_char_pos) == current_match_col {
@@ -821,6 +843,14 @@ fn apply_search_highlighting(
     result_spans
 }
 
+/// Find the slice of `search_matches` (pre-sorted by line, then column) whose
+/// entries belong to `line_idx`. Returns `(start, end)` indices into the slice.
+fn line_match_slice(search_matches: &[(usize, usize)], line_idx: usize) -> (usize, usize) {
+    let start = search_matches.partition_point(|(l, _)| *l < line_idx);
+    let end = search_matches.partition_point(|(l, _)| *l <= line_idx);
+    (start, end)
+}
+
 fn render_whitespace(text: &str) -> String {
     text.replace(' ', "\u{00B7}").replace('\t', "\u{2192}")
 }
@@ -837,22 +867,30 @@ fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usiz
     Style::default()
 }
 
+/// Compute the active selection range as `(start_char_idx, end_char_idx)` once
+/// per frame, avoiding repeated `line_col_to_char_idx` walks in the per-line
+/// highlighting loop. Returns `None` when no mark is set.
+fn compute_selection_range(editor: &Editor) -> Option<(usize, usize)> {
+    let anchor = editor.mark_anchor?;
+    let cursor = editor.viewport.cursor_pos;
+    let anchor_idx = editor.line_col_to_char_idx(anchor.0, anchor.1);
+    let cursor_idx = editor.line_col_to_char_idx(cursor.0, cursor.1);
+    Some(if anchor_idx <= cursor_idx {
+        (anchor_idx, cursor_idx)
+    } else {
+        (cursor_idx, anchor_idx)
+    })
+}
+
 fn apply_selection_highlighting(
     spans: Vec<Span<'static>>,
     line_idx: usize,
     editor: &Editor,
+    selection_range: Option<(usize, usize)>,
 ) -> Vec<Span<'static>> {
-    let (anchor, cursor) = match editor.mark_anchor {
-        Some(anchor) => (anchor, editor.viewport.cursor_pos),
+    let (sel_start, sel_end) = match selection_range {
+        Some(range) => range,
         None => return spans,
-    };
-
-    let anchor_idx = editor.line_col_to_char_idx(anchor.0, anchor.1);
-    let cursor_idx = editor.line_col_to_char_idx(cursor.0, cursor.1);
-    let (sel_start, sel_end) = if anchor_idx <= cursor_idx {
-        (anchor_idx, cursor_idx)
-    } else {
-        (cursor_idx, anchor_idx)
     };
 
     let line_start_char = editor.rope.line_to_char(line_idx);

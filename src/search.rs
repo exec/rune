@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::collections::HashMap;
 
 /// Navigation mode within find functionality
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +29,8 @@ pub struct SearchState {
     pub find_navigation_mode: FindNavigationMode,
     pub replace_phase: ReplacePhase,
     pub goto_line_buffer: String,
+    cached_regex_pattern: Option<String>,
+    cached_regex: Option<Regex>,
 }
 
 impl Default for SearchState {
@@ -45,14 +48,15 @@ impl Default for SearchState {
             find_navigation_mode: FindNavigationMode::HistoryBrowsing,
             replace_phase: ReplacePhase::FindPattern,
             goto_line_buffer: String::new(),
+            cached_regex_pattern: None,
+            cached_regex: None,
         }
     }
 }
 
 impl SearchState {
     pub fn find_all_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
-        let search_term = &self.search_buffer;
-        if search_term.is_empty() {
+        if self.search_buffer.is_empty() {
             return Vec::new();
         }
 
@@ -60,20 +64,31 @@ impl SearchState {
             return self.find_all_regex_matches(rope);
         }
 
+        let search_term = self.search_buffer.clone();
+        let case_sensitive = self.case_sensitive;
+        let search_lower = if case_sensitive {
+            String::new()
+        } else {
+            search_term.to_lowercase()
+        };
+
+        let mut line_cache: HashMap<usize, String> = HashMap::new();
         let mut matches = Vec::new();
 
         for line_idx in 0..rope.len_lines() {
-            let line_string = crate::get_line_str(rope, line_idx);
+            let line_string = line_cache
+                .entry(line_idx)
+                .or_insert_with(|| crate::get_line_str(rope, line_idx));
             let line_content = line_string.trim_end_matches('\n');
 
-            let line_matches = if self.case_sensitive {
-                find_matches_in_line(line_content, search_term)
+            let line_matches = if case_sensitive {
+                find_matches_in_line(line_content, &search_term)
             } else {
-                find_matches_in_line(&line_content.to_lowercase(), &search_term.to_lowercase())
+                find_matches_in_line(&line_content.to_lowercase(), &search_lower)
             };
 
             for col in line_matches {
-                if validate_match(rope, line_idx, col, search_term, self.case_sensitive) {
+                if validate_match_at_position(line_content, col, &search_term, case_sensitive) {
                     matches.push((line_idx, col));
                 }
             }
@@ -83,16 +98,34 @@ impl SearchState {
         matches
     }
 
-    fn find_all_regex_matches(&self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
+    fn find_all_regex_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
         let pattern = if self.case_sensitive {
             self.search_buffer.clone()
         } else {
             format!("(?i){}", self.search_buffer)
         };
 
-        let re = match Regex::new(&pattern) {
-            Ok(re) => re,
-            Err(_) => return Vec::new(),
+        let cache_hit = self
+            .cached_regex_pattern
+            .as_ref()
+            .is_some_and(|p| p == &pattern);
+        if !cache_hit {
+            match Regex::new(&pattern) {
+                Ok(re) => {
+                    self.cached_regex = Some(re);
+                    self.cached_regex_pattern = Some(pattern);
+                }
+                Err(_) => {
+                    self.cached_regex = None;
+                    self.cached_regex_pattern = None;
+                    return Vec::new();
+                }
+            }
+        }
+
+        let re = match self.cached_regex.as_ref() {
+            Some(re) => re,
+            None => return Vec::new(),
         };
 
         let mut matches = Vec::new();
@@ -190,6 +223,8 @@ impl SearchState {
         let start_pos = self.search_start_pos;
         self.search_matches.clear();
         self.current_match_index = None;
+        self.cached_regex = None;
+        self.cached_regex_pattern = None;
         start_pos
     }
 }
@@ -234,21 +269,45 @@ pub fn validate_match_at_position(
     search_term: &str,
     case_sensitive: bool,
 ) -> bool {
-    let line_chars: Vec<char> = line_content.chars().collect();
-    let search_chars: Vec<char> = search_term.chars().collect();
-
-    if char_pos + search_chars.len() > line_chars.len() {
-        return false;
+    // Walk chars to find the byte offset at char_pos without allocating a Vec<char>.
+    let mut byte_start: Option<usize> = None;
+    for (char_idx, (b, _)) in line_content.char_indices().enumerate() {
+        if char_idx == char_pos {
+            byte_start = Some(b);
+            break;
+        }
     }
+    let byte_start = match byte_start {
+        Some(b) => b,
+        None => {
+            // char_pos may equal line length (valid only if search_term is empty)
+            return search_term.is_empty()
+                && char_pos == line_content.chars().count();
+        }
+    };
 
-    let text_at_pos: String = line_chars[char_pos..char_pos + search_chars.len()]
-        .iter()
-        .collect();
+    let tail = &line_content[byte_start..];
 
     if case_sensitive {
-        text_at_pos == search_term
+        tail.starts_with(search_term)
     } else {
-        text_at_pos.to_lowercase() == search_term.to_lowercase()
+        // Count chars needed and take exactly that many from the tail for comparison.
+        let needed = search_term.chars().count();
+        let mut end_byte = byte_start;
+        let mut taken = 0usize;
+        for (b, ch) in tail.char_indices() {
+            if taken == needed {
+                end_byte = byte_start + b;
+                break;
+            }
+            taken += 1;
+            end_byte = byte_start + b + ch.len_utf8();
+        }
+        if taken < needed {
+            return false;
+        }
+        let slice = &line_content[byte_start..end_byte];
+        slice.to_lowercase() == search_term.to_lowercase()
     }
 }
 

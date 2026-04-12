@@ -21,6 +21,7 @@ pub struct TabManager {
     // Fuzzy finder state
     pub fuzzy_query: String,
     pub fuzzy_selected: usize,
+    pub fuzzy_candidates: Vec<crate::fuzzy::FuzzyCandidate>,
     // Tab bar scroll offset (index of first visible tab)
     pub tab_scroll_offset: usize,
     // Pending command for execute confirmation
@@ -55,6 +56,7 @@ impl TabManager {
             needs_redraw: true,
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
+            fuzzy_candidates: Vec::new(),
             tab_scroll_offset: 0,
             pending_command: None,
             read_only: false,
@@ -79,10 +81,22 @@ impl TabManager {
             needs_redraw: true,
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
+            fuzzy_candidates: Vec::new(),
             tab_scroll_offset: 0,
             pending_command: None,
             read_only: false,
         }
+    }
+
+    /// Rebuild the cached prepared fuzzy candidate list from the current tab names.
+    /// Should be called when entering FuzzyFinder mode or when the tab list changes.
+    pub fn rebuild_fuzzy_candidates(&mut self) {
+        self.fuzzy_candidates = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| crate::fuzzy::FuzzyCandidate::new(i, t.display_name.clone()))
+            .collect();
     }
 
     pub fn active_editor(&self) -> &Editor {
@@ -331,7 +345,8 @@ impl TabManager {
         }
 
         let editor = self.active_editor_mut();
-        std::fs::write(&path, editor.rope.to_string())?;
+        let bytes: Vec<u8> = editor.rope.bytes().collect();
+        std::fs::write(&path, bytes)?;
 
         editor.file_path = Some(path.clone());
         editor.modified = false;

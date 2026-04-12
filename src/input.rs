@@ -801,6 +801,7 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.input_mode = InputMode::FuzzyFinder;
             tabs.fuzzy_query.clear();
             tabs.fuzzy_selected = 0;
+            tabs.rebuild_fuzzy_candidates();
             tabs.needs_redraw = true;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('k')) if !is_read_only => {
@@ -959,15 +960,12 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.needs_redraw = true;
         }
         KeyCode::Enter => {
-            let candidates: Vec<(usize, String)> = tabs
-                .tabs
-                .iter()
-                .enumerate()
-                .map(|(i, t)| (i, t.display_name.clone()))
-                .collect();
-            let filtered = crate::fuzzy::fuzzy_filter(&tabs.fuzzy_query, &candidates);
-            if let Some((tab_idx, _, _)) = filtered.get(tabs.fuzzy_selected) {
-                tabs.active_tab = *tab_idx;
+            let filtered = crate::fuzzy::fuzzy_filter_prepared(
+                &tabs.fuzzy_query,
+                &tabs.fuzzy_candidates,
+            );
+            if let Some((cand, _)) = filtered.get(tabs.fuzzy_selected) {
+                tabs.active_tab = cand.id;
             }
             tabs.input_mode = InputMode::Normal;
             tabs.needs_redraw = true;
@@ -978,14 +976,10 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Down => {
             tabs.fuzzy_selected += 1;
-            // Clamp to filtered list bounds
-            let candidates: Vec<(usize, String)> = tabs
-                .tabs
-                .iter()
-                .enumerate()
-                .map(|(i, t)| (i, t.display_name.clone()))
-                .collect();
-            let filtered = crate::fuzzy::fuzzy_filter(&tabs.fuzzy_query, &candidates);
+            let filtered = crate::fuzzy::fuzzy_filter_prepared(
+                &tabs.fuzzy_query,
+                &tabs.fuzzy_candidates,
+            );
             tabs.fuzzy_selected = tabs.fuzzy_selected.min(filtered.len().saturating_sub(1));
             tabs.needs_redraw = true;
         }

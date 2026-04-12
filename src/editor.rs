@@ -1,5 +1,6 @@
 use anyhow::Result;
 use ropey::Rope;
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
@@ -120,6 +121,11 @@ pub struct Editor {
     word_complete_cursor: Option<(usize, usize)>,
     /// The prefix length used for the current completion
     word_complete_prefix_len: usize,
+    /// Single-cell cache of the most recently queried line's display width.
+    /// Hits the common case of repeated queries against the same line
+    /// (e.g. right-arrow on a long line) without HashMap overhead. Cleared
+    /// on any mutation routed through `invalidate_cache`.
+    line_width_cache: Cell<Option<(usize, usize)>>,
 }
 
 /// Get the display width of a line, handling the case where the line spans chunk boundaries.
@@ -161,6 +167,7 @@ impl Editor {
             word_complete_index: 0,
             word_complete_cursor: None,
             word_complete_prefix_len: 0,
+            line_width_cache: Cell::new(None),
         }
     }
 
@@ -192,7 +199,15 @@ impl Editor {
         let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
         self.rope.insert_char(pos, c);
         self.mark_document_changed(self.viewport.cursor_pos.0);
-        self.move_cursor_right();
+        // Advance cursor directly. Avoids `move_cursor_right`'s cache query
+        // on the hot typing path; the cache would be cold anyway because
+        // `mark_document_changed` just cleared it.
+        if c == '\n' {
+            self.viewport.cursor_pos.0 += 1;
+            self.viewport.cursor_pos.1 = 0;
+        } else {
+            self.viewport.cursor_pos.1 += 1;
+        }
         self.modified = true;
     }
 
@@ -213,7 +228,7 @@ impl Editor {
             if pos > 0 {
                 self.save_undo_state();
 
-                let junction_col = line_display_width(&self.rope, self.viewport.cursor_pos.0 - 1);
+                let junction_col = self.line_display_width_cached(self.viewport.cursor_pos.0 - 1);
 
                 self.rope.remove(pos - 1..pos);
                 self.mark_document_changed(self.viewport.cursor_pos.0 - 1);
@@ -282,12 +297,12 @@ impl Editor {
             self.viewport.cursor_pos.1 -= 1;
         } else if self.viewport.cursor_pos.0 > 0 {
             self.viewport.cursor_pos.0 -= 1;
-            self.viewport.cursor_pos.1 = line_display_width(&self.rope, self.viewport.cursor_pos.0);
+            self.viewport.cursor_pos.1 = self.line_display_width_cached(self.viewport.cursor_pos.0);
         }
     }
 
     pub fn move_cursor_right(&mut self) {
-        let line_len = line_display_width(&self.rope, self.viewport.cursor_pos.0);
+        let line_len = self.line_display_width_cached(self.viewport.cursor_pos.0);
         if self.viewport.cursor_pos.1 < line_len {
             self.viewport.cursor_pos.1 += 1;
         } else if self.viewport.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
@@ -310,7 +325,7 @@ impl Editor {
     }
 
     pub fn clamp_cursor_to_line(&mut self) {
-        let line_len = line_display_width(&self.rope, self.viewport.cursor_pos.0);
+        let line_len = self.line_display_width_cached(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.1 = self.viewport.cursor_pos.1.min(line_len);
     }
 
@@ -454,7 +469,7 @@ impl Editor {
         if content_width == 0 {
             return 1;
         }
-        let width = line_display_width(&self.rope, line_idx);
+        let width = self.line_display_width_cached(line_idx);
         if width == 0 {
             1
         } else {
@@ -621,21 +636,24 @@ impl Editor {
 
         self.save_undo_state();
 
-        // Find all match positions using rope-native text scanning
-        let mut match_positions: Vec<usize> = Vec::new();
+        // Scan once for matches, tracking char positions incrementally to
+        // avoid O(n) `chars().count()` recomputes per match.
         let text = self.rope.to_string();
-        let mut start = 0;
-        while let Some(pos) = text[start..].find(search_term) {
-            let byte_pos = start + pos;
-            let char_pos = text[..byte_pos].chars().count();
-            match_positions.push(char_pos);
-            start = byte_pos + search_term.len();
+        let search_char_len = search_term.chars().count();
+        let mut match_positions: Vec<usize> = Vec::new();
+        let mut byte_cursor = 0;
+        let mut char_cursor = 0;
+        while let Some(rel) = text[byte_cursor..].find(search_term) {
+            let match_byte = byte_cursor + rel;
+            char_cursor += text[byte_cursor..match_byte].chars().count();
+            match_positions.push(char_cursor);
+            byte_cursor = match_byte + search_term.len();
+            char_cursor += search_char_len;
         }
 
         let replacements = match_positions.len();
         if replacements > 0 {
-            let search_char_len = search_term.chars().count();
-            // Iterate in reverse to preserve earlier positions
+            // Apply in reverse so earlier char indices stay valid.
             for &char_pos in match_positions.iter().rev() {
                 self.rope.remove(char_pos..char_pos + search_char_len);
                 self.rope.insert(char_pos, replace_term);
@@ -658,14 +676,14 @@ impl Editor {
         let text = self.rope.to_string();
 
         if let Some(byte_pos) = text.find(search_term) {
-            let mut new_text = text.clone();
-            new_text.replace_range(byte_pos..byte_pos + search_term.len(), replace_term);
+            let char_pos = text[..byte_pos].chars().count();
+            let search_char_len = search_term.chars().count();
+            drop(text);
 
-            self.rope = Rope::from_str(&new_text);
+            self.rope.remove(char_pos..char_pos + search_char_len);
+            self.rope.insert(char_pos, replace_term);
             self.modified = true;
 
-            // Convert byte offset to char index before using with rope methods
-            let char_pos = text[..byte_pos].chars().count();
             let line = self.rope.char_to_line(char_pos);
             let line_start = self.rope.line_to_char(line);
             let col = char_pos - line_start;
@@ -787,21 +805,21 @@ impl Editor {
         let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
         let display_col = self.viewport.cursor_pos.1;
 
-        // Convert display column to char index
+        // Walk chars while tracking display col; advance through
+        // non-whitespace then whitespace in a single pass.
         let mut col = 0;
         let mut dcol = 0;
-        for &ch in &line_chars {
-            if dcol >= display_col {
-                break;
-            }
+        while col < line_chars.len() && dcol < display_col {
+            dcol += UnicodeWidthChar::width(line_chars[col]).unwrap_or(0);
             col += 1;
-            dcol += UnicodeWidthChar::width(ch).unwrap_or(0);
         }
 
         while col < line_chars.len() && !line_chars[col].is_whitespace() {
+            dcol += UnicodeWidthChar::width(line_chars[col]).unwrap_or(0);
             col += 1;
         }
         while col < line_chars.len() && line_chars[col].is_whitespace() {
+            dcol += UnicodeWidthChar::width(line_chars[col]).unwrap_or(0);
             col += 1;
         }
 
@@ -809,12 +827,7 @@ impl Editor {
             self.viewport.cursor_pos.0 += 1;
             self.viewport.cursor_pos.1 = 0;
         } else {
-            // Convert char index back to display column
-            let new_display_col: usize = line_chars[..col]
-                .iter()
-                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                .sum();
-            self.viewport.cursor_pos.1 = new_display_col;
+            self.viewport.cursor_pos.1 = dcol;
         }
     }
 
@@ -822,27 +835,32 @@ impl Editor {
     pub fn move_word_left(&mut self) {
         let line_idx = self.viewport.cursor_pos.0;
         let rope_line = self.rope.line(line_idx);
-        let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
         let display_col = self.viewport.cursor_pos.1;
 
         if display_col == 0 {
             if line_idx > 0 {
                 self.viewport.cursor_pos.0 -= 1;
                 self.viewport.cursor_pos.1 =
-                    line_display_width(&self.rope, self.viewport.cursor_pos.0);
+                    self.line_display_width_cached(self.viewport.cursor_pos.0);
             }
             return;
         }
 
-        // Convert display column to char index
+        // Build parallel char + prefix-display-col arrays in a single pass,
+        // so the backward scan can look up the target display col directly.
+        let mut line_chars: Vec<char> = Vec::new();
+        let mut prefix_dcol: Vec<usize> = vec![0];
+        let mut running = 0usize;
+        for ch in rope_line.chars().filter(|&c| c != '\n') {
+            running += UnicodeWidthChar::width(ch).unwrap_or(0);
+            line_chars.push(ch);
+            prefix_dcol.push(running);
+        }
+
+        // Find char index at or just past display_col.
         let mut col: usize = 0;
-        let mut dcol: usize = 0;
-        for &ch in &line_chars {
-            if dcol >= display_col {
-                break;
-            }
+        while col < line_chars.len() && prefix_dcol[col] < display_col {
             col += 1;
-            dcol += UnicodeWidthChar::width(ch).unwrap_or(0);
         }
 
         while col > 0
@@ -860,12 +878,7 @@ impl Editor {
             col -= 1;
         }
 
-        // Convert char index back to display column
-        let new_display_col: usize = line_chars[..col]
-            .iter()
-            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-            .sum();
-        self.viewport.cursor_pos.1 = new_display_col;
+        self.viewport.cursor_pos.1 = prefix_dcol[col];
     }
 
     /// Jump to start of file.
@@ -877,7 +890,7 @@ impl Editor {
     pub fn goto_end(&mut self) {
         let last_line = self.rope.len_lines().saturating_sub(1);
         self.viewport.cursor_pos.0 = last_line;
-        self.viewport.cursor_pos.1 = line_display_width(&self.rope, last_line);
+        self.viewport.cursor_pos.1 = self.line_display_width_cached(last_line);
     }
 
     /// Jump to matching bracket.
@@ -1020,21 +1033,37 @@ impl Editor {
             return;
         }
 
-        // Scan all words in the document for matches, collecting unique candidates
+        // Scan all words in the document for matches, collecting unique
+        // candidates. Iterate rope chars directly to avoid per-line
+        // `String` allocation; only clone the buffer for words that match
+        // the prefix.
         let mut candidates: Vec<String> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for line_i in 0..self.rope.len_lines() {
-            let rope_ln = self.rope.line(line_i);
-            let line_str: String = rope_ln.chars().collect();
-            for word in line_str.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                if word.starts_with(prefix.as_str())
-                    && word != prefix
-                    && word.len() > prefix.len()
-                    && seen.insert(word.to_string())
-                {
-                    candidates.push(word.to_string());
-                }
+        let mut word_buf = String::new();
+        let prefix_str = prefix.as_str();
+        let prefix_len = prefix.len();
+        let flush = |buf: &mut String,
+                     seen: &mut std::collections::HashSet<String>,
+                     candidates: &mut Vec<String>| {
+            if buf.len() > prefix_len
+                && buf.starts_with(prefix_str)
+                && buf.as_str() != prefix_str
+                && !seen.contains(buf.as_str())
+            {
+                seen.insert(buf.clone());
+                candidates.push(buf.clone());
             }
+            buf.clear();
+        };
+        for ch in self.rope.chars() {
+            if ch.is_alphanumeric() || ch == '_' {
+                word_buf.push(ch);
+            } else if !word_buf.is_empty() {
+                flush(&mut word_buf, &mut seen, &mut candidates);
+            }
+        }
+        if !word_buf.is_empty() {
+            flush(&mut word_buf, &mut seen, &mut candidates);
         }
 
         if candidates.is_empty() {
@@ -1058,8 +1087,22 @@ impl Editor {
     }
 
     pub fn invalidate_cache(&mut self) {
-        // Reserved for future caching needs; currently a no-op used as
-        // an extension point by mark_document_changed.
+        self.line_width_cache.set(None);
+    }
+
+    /// Display width of a line, with single-cell memoization. Hits when the
+    /// same line is queried twice in a row (common in cursor movement on a
+    /// single line); a miss costs only a comparison plus the underlying
+    /// computation. Cleared via `invalidate_cache` on any text mutation.
+    pub fn line_display_width_cached(&self, line: usize) -> usize {
+        if let Some((cached_line, cached_width)) = self.line_width_cache.get() {
+            if cached_line == line {
+                return cached_width;
+            }
+        }
+        let w = line_display_width(&self.rope, line);
+        self.line_width_cache.set(Some((line, w)));
+        w
     }
 
     /// Invalidate highlighting and text caches from a given line onwards
