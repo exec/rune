@@ -1,7 +1,12 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use ratatui::{backend::TestBackend, Terminal};
 use rune::editor::Editor;
 use rune::fuzzy::fuzzy_filter;
 use rune::search::SearchState;
+use rune::syntax::SyntaxHighlighter;
+use rune::tabs::TabManager;
+use rune::ui::draw_ui;
+use std::io::Write;
 
 fn make_doc(lines: usize, line_text: &str) -> String {
     let mut s = String::with_capacity(lines * (line_text.len() + 1));
@@ -240,6 +245,218 @@ fn bench_insert_char_typing(c: &mut Criterion) {
     group.finish();
 }
 
+// ---- Second-pass (perf-deep) benches ----
+
+fn rust_like_line(i: usize) -> String {
+    format!(
+        "fn item_{}(x: i32, y: &str) -> Option<String> {{ let v = vec![1, 2, 3]; Some(format!(\"{{}}-{{}}\", x, y)) }}",
+        i
+    )
+}
+
+fn make_rust_doc(lines: usize) -> String {
+    let mut s = String::with_capacity(lines * 128);
+    for i in 0..lines {
+        s.push_str(&rust_like_line(i));
+        s.push('\n');
+    }
+    s
+}
+
+fn bench_load_file(c: &mut Criterion) {
+    let mut group = c.benchmark_group("load_file");
+    for &mb in &[1usize, 10, 50] {
+        let body = "x".repeat(mb * 1_000_000);
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        tmp.write_all(body.as_bytes()).expect("write");
+        let path = tmp.path().to_path_buf();
+        let _guard = tmp; // keep file alive across iterations
+        group.throughput(Throughput::Bytes((mb * 1_000_000) as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{}mb_ascii", mb)),
+            &path,
+            |b, path| {
+                b.iter_batched(
+                    Editor::new_for_test,
+                    |mut ed| {
+                        ed.load_file(black_box(path.clone())).expect("load");
+                        black_box(&ed);
+                    },
+                    criterion::BatchSize::LargeInput,
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_syntax_highlight(c: &mut Criterion) {
+    let mut group = c.benchmark_group("syntax_highlight");
+    let lines: Vec<String> = (0..50).map(rust_like_line).collect();
+
+    group.bench_function("50_rust_lines_cold", |b| {
+        b.iter_batched(
+            || {
+                let mut h = SyntaxHighlighter::new();
+                h.set_syntax(Some("Rust"));
+                h
+            },
+            |mut h| {
+                for (i, line) in lines.iter().enumerate() {
+                    let _ = h.highlight_line(i, black_box(line));
+                }
+                black_box(&h);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("50_rust_lines_warm", |b| {
+        b.iter_batched(
+            || {
+                let mut h = SyntaxHighlighter::new();
+                h.set_syntax(Some("Rust"));
+                for (i, line) in lines.iter().enumerate() {
+                    let _ = h.highlight_line(i, line);
+                }
+                h
+            },
+            |mut h| {
+                for (i, line) in lines.iter().enumerate() {
+                    let _ = h.highlight_line(i, black_box(line));
+                }
+                black_box(&h);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("invalidate_then_rehighlight_50_lines", |b| {
+        b.iter_batched(
+            || {
+                let mut h = SyntaxHighlighter::new();
+                h.set_syntax(Some("Rust"));
+                for (i, line) in lines.iter().enumerate() {
+                    let _ = h.highlight_line(i, line);
+                }
+                h
+            },
+            |mut h| {
+                // Simulate a single-char edit at line 25; currently callers
+                // pass 0 which nukes the whole cache.
+                h.invalidate_cache_from_line(0);
+                for (i, line) in lines.iter().enumerate() {
+                    let _ = h.highlight_line(i, black_box(line));
+                }
+                black_box(&h);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn setup_render_tabs(lines: usize) -> TabManager {
+    let mut tabs = TabManager::new_for_test();
+    let doc = make_rust_doc(lines);
+    let editor = tabs.active_editor_mut();
+    editor.rope = ropey::Rope::from_str(&doc);
+    editor.viewport.cursor_pos = (lines / 2, 0);
+    tabs
+}
+
+fn bench_render_frame(c: &mut Criterion) {
+    let mut group = c.benchmark_group("render_frame");
+    group.bench_function("10k_line_doc_single_draw", |b| {
+        b.iter_batched(
+            || {
+                let tabs = setup_render_tabs(10_000);
+                let backend = TestBackend::new(120, 40);
+                let terminal = Terminal::new(backend).expect("terminal");
+                (tabs, terminal)
+            },
+            |(mut tabs, mut terminal)| {
+                terminal
+                    .draw(|f| draw_ui(f, &mut tabs))
+                    .expect("draw");
+                black_box(&tabs);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("10k_line_doc_cursor_move_100_frames", |b| {
+        b.iter_batched(
+            || {
+                let tabs = setup_render_tabs(10_000);
+                let backend = TestBackend::new(120, 40);
+                let terminal = Terminal::new(backend).expect("terminal");
+                (tabs, terminal)
+            },
+            |(mut tabs, mut terminal)| {
+                for _ in 0..100 {
+                    tabs.active_editor_mut().move_cursor_right();
+                    terminal
+                        .draw(|f| draw_ui(f, &mut tabs))
+                        .expect("draw");
+                }
+                black_box(&tabs);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("10k_line_doc_edit_then_draw_100_frames", |b| {
+        b.iter_batched(
+            || {
+                let tabs = setup_render_tabs(10_000);
+                let backend = TestBackend::new(120, 40);
+                let terminal = Terminal::new(backend).expect("terminal");
+                (tabs, terminal)
+            },
+            |(mut tabs, mut terminal)| {
+                for _ in 0..100 {
+                    tabs.active_editor_mut().insert_char('x');
+                    terminal
+                        .draw(|f| draw_ui(f, &mut tabs))
+                        .expect("draw");
+                }
+                black_box(&tabs);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn bench_search_many_matches(c: &mut Criterion) {
+    let mut group = c.benchmark_group("search_many_matches");
+    // 50k lines of common text — searching for " " produces ~400k matches.
+    let doc = make_doc(50_000, "the quick brown fox jumps over the lazy dog");
+    let rope = ropey::Rope::from_str(&doc);
+    group.throughput(Throughput::Bytes(doc.len() as u64));
+    group.bench_function("space_in_50k_line_doc", |b| {
+        b.iter(|| {
+            let mut state = SearchState::default();
+            state.search_buffer = " ".to_string();
+            let m = state.find_all_matches(black_box(&rope));
+            black_box(m);
+        });
+    });
+    group.finish();
+}
+
+fn bench_tabmanager_cold_start(c: &mut Criterion) {
+    c.bench_function("tabmanager_new_for_test_cold", |b| {
+        b.iter(|| {
+            let t = TabManager::new_for_test();
+            black_box(t);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_perform_replace,
@@ -252,5 +469,10 @@ criterion_group!(
     bench_fuzzy_filter,
     bench_cursor_navigation,
     bench_insert_char_typing,
+    bench_load_file,
+    bench_syntax_highlight,
+    bench_render_frame,
+    bench_search_many_matches,
+    bench_tabmanager_cold_start,
 );
 criterion_main!(benches);
