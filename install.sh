@@ -1,6 +1,6 @@
 #!/bin/bash
 # Rune Editor Installation Script
-# Usage: curl -fsSL https://exec.github.io/rune/install.sh | bash
+# Usage: curl -fsSL https://rune.byexec.com/install.sh | bash
 
 set -e
 
