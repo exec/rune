@@ -298,8 +298,7 @@ pub fn validate_match_at_position(
         Some(b) => b,
         None => {
             // char_pos may equal line length (valid only if search_term is empty)
-            return search_term.is_empty()
-                && char_pos == line_content.chars().count();
+            return search_term.is_empty() && char_pos == line_content.chars().count();
         }
     };
 

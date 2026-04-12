@@ -333,7 +333,10 @@ impl SyntaxHighlighter {
 
         // Flush accumulated buffer into result, starting fresh with new style.
         // Adjacent same-style writes merge into one span automatically.
-        let flush = |result: &mut Vec<(Style, String)>, buf: &mut String, buf_style: &mut Style, new_style: Style| {
+        let flush = |result: &mut Vec<(Style, String)>,
+                     buf: &mut String,
+                     buf_style: &mut Style,
+                     new_style: Style| {
             if !buf.is_empty() {
                 if let Some(last) = result.last_mut() {
                     if last.0 == *buf_style {

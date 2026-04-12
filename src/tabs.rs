@@ -336,7 +336,11 @@ impl TabManager {
             Some(parent) if !parent.as_os_str().is_empty() => {
                 let missing = !parent.is_dir();
                 std::fs::create_dir_all(parent)?;
-                if missing { Some(parent.to_path_buf()) } else { None }
+                if missing {
+                    Some(parent.to_path_buf())
+                } else {
+                    None
+                }
             }
             _ => None,
         };

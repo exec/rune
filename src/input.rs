@@ -965,10 +965,8 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.needs_redraw = true;
         }
         KeyCode::Enter => {
-            let filtered = crate::fuzzy::fuzzy_filter_prepared(
-                &tabs.fuzzy_query,
-                &tabs.fuzzy_candidates,
-            );
+            let filtered =
+                crate::fuzzy::fuzzy_filter_prepared(&tabs.fuzzy_query, &tabs.fuzzy_candidates);
             if let Some((cand, _)) = filtered.get(tabs.fuzzy_selected) {
                 tabs.active_tab = cand.id;
             }
@@ -981,10 +979,8 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Down => {
             tabs.fuzzy_selected += 1;
-            let filtered = crate::fuzzy::fuzzy_filter_prepared(
-                &tabs.fuzzy_query,
-                &tabs.fuzzy_candidates,
-            );
+            let filtered =
+                crate::fuzzy::fuzzy_filter_prepared(&tabs.fuzzy_query, &tabs.fuzzy_candidates);
             tabs.fuzzy_selected = tabs.fuzzy_selected.min(filtered.len().saturating_sub(1));
             tabs.needs_redraw = true;
         }

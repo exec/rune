@@ -106,8 +106,7 @@ pub fn fuzzy_filter_prepared<'a>(
     let mut scored: Vec<(&FuzzyCandidate, i32)> = candidates
         .iter()
         .filter_map(|cand| {
-            score_prepared(&query_chars, &cand.lowercase_chars, cand.byte_len)
-                .map(|s| (cand, s))
+            score_prepared(&query_chars, &cand.lowercase_chars, cand.byte_len).map(|s| (cand, s))
         })
         .collect();
 

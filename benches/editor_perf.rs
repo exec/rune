@@ -377,9 +377,7 @@ fn bench_render_frame(c: &mut Criterion) {
                 (tabs, terminal)
             },
             |(mut tabs, mut terminal)| {
-                terminal
-                    .draw(|f| draw_ui(f, &mut tabs))
-                    .expect("draw");
+                terminal.draw(|f| draw_ui(f, &mut tabs)).expect("draw");
                 black_box(&tabs);
             },
             criterion::BatchSize::SmallInput,
@@ -397,9 +395,7 @@ fn bench_render_frame(c: &mut Criterion) {
             |(mut tabs, mut terminal)| {
                 for _ in 0..100 {
                     tabs.active_editor_mut().move_cursor_right();
-                    terminal
-                        .draw(|f| draw_ui(f, &mut tabs))
-                        .expect("draw");
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).expect("draw");
                 }
                 black_box(&tabs);
             },
@@ -418,9 +414,7 @@ fn bench_render_frame(c: &mut Criterion) {
             |(mut tabs, mut terminal)| {
                 for _ in 0..100 {
                     tabs.active_editor_mut().insert_char('x');
-                    terminal
-                        .draw(|f| draw_ui(f, &mut tabs))
-                        .expect("draw");
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).expect("draw");
                 }
                 black_box(&tabs);
             },
