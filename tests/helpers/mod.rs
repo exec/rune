@@ -1,3 +1,8 @@
+// This module is shared by several integration test binaries. Each binary
+// typically uses only a subset of these helpers, so clippy's dead-code
+// lints fire for every item that isn't used in that particular binary.
+#![allow(dead_code, unused_imports)]
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 // Re-export for convenience in test files

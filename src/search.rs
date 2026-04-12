@@ -334,9 +334,11 @@ mod tests {
 
     #[test]
     fn test_regex_digits() {
-        let mut state = SearchState::default();
-        state.use_regex = true;
-        state.search_buffer = r"\d+".to_string();
+        let mut state = SearchState {
+            use_regex: true,
+            search_buffer: r"\d+".to_string(),
+            ..SearchState::default()
+        };
         let rope = Rope::from_str("hello123 world456\n");
         let matches = state.find_all_matches(&rope);
         assert_eq!(matches.len(), 2);
@@ -344,9 +346,11 @@ mod tests {
 
     #[test]
     fn test_invalid_regex() {
-        let mut state = SearchState::default();
-        state.use_regex = true;
-        state.search_buffer = "[invalid".to_string();
+        let mut state = SearchState {
+            use_regex: true,
+            search_buffer: "[invalid".to_string(),
+            ..SearchState::default()
+        };
         let rope = Rope::from_str("hello\n");
         let matches = state.find_all_matches(&rope);
         assert_eq!(matches.len(), 0);
@@ -354,10 +358,12 @@ mod tests {
 
     #[test]
     fn test_regex_case_insensitive() {
-        let mut state = SearchState::default();
-        state.use_regex = true;
-        state.case_sensitive = false;
-        state.search_buffer = "hello".to_string();
+        let mut state = SearchState {
+            use_regex: true,
+            case_sensitive: false,
+            search_buffer: "hello".to_string(),
+            ..SearchState::default()
+        };
         let rope = Rope::from_str("Hello HELLO hello\n");
         let matches = state.find_all_matches(&rope);
         assert_eq!(matches.len(), 3);

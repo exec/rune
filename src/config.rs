@@ -78,11 +78,13 @@ mod tests {
 
     #[test]
     fn test_config_round_trip() {
-        let mut config = Config::default();
-        config.tab_width = 8;
-        config.word_wrap = true;
-        config.show_line_numbers = true;
-        config.backup_on_save = true;
+        let config = Config {
+            tab_width: 8,
+            word_wrap: true,
+            show_line_numbers: true,
+            backup_on_save: true,
+            ..Config::default()
+        };
 
         let serialized = toml::to_string(&config).expect("serialize");
         let deserialized: Config = toml::from_str(&serialized).expect("deserialize");

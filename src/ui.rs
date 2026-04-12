@@ -324,6 +324,7 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
 
         let mut used = left_indicator_width;
         let mut active_fits = false;
+        #[allow(clippy::needless_range_loop)]
         for i in tabs.tab_scroll_offset..num_tabs {
             // Reserve space for right overflow indicator
             let remaining_after = num_tabs - i - 1;
@@ -852,6 +853,7 @@ pub fn help_lines() -> Vec<&'static str> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_search_highlighting(
     syntax_spans: &[(Style, String)],
     line_content: &str,

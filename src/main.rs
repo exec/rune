@@ -260,7 +260,7 @@ mod tests {
         let file = dir.path().join("hello.txt");
         fs::write(&file, "hello").unwrap();
 
-        let result = expand_paths(&[file.clone()], false);
+        let result = expand_paths(std::slice::from_ref(&file), false);
         assert_eq!(result, vec![file]);
     }
 
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn test_expand_paths_nonexistent_passthrough() {
         let path = PathBuf::from("/tmp/does-not-exist-rune-test.txt");
-        let result = expand_paths(&[path.clone()], false);
+        let result = expand_paths(std::slice::from_ref(&path), false);
         assert_eq!(result, vec![path]);
     }
 
