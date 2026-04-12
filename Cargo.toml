@@ -1,6 +1,6 @@
 [package]
 name = "rune"
-version = "1.4.1"
+version = "1.5.0"
 authors = ["exec"]
 description = "A modern CLI text editor that bridges the gap between nano's simplicity and advanced features"
 license = "MIT"
