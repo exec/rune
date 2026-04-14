@@ -34,60 +34,42 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 
 ## Installation
 
-### Package Managers
-
-#### Homebrew (macOS/Linux)
+### Quick Install
+The fastest way to install rune. Auto-detects your platform and installs the latest release binary.
 ```bash
-brew tap exec/rune
-brew install rune-editor
+curl -fsSL https://rune.byexec.com/install.sh | bash
 ```
 
-#### Arch Linux (AUR)
+### Homebrew (macOS and Linux)
 ```bash
-# Using an AUR helper like yay or paru:
-yay -S rune-editor
-# or
-paru -S rune-editor
-
-# Manual installation:
-git clone https://aur.archlinux.org/rune-editor.git
-cd rune-editor
-makepkg -si
+brew install exec/tap/rune
 ```
 
-#### Cargo
+### Cargo
 ```bash
 cargo install --git https://github.com/exec/rune
 ```
 
-### Binary Releases
-Download pre-built binaries from the [releases page](https://github.com/exec/rune/releases):
-
+### Arch Linux (AUR)
 ```bash
-# Linux x86_64
-curl -L https://github.com/exec/rune/releases/latest/download/rune-linux-x86_64.tar.gz | tar xz
-sudo mv rune /usr/local/bin/
-
-# macOS Apple Silicon
-curl -L https://github.com/exec/rune/releases/latest/download/rune-macos-aarch64.tar.gz | tar xz
-xattr -d com.apple.quarantine rune  # Remove quarantine attribute
-sudo mv rune /usr/local/bin/
-
-# macOS Intel
-curl -L https://github.com/exec/rune/releases/latest/download/rune-macos-x86_64.tar.gz | tar xz
-xattr -d com.apple.quarantine rune  # Remove quarantine attribute
-sudo mv rune /usr/local/bin/
-
-# Other platforms: linux-aarch64, linux-armv7, freebsd-x86_64, netbsd-x86_64
+yay -S rune-editor
+# or
+paru -S rune-editor
 ```
 
-### From Source
+### Build from Source
 ```bash
 git clone https://github.com/exec/rune
 cd rune
 cargo build --release
-./target/release/rune [filename]
+./target/release/rune
 ```
+
+### Supported Platforms
+- macOS — Intel (x86_64) and Apple Silicon (aarch64)
+- Linux — x86_64, ARM64 (aarch64), ARMv7
+- FreeBSD — x86_64
+- NetBSD — x86_64
 
 ### Usage
 ```bash
@@ -96,6 +78,15 @@ rune myfile.rs
 
 # Create a new file
 rune newfile.py
+
+# Open multiple files in tabs
+rune file1.rs file2.rs file3.rs
+
+# Open a directory (all files loaded as tabs)
+rune .
+
+# Open a directory recursively (respects .gitignore)
+rune -r .
 
 # Just run the editor
 rune
