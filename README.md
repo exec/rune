@@ -1,6 +1,6 @@
 # rune - A Modern CLI Text Editor
 
-A nano-inspired text editor that feels familiar but adds the power you've always wanted. Built with Rust for speed and reliability.
+A nano-inspired text editor that bridges the gap between simplicity and capability, built with Rust for speed and reliability.
 
 <p align="center">
   <img src="./rune.png" alt="rune editor" />
@@ -22,12 +22,12 @@ A nano-inspired text editor that feels familiar but adds the power you've always
 - ✅ **Efficient text handling** - Uses rope data structure for large files
 
 ### Built for Developers
-- **Enhanced Find/Replace** - Unified workflow like nano, but with regex support and live highlighting
-- **Smart Search** - All arrow keys navigate results, instant visual feedback, case-sensitive toggle
-- **Interactive Replace** - Y/N/A confirmation exactly like nano, with "Replace All" option
+- **Interactive Search** - Ctrl+F with live highlighting, arrow key navigation, real-time match count
 - **Go to line** - Ctrl+G to jump to specific lines
-- **Undo/Redo** - Ctrl+Z/Ctrl+R with 100-action history
-- **Options Menu** - Ctrl+O for organized settings
+- **Undo/Redo** - Ctrl+Z/Ctrl+Y with 100-action history
+- **Line numbers** - Toggle display in options menu
+- **Tab width control** - Configure 2, 4, or 8 space tabs
+- **Word wrap** - Toggle line wrapping
 - No modal editing - what you see is what you get
 - Help bar always visible at bottom
 - Real-time status information (line/column, file status)
@@ -108,11 +108,11 @@ rune
 - **Ctrl+S** - Save file (prompts for filename if none)
 - **Ctrl+W** - Save As (save with new filename)
 - **Ctrl+O** - Open options menu (configure settings)
-- **Ctrl+F** - Find text (enhanced search with regex support)
-- **Ctrl+\\** - Replace text (nano-compatible) 
+- **Ctrl+F** - Find text (interactive search with live navigation)
+- **Ctrl+H** - Replace text (find and replace all)
 - **Ctrl+G** - Go to line number
 - **Ctrl+Z** - Undo last change
-- **Ctrl+R** - Redo last undone change (in normal editing mode)
+- **Ctrl+R** - Redo last undone change
 - **Ctrl+V** - Page down (nano-compatible)
 - **Ctrl+Y** - Page up (nano-compatible)
 - **Page Up/Down** - Page navigation (if available)
@@ -129,15 +129,13 @@ rune
 - **Backspace** - Delete character before cursor
 - **Regular typing** - Insert text at cursor
 
-### Enhanced Find & Replace
-- **Ctrl+F** - Enhanced search mode with regex support
-- **Ctrl+R** (within find) - Switch to replace mode (unified workflow)
-- **Ctrl+O** (within find/replace) - Options menu for case sensitivity and regex toggle
-- **All arrow keys** - Navigate between matches (shows "3/7 matches")
-- **Replace confirmation** - Y: Replace This | N: Skip | A: Replace All (exactly like nano)
-- **Enter** - Execute search/replace or exit mode
-- **Escape** - Cancel and return to original position
-- **Regex support** - Full regex patterns with fallback to literal search
+### Interactive Search
+- **Ctrl+F** - Enter search mode
+- **Type search term** - See all matches highlighted in real-time
+- **Up/Down arrows** - Navigate between matches (shows "3/7 matches")
+- **Enter** - Exit search mode, stay at current match
+- **Escape** - Cancel search, return to original position
+- **Backspace** - Modify search term with live results
 - Search automatically wraps around document boundaries
 
 ### File Operations
@@ -180,13 +178,13 @@ word_wrap = false        # Enable/disable word wrap
 
 ### Fully Highlighted Languages
 - **Rust** (.rs) - Keywords, types, strings, numbers, comments
-- **Python** (.py) - Keywords, builtins, strings, numbers, comments  
+- **Python** (.py) - Keywords, builtins, strings, numbers, comments
 - **JavaScript/TypeScript** (.js, .ts) - Keywords, types, strings, numbers, comments
 
 ### Enhanced Features
 - **String literals** - Proper escape sequence handling
 - **Numeric literals** - Integers, floats, hex numbers
-- **Comments** - Line and block comments  
+- **Comments** - Line and block comments
 - **Keywords** - Language-specific syntax
 - **Types** - Built-in and common types
 - **Lazy loading** - Only highlights visible lines
@@ -198,7 +196,7 @@ Auto-detects file types for syntax-aware editing:
 
 ### Performance
 - **Lazy highlighting** - Only processes visible text
-- **Incremental updates** - Re-highlights only changed lines  
+- **Incremental updates** - Re-highlights only changed lines
 - **Cached results** - Lightning-fast scrolling and navigation
 - **Zero startup cost** - Highlighting loads as needed
 
@@ -211,14 +209,13 @@ Built with modern Rust libraries:
 - **clap** - Command line argument parsing
 - **anyhow** - Error handling
 
-## Philosophy  
+## Philosophy
 
 rune follows the "better nano" philosophy:
 - Easy things should be easy
-- Common tasks should be fast  
+- Common tasks should be fast
 - The editor should get out of your way
 - Modern conveniences shouldn't compromise simplicity
-- **Familiar workflow** - If you know nano, you know rune
 - Terminal environments deserve great text editing
 
 ## Comparison
@@ -226,13 +223,13 @@ rune follows the "better nano" philosophy:
 | Feature | rune | nano | micro | vim |
 |---------|------|------|--------|-----|
 | Smart defaults | ✅ | ✅ | ✅ | ❌ |
-| Regex search | ✅ | ✅ | ✅ | ✅ |
+| Standard keys | ✅ | ❌ | ✅ | ❌ |
 | Visual selection | ✅ | ❌ | ✅ | ✅ |
 | Mouse support | ✅ | ❌ | ✅ | ✅ |
-| Syntax highlight | ✅ | ✅ | ✅ | ✅ |
+| Syntax highlight | ✅ | ❌ | ✅ | ✅ |
 | Find/Search | ✅ | ✅ | ✅ | ✅ |
 | Go to line | ✅ | ✅ | ✅ | ✅ |
-| Undo/Redo | ✅ | ✅ | ✅ | ✅ |
+| Undo/Redo | ✅ | ❌ | ✅ | ✅ |
 | Line numbers | ✅ | ❌ | ✅ | ✅ |
 | Learning curve | None | None | Minimal | Steep |
 | Performance | Fast | Fast | Fast | Fast |
@@ -241,20 +238,9 @@ rune follows the "better nano" philosophy:
 
 **rune** aims to be the definitive "nano but better" editor. Contributions welcome for:
 - Additional syntax highlighting languages
-- Performance improvements  
+- Performance improvements
 - Bug fixes and stability
 - Documentation improvements
-
-## Acknowledgments
-
-**rune** is inspired by GNU nano, the excellent terminal text editor created by Chris Allegretta and maintained by Benno Schulenberg. While rune is a complete rewrite in Rust with modern enhancements, we deeply appreciate nano's design philosophy of making text editing accessible and straightforward.
-
-- **GNU nano**: https://www.nano-editor.org/
-- **Original author**: Chris Allegretta
-- **Current maintainer**: Benno Schulenberg
-- **License**: GNU General Public License
-
-rune adopts nano's user-friendly approach while adding modern features like regex search, syntax highlighting, and performance optimizations.
 
 ## License
 
