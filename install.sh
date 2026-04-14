@@ -17,21 +17,25 @@ BINARY_NAME="rune"
 # Detect OS and architecture
 detect_platform() {
     local os arch
-    
+
     case "$(uname -s)" in
-        Linux*)  os="unknown-linux-gnu" ;;
-        Darwin*) os="apple-darwin" ;;
-        *)       echo -e "${RED}Error: Unsupported operating system$(uname -s)${NC}" >&2; exit 1 ;;
+        Linux*)  os="linux" ;;
+        Darwin*) os="macos" ;;
+        FreeBSD*) os="freebsd" ;;
+        NetBSD*) os="netbsd" ;;
+        *)       echo -e "${RED}Error: Unsupported operating system: $(uname -s)${NC}" >&2; exit 1 ;;
     esac
-    
+
     case "$(uname -m)" in
         x86_64)  arch="x86_64" ;;
         arm64)   arch="aarch64" ;;
         aarch64) arch="aarch64" ;;
-        *)       echo -e "${RED}Error: Unsupported architecture $(uname -m)${NC}" >&2; exit 1 ;;
+        armv7l)  arch="armv7" ;;
+        i386|i686) arch="i686" ;;
+        *)       echo -e "${RED}Error: Unsupported architecture: $(uname -m)${NC}" >&2; exit 1 ;;
     esac
-    
-    echo "${arch}-${os}"
+
+    echo "${os}-${arch}"
 }
 
 # Get latest release version from GitHub API
@@ -43,20 +47,20 @@ get_latest_version() {
 
 # Download and install binary
 install_rune() {
-    local platform version download_url install_dir binary_path
-    
+    local platform version download_url install_dir binary_path temp_dir
+
     platform=$(detect_platform)
     version=$(get_latest_version)
-    
+
     if [ -z "$version" ]; then
         echo -e "${RED}Error: Could not fetch latest version${NC}" >&2
         exit 1
     fi
-    
+
     echo -e "${YELLOW}Installing Rune Editor ${version} for ${platform}...${NC}"
-    
-    download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${BINARY_NAME}-${platform}"
-    
+
+    download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${BINARY_NAME}-${platform}.tar.gz"
+
     # Determine install directory
     if [ -w "/usr/local/bin" ]; then
         install_dir="/usr/local/bin"
@@ -64,29 +68,36 @@ install_rune() {
         install_dir="$HOME/.local/bin"
         mkdir -p "$install_dir"
     fi
-    
-    binary_path="${install_dir}/${BINARY_NAME}"
-    
+
+    # Create temporary directory for extraction
+    temp_dir=$(mktemp -d)
+
     echo -e "${YELLOW}Downloading from: ${download_url}${NC}"
-    
-    # Download binary
-    if ! curl -fsSL "$download_url" -o "$binary_path"; then
-        echo -e "${RED}Error: Failed to download binary${NC}" >&2
+
+    # Download and extract tarball
+    if ! curl -fsSL "$download_url" | tar -xzf - -C "$temp_dir"; then
+        echo -e "${RED}Error: Failed to download or extract binary${NC}" >&2
+        rm -rf "$temp_dir"
         exit 1
     fi
-    
+
+    # Move binary to install location
+    binary_path="${install_dir}/${BINARY_NAME}"
+    mv "${temp_dir}/${BINARY_NAME}" "$binary_path"
+    rm -rf "$temp_dir"
+
     # Make executable
     chmod +x "$binary_path"
-    
+
     echo -e "${GREEN}✓ Rune Editor installed to ${binary_path}${NC}"
-    
+
     # Check if install_dir is in PATH
     if ! echo "$PATH" | grep -q "$install_dir"; then
         echo -e "${YELLOW}Warning: ${install_dir} is not in your PATH${NC}"
         echo -e "${YELLOW}Add this to your shell profile:${NC}"
         echo -e "${YELLOW}  export PATH=\"${install_dir}:\$PATH\"${NC}"
     fi
-    
+
     # Verify installation
     if command -v rune >/dev/null 2>&1; then
         echo -e "${GREEN}✓ Installation successful! Run 'rune' to start.${NC}"
