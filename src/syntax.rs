@@ -210,7 +210,7 @@ static CSS_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
     "transparent" => TokenKind::Literal, "none" => TokenKind::Literal,
     "auto" => TokenKind::Literal, "inherit" => TokenKind::Literal, "initial" => TokenKind::Literal,
     "unset" => TokenKind::Literal, "block" => TokenKind::Literal, "inline" => TokenKind::Literal,
-    "inline-block" => TokenKind::Literal, "flex-box" => TokenKind::Literal, "grid-layout" => TokenKind::Literal,
+    "inline-block" => TokenKind::Literal,
     "absolute" => TokenKind::Literal, "relative" => TokenKind::Literal, "fixed" => TokenKind::Literal,
     "sticky" => TokenKind::Literal,
 };
