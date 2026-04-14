@@ -921,9 +921,17 @@ function copyText(id, btn) {
             btn.textContent = 'Copied!';
             setTimeout(function() { btn.textContent = orig; }, 1500);
         } else {
+            var originalText = btn.textContent;
             btn.style.color = 'var(--green)';
-            setTimeout(function() { btn.style.color = ''; }, 1000);
+            btn.textContent = 'Copied!';
+            setTimeout(function() {
+                btn.style.color = '';
+                btn.textContent = originalText;
+            }, 1500);
         }
+    }).catch(function(err) {
+        console.error('Failed to copy:', err);
+        alert('Copy failed. Please copy manually: ' + text.trim());
     });
 }
 
