@@ -2,6 +2,10 @@
 
 A nano-inspired text editor that feels familiar but adds the power you've always wanted. Built with Rust for speed and reliability.
 
+<p align="center">
+  <img src="./rune.png" alt="rune editor" />
+</p>
+
 ## Features
 
 ### Core Philosophy
