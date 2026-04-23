@@ -112,16 +112,49 @@ fn extract_position(args: &mut Vec<String>) -> Option<(usize, Option<usize>)> {
     pos
 }
 
+/// RAII guard that owns the terminal's raw-mode + alt-screen (+ optional
+/// mouse capture) state. Dropping restores the terminal, so a panic in
+/// `run_editor` unwinds through this and the user's shell stays usable.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn new(mouse: bool) -> Result<Self> {
+        enable_raw_mode()?;
+        execute!(stdout(), EnterAlternateScreen)?;
+        if mouse {
+            execute!(stdout(), crossterm::event::EnableMouseCapture)?;
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Always send DisableMouseCapture — matches the pre-guard cleanup
+        // (which did it unconditionally) and covers the case where the user
+        // toggled mouse mode on/off at runtime via the options menu. It's a
+        // harmless no-op if capture isn't currently active.
+        let _ = execute!(stdout(), crossterm::event::DisableMouseCapture);
+        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = disable_raw_mode();
+    }
+}
+
 fn main() -> Result<()> {
+    // Belt-and-suspenders: even if panic=abort or unwinding misbehaves,
+    // install a panic hook that restores the terminal before the default
+    // hook prints the panic message.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(stdout(), crossterm::event::DisableMouseCapture);
+        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = disable_raw_mode();
+        prev_hook(info);
+    }));
+
     let mut args: Vec<String> = std::env::args().collect();
     let position = extract_position(&mut args);
     let cli = Cli::parse_from(args);
-
-    enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
-
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-    terminal.clear()?;
 
     let mut tab_manager = tabs::TabManager::new();
 
@@ -139,9 +172,14 @@ fn main() -> Result<()> {
         tab_manager.config.mouse_enabled = false;
     }
 
-    if tab_manager.config.mouse_enabled {
-        crossterm::execute!(stdout(), crossterm::event::EnableMouseCapture)?;
-    }
+    // Terminal state is now owned by a Drop guard. Construct AFTER mouse
+    // flags are resolved but BEFORE Terminal::new (which needs alt screen
+    // already active). Drop handles cleanup on both normal return and panic
+    // unwind, replacing the old manual cleanup block.
+    let _terminal_guard = TerminalGuard::new(tab_manager.config.mouse_enabled)?;
+
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    terminal.clear()?;
 
     let files = expand_paths(&cli.files, cli.recursive);
 
@@ -185,14 +223,10 @@ fn main() -> Result<()> {
         }
     }
 
-    let result = run_editor(&mut terminal, &mut tab_manager);
-
-    // Always clean up terminal state, even if run_editor returned an error
-    let _ = disable_raw_mode();
-    let _ = execute!(stdout(), LeaveAlternateScreen);
-    let _ = crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture);
-
-    result
+    // Terminal cleanup is handled by `_terminal_guard` being dropped at the
+    // end of this scope, whether `run_editor` returned Ok, Err, or unwound
+    // from a panic.
+    run_editor(&mut terminal, &mut tab_manager)
 }
 
 fn run_editor(
