@@ -1,5 +1,5 @@
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{self, Config};
 use crate::constants;
@@ -345,7 +345,8 @@ impl TabManager {
             _ => None,
         };
 
-        // Create backup if enabled
+        // Create backup if enabled. This runs BEFORE the atomic swap so it
+        // still reads the old file (which exists until the rename below).
         if self.config.backup_on_save && path.exists() {
             let backup_path = PathBuf::from(format!("{}~", path.display()));
             if let Err(e) = std::fs::copy(&path, &backup_path) {
@@ -355,7 +356,7 @@ impl TabManager {
 
         let editor = self.active_editor_mut();
         let bytes: Vec<u8> = editor.rope.bytes().collect();
-        std::fs::write(&path, bytes)?;
+        atomic_write(&path, &bytes)?;
 
         editor.file_path = Some(path.clone());
         editor.modified = false;
@@ -963,6 +964,72 @@ impl TabManager {
     }
 }
 
+/// Atomically write `bytes` to `path` using the standard temp-file + rename
+/// pattern. This protects the user's file from partial writes caused by
+/// crashes, power loss, or `kill -9` mid-write.
+///
+/// Steps:
+/// 1. Create a temp file in the same directory as `path` (so rename is on
+///    the same filesystem — cross-FS rename is not atomic).
+/// 2. Write bytes, then `sync_all()` to flush to disk before rename.
+/// 3. On Unix, if the target already exists, copy its permissions onto the
+///    temp file so a `chmod 600`-style restrictive mode isn't weakened by
+///    the rename swap.
+/// 4. `fs::rename(temp, path)` — POSIX rename is atomic within a filesystem.
+/// 5. On any error between steps 1 and 4, best-effort remove the temp file.
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+
+    let stem = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rune-save".to_string());
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let temp_name = format!(".{stem}.rune-tmp.{pid}.{nanos}");
+    let temp_path = dir.join(temp_name);
+
+    // From here on, any early return must best-effort clean up temp_path.
+    let result: std::io::Result<()> = (|| {
+        let mut file = std::fs::File::create(&temp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+
+        // On Unix, preserve the target file's permissions across the rename.
+        // `fs::rename` replaces the target inode with the temp file's inode,
+        // so without this a restrictive mode (e.g. 0o600) on the original
+        // file could be weakened to the umask-default applied at temp creation.
+        #[cfg(unix)]
+        {
+            if let Ok(meta) = std::fs::metadata(path) {
+                let perms = meta.permissions();
+                // Best-effort: don't fail the save if we can't apply perms.
+                let _ = std::fs::set_permissions(&temp_path, perms);
+            }
+        }
+
+        std::fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        // Best-effort cleanup; ignore removal errors.
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,6 +1274,95 @@ mod tests {
         assert!(!backup_path.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn perform_save_writes_content_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("atomic.txt");
+
+        let mut t = make_tabs("hello atomic world\n");
+        t.active_editor_mut().file_path = Some(file_path.clone());
+        t.perform_save(file_path.clone()).unwrap();
+
+        // Content matches rope
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "hello atomic world\n"
+        );
+
+        // No lingering .<stem>.rune-tmp.* files
+        let lingering: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.starts_with(".atomic.txt.rune-tmp.")
+            })
+            .collect();
+        assert!(
+            lingering.is_empty(),
+            "found lingering temp files: {:?}",
+            lingering.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn perform_save_no_lingering_temp_files_after_success() {
+        // Proxy for "cleans up temp on failure" — if normal saves leave
+        // stray .rune-tmp files behind, something is wrong with the swap.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("no-leak.txt");
+
+        let mut t = make_tabs("first\n");
+        t.active_editor_mut().file_path = Some(file_path.clone());
+        t.perform_save(file_path.clone()).unwrap();
+
+        // Save a few more times to exercise the overwrite path.
+        t.active_editor_mut().rope = Rope::from_str("second\n");
+        t.perform_save(file_path.clone()).unwrap();
+        t.active_editor_mut().rope = Rope::from_str("third\n");
+        t.perform_save(file_path.clone()).unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+
+        let temps: Vec<_> = entries
+            .iter()
+            .filter(|n| n.starts_with(".no-leak.txt.rune-tmp."))
+            .collect();
+        assert!(temps.is_empty(), "temp files leaked: {:?}", temps);
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "third\n");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn perform_save_preserves_mode_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("perms.txt");
+
+        // Seed a target file with a restrictive mode.
+        std::fs::write(&file_path, "seed").unwrap();
+        let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&file_path, perms).unwrap();
+
+        let mut t = make_tabs("new content\n");
+        t.active_editor_mut().file_path = Some(file_path.clone());
+        t.perform_save(file_path.clone()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "new content\n"
+        );
+        let mode = std::fs::metadata(&file_path).unwrap().permissions().mode();
+        // Mask to perm bits; file-type bits vary.
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
     }
 
     #[test]
