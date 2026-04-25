@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "rune"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "clap",
