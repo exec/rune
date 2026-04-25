@@ -14,6 +14,7 @@ use rune::constants;
 use rune::input;
 use rune::tabs;
 use rune::ui;
+use rune::updater;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -172,6 +173,14 @@ fn main() -> Result<()> {
         tab_manager.config.mouse_enabled = false;
     }
 
+    // Kick off the background update check before we take over the terminal,
+    // so it runs concurrently with the rest of startup. The thread never
+    // touches editor state — it only writes to its own static, drained later
+    // by `run_editor`.
+    if tab_manager.config.check_for_updates {
+        updater::spawn_check();
+    }
+
     // Terminal state is now owned by a Drop guard. Construct AFTER mouse
     // flags are resolved but BEFORE Terminal::new (which needs alt screen
     // already active). Drop handles cleanup on both normal return and panic
@@ -257,6 +266,13 @@ fn run_editor(
         let status_timeout = tabs.check_status_message_timeout();
         if status_timeout {
             tabs.needs_redraw = true;
+        }
+
+        // Drain any pending update notice from the background checker.
+        // `set_temporary_status_message` flips `needs_redraw` so the message
+        // surfaces on the next loop iteration even if the user is idle.
+        if let Some(msg) = updater::take_pending_notice() {
+            tabs.set_temporary_status_message(msg);
         }
 
         if event::poll(constants::EVENT_POLL_INTERVAL)? {

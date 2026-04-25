@@ -15,6 +15,12 @@ pub struct Config {
     pub constant_cursor_position: bool,
     #[serde(default)]
     pub backup_on_save: bool,
+    #[serde(default = "default_check_for_updates")]
+    pub check_for_updates: bool,
+}
+
+fn default_check_for_updates() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -28,6 +34,7 @@ impl Default for Config {
             show_whitespace: false,
             constant_cursor_position: false,
             backup_on_save: false,
+            check_for_updates: true,
         }
     }
 }
@@ -74,6 +81,24 @@ mod tests {
         assert!(!config.show_whitespace);
         assert!(!config.constant_cursor_position);
         assert!(!config.backup_on_save);
+        assert!(config.check_for_updates);
+    }
+
+    #[test]
+    fn test_config_check_for_updates_defaults_when_missing() {
+        // A TOML file written before this field existed should still load,
+        // with check_for_updates defaulting to true.
+        let toml_str = r#"
+mouse_enabled = true
+show_line_numbers = false
+tab_width = 4
+word_wrap = false
+auto_indent = true
+show_whitespace = false
+constant_cursor_position = false
+"#;
+        let config: Config = toml::from_str(toml_str).expect("deserialize");
+        assert!(config.check_for_updates);
     }
 
     #[test]
