@@ -674,6 +674,7 @@ impl TabManager {
             self.tabs[idx].mark_anchor = None;
             self.tabs[idx].modified = true;
             self.tabs[idx].mark_document_changed(line);
+            self.needs_redraw = true;
         } else {
             self.cut_line();
         }
@@ -721,6 +722,7 @@ impl TabManager {
 
         self.tabs[idx].modified = true;
         self.tabs[idx].mark_document_changed(line_idx);
+        self.needs_redraw = true;
     }
 
     /// Copy line/selection
@@ -820,6 +822,7 @@ impl TabManager {
         let display_col = self.tabs[idx].char_idx_to_display_col(line, col_chars);
         self.tabs[idx].viewport.cursor_pos = (line, display_col);
         self.tabs[idx].mark_document_changed(insert_line);
+        self.needs_redraw = true;
     }
 
     pub fn toggle_mark(&mut self) {
