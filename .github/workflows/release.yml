@@ -13,16 +13,20 @@ jobs:
     strategy:
       matrix:
         include:
-          # Linux targets
+          # Linux targets — deb_arch set on the glibc x86_64/aarch64 entries so
+          # those produce a .deb for repo.x86-64.com. musl/armv7/i686 ship as
+          # tarballs only.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             name: rune-linux-x86_64
+            deb_arch: amd64
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest  
+            os: ubuntu-latest
             name: rune-linux-x86_64-musl
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             name: rune-linux-aarch64
+            deb_arch: arm64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: rune-linux-aarch64-musl
@@ -80,12 +84,60 @@ jobs:
         cp target/${{ matrix.target }}/release/rune dist/
         cd dist
         tar -czf ${{ matrix.name }}.tar.gz rune
-        
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.name }}
         path: dist/${{ matrix.name }}.tar.gz
+
+    # Build a .deb for the matrix entries that opted in via deb_arch. Only
+    # runs on tag pushes — workflow_dispatch's ref is a branch name and
+    # nfpm rejects non-semver versions.
+    - name: Install nfpm
+      if: startsWith(github.ref, 'refs/tags/') && matrix.deb_arch != ''
+      env:
+        NFPM_VERSION: "2.42.1"
+      run: |
+        curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
+          | sudo tar -xzC /usr/local/bin nfpm
+        nfpm --version
+
+    - name: Build .deb
+      if: startsWith(github.ref, 'refs/tags/') && matrix.deb_arch != ''
+      env:
+        REF_NAME: ${{ github.ref_name }}
+        DEB_ARCH: ${{ matrix.deb_arch }}
+      run: |
+        set -euo pipefail
+        VER="${REF_NAME#v}"
+        cat > nfpm.yaml <<EOF
+        name: rune
+        arch: ${DEB_ARCH}
+        version: ${VER}
+        maintainer: exec
+        description: |
+          A modern CLI text editor that bridges the gap between nano's
+          simplicity and advanced features.
+        homepage: https://github.com/exec/rune
+        license: MIT
+        section: editors
+        priority: optional
+        contents:
+          - src: dist/rune
+            dst: /usr/bin/rune
+            file_info:
+              mode: 0755
+        EOF
+        nfpm pkg --packager deb --target dist/
+        ls -la dist/*.deb
+
+    - name: Upload .deb artifact
+      if: startsWith(github.ref, 'refs/tags/') && matrix.deb_arch != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }}-deb
+        path: dist/*.deb
 
   release:
     needs: build
@@ -105,6 +157,7 @@ jobs:
       with:
         files: |
           artifacts/*/*.tar.gz
+          artifacts/*/*.deb
         body: |
           ## Changes
           
