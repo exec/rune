@@ -5,6 +5,34 @@ use crate::editor::InputMode;
 use crate::search::{FindNavigationMode, ReplacePhase};
 use crate::tabs::TabManager;
 
+/// True when a `KeyCode::Char` event represents literal text input rather
+/// than an (unbound) chord. SHIFT is allowed — capitals and shifted symbols
+/// arrive with SHIFT set — but CONTROL/ALT/SUPER/HYPER/META mean the user
+/// pressed a chord, which must never fall through to text insertion.
+fn is_text_input(key: &KeyEvent) -> bool {
+    !key.modifiers.intersects(
+        KeyModifiers::CONTROL
+            | KeyModifiers::ALT
+            | KeyModifiers::SUPER
+            | KeyModifiers::HYPER
+            | KeyModifiers::META,
+    )
+}
+
+/// Truncate `s` to at most `max_bytes` bytes without splitting a multi-byte
+/// UTF-8 character: walk the cut point back to the nearest char boundary.
+/// (`String::truncate` panics if the index lands inside a character.)
+fn truncate_to_char_boundary(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+    let mut idx = max_bytes;
+    while !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    s.truncate(idx);
+}
+
 /// Build the standard find status message: "Find: term (N/M matches) - Use arrows..."
 fn format_find_status(tabs: &TabManager) -> String {
     let editor = tabs.active_editor();
@@ -162,10 +190,14 @@ fn handle_confirm_close_tab(tabs: &mut TabManager, key: KeyEvent) -> Result<bool
                     tabs.set_temporary_status_message(format!("Error saving file: {e}"));
                     return Ok(false);
                 }
-            }
-            tabs.input_mode = InputMode::Normal;
-            if tabs.close_tab() {
-                return Ok(true);
+                tabs.input_mode = InputMode::Normal;
+                if tabs.close_tab() {
+                    return Ok(true);
+                }
+            } else {
+                // Untitled buffer: prompt for a filename first. The tab is
+                // closed after a successful save (see finish_filename_input).
+                tabs.start_close_tab_filename_input();
             }
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -332,7 +364,7 @@ fn handle_filename_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.status_message = format!("File Name to Write: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c) if is_text_input(&key) => {
             tabs.input_buffer.push(c);
             tabs.status_message = format!("File Name to Write: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
@@ -391,7 +423,7 @@ fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             tabs.status_message = format!("{}{}", prompt, tabs.input_buffer);
             tabs.needs_redraw = true;
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c) if is_text_input(&key) => {
             tabs.input_buffer.push(c);
             tabs.status_message = format!("{}{}", prompt, tabs.input_buffer);
             tabs.needs_redraw = true;
@@ -550,7 +582,7 @@ fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 tabs.needs_redraw = true;
             }
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c) if is_text_input(&key) => {
             tabs.active_editor_mut().search.search_buffer.push(c);
             tabs.active_editor_mut().search.find_navigation_mode =
                 FindNavigationMode::ResultNavigation;
@@ -616,7 +648,7 @@ fn handle_replace(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 tabs.needs_redraw = true;
             }
         },
-        KeyCode::Char(c) => match tabs.active_editor().search.replace_phase {
+        KeyCode::Char(c) if is_text_input(&key) => match tabs.active_editor().search.replace_phase {
             ReplacePhase::FindPattern => {
                 tabs.active_editor_mut().search.search_buffer.push(c);
                 let search_buf = tabs.active_editor().search.search_buffer.clone();
@@ -711,7 +743,7 @@ fn handle_goto_line(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.status_message = format!("Go to line: {}", line_buf);
             tabs.needs_redraw = true;
         }
-        KeyCode::Char(c) if c.is_ascii_digit() => {
+        KeyCode::Char(c) if c.is_ascii_digit() && is_text_input(&key) => {
             tabs.active_editor_mut().search.goto_line_buffer.push(c);
             let line_buf = tabs.active_editor().search.goto_line_buffer.clone();
             tabs.status_message = format!("Go to line: {}", line_buf);
@@ -930,7 +962,7 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         | (_, KeyCode::Backspace)
         | (_, KeyCode::Delete)
             if is_read_only => {}
-        (_, KeyCode::Char(c)) => {
+        (_, KeyCode::Char(c)) if is_text_input(&key) => {
             tabs.active_editor_mut().insert_char(c);
             tabs.needs_redraw = true;
         }
@@ -989,7 +1021,7 @@ fn handle_fuzzy_finder(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.fuzzy_selected = 0;
             tabs.needs_redraw = true;
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c) if is_text_input(&key) => {
             tabs.fuzzy_query.push(c);
             tabs.fuzzy_selected = 0;
             tabs.needs_redraw = true;
@@ -1056,7 +1088,7 @@ fn handle_execute_command(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             tabs.status_message = format!("Command to execute: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c) if is_text_input(&key) => {
             tabs.input_buffer.push(c);
             tabs.status_message = format!("Command to execute: {}", tabs.input_buffer);
             tabs.needs_redraw = true;
@@ -1159,7 +1191,7 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                     let mut stdout = raw_stdout.to_string();
                     let mut truncated = false;
                     if stdout.len() > MAX_OUTPUT {
-                        stdout.truncate(MAX_OUTPUT);
+                        truncate_to_char_boundary(&mut stdout, MAX_OUTPUT);
                         stdout.push_str("\n[Output truncated at 1MB]");
                         truncated = true;
                     }
@@ -1225,4 +1257,50 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_to_char_boundary_noop_when_short_enough() {
+        let mut s = "hello".to_string();
+        truncate_to_char_boundary(&mut s, 10);
+        assert_eq!(s, "hello");
+        let mut s = "hello".to_string();
+        truncate_to_char_boundary(&mut s, 5);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn truncate_to_char_boundary_ascii_cut() {
+        let mut s = "hello world".to_string();
+        truncate_to_char_boundary(&mut s, 5);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn truncate_to_char_boundary_does_not_split_multibyte() {
+        // 'あ' is 3 bytes in UTF-8; cutting at every byte offset must never
+        // panic and must always land on a char boundary.
+        let original = "aあいう";
+        for max in 0..=original.len() {
+            let mut s = original.to_string();
+            truncate_to_char_boundary(&mut s, max);
+            assert!(s.len() <= max, "len {} > max {}", s.len(), max);
+            assert!(original.starts_with(&s));
+        }
+        // Spot-check: byte 2 lands mid-'あ' (bytes 1..4), so we keep only "a".
+        let mut s = original.to_string();
+        truncate_to_char_boundary(&mut s, 2);
+        assert_eq!(s, "a");
+    }
+
+    #[test]
+    fn truncate_to_char_boundary_empty_string() {
+        let mut s = String::new();
+        truncate_to_char_boundary(&mut s, 0);
+        assert_eq!(s, "");
+    }
 }

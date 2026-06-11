@@ -15,7 +15,6 @@ fn make_tabs(text: &str) -> TabManager {
 
 // Finding: unbound Ctrl/Alt chords fall through to the literal-insert arm.
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_unbound_ctrl_chord_inserts_text() {
     let mut t = make_tabs("hello\n");
     t.active_editor_mut().viewport.cursor_pos = (0, 0);
@@ -29,7 +28,6 @@ fn repro_unbound_ctrl_chord_inserts_text() {
 }
 
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_unbound_alt_chord_inserts_text() {
     let mut t = make_tabs("hello\n");
     t.active_editor_mut().viewport.cursor_pos = (0, 0);
@@ -45,7 +43,6 @@ fn repro_unbound_alt_chord_inserts_text() {
 // Finding: ConfirmCloseTab 'Y' (= "Save and close") on an untitled buffer
 // closes it WITHOUT saving (silent data loss).
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_save_and_close_untitled_discards_buffer() {
     let mut t = make_tabs("precious data\n");
     t.new_tab(); // second tab so close doesn't quit
@@ -127,7 +124,6 @@ fn repro_read_only_allows_replace() {
 // Finding: render cache keyed by rope address + len + generation can serve
 // stale spans after a tab close shifts another Editor into the same slot.
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_render_cache_stale_after_tab_close() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -160,7 +156,6 @@ fn repro_render_cache_stale_after_tab_close() {
 // Finding: fuzzy finder truncation slices the label at a byte offset,
 // panicking on multibyte tab names.
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_fuzzy_finder_multibyte_name_panics() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

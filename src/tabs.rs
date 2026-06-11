@@ -5,6 +5,16 @@ use crate::config::{self, Config};
 use crate::constants;
 use crate::editor::{Editor, InputMode};
 
+/// What to do after the filename prompt successfully saves an untitled buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterSave {
+    /// Ctrl+Q flow: close the saved tab and keep quitting — move to the next
+    /// tab (prompting if it is modified) and only exit when the last tab closes.
+    ContinueQuit,
+    /// Alt+W flow: close just the saved tab; exit only if it was the last one.
+    CloseTab,
+}
+
 pub struct TabManager {
     pub tabs: Vec<Editor>,
     pub active_tab: usize,
@@ -16,7 +26,7 @@ pub struct TabManager {
     pub status_message_time: Option<Instant>,
     pub status_message_timeout: Duration,
     pub input_buffer: String,
-    pub quit_after_save: bool,
+    pub pending_after_save: Option<AfterSave>,
     pub needs_redraw: bool,
     // Fuzzy finder state
     pub fuzzy_query: String,
@@ -51,7 +61,7 @@ impl TabManager {
             status_message_time: None,
             status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
             input_buffer: String::new(),
-            quit_after_save: false,
+            pending_after_save: None,
 
             needs_redraw: true,
             fuzzy_query: String::new(),
@@ -76,7 +86,7 @@ impl TabManager {
             status_message_time: None,
             status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
             input_buffer: String::new(),
-            quit_after_save: false,
+            pending_after_save: None,
 
             needs_redraw: true,
             fuzzy_query: String::new(),
@@ -319,6 +329,14 @@ impl TabManager {
         self.needs_redraw = true;
     }
 
+    /// Prompt for a filename for an untitled buffer that is being closed via
+    /// Alt+W ("save and close"). After a successful save the tab is closed
+    /// (see `finish_filename_input`); cancelling leaves the tab open.
+    pub fn start_close_tab_filename_input(&mut self) {
+        self.pending_after_save = Some(AfterSave::CloseTab);
+        self.start_filename_input();
+    }
+
     fn start_save_as_input(&mut self) {
         self.input_mode = InputMode::EnteringSaveAs;
         self.input_buffer = self
@@ -390,7 +408,7 @@ impl TabManager {
         if self.input_buffer.is_empty() {
             self.set_temporary_status_message("Cancelled".to_string());
             self.input_mode = InputMode::Normal;
-            self.quit_after_save = false;
+            self.pending_after_save = None;
             return Ok(false);
         }
 
@@ -399,21 +417,26 @@ impl TabManager {
             self.set_temporary_status_message(format!("Error saving file: {e}"));
             self.input_mode = InputMode::Normal;
             self.input_buffer.clear();
-            self.quit_after_save = false;
+            self.pending_after_save = None;
             return Ok(false);
         }
         self.input_mode = InputMode::Normal;
         self.input_buffer.clear();
 
-        let should_quit = self.quit_after_save && !self.active_editor().modified;
-        self.quit_after_save = false;
-        Ok(should_quit)
+        // The save succeeded; carry out whatever close action prompted the
+        // filename input. Only return true (exit the app) when the saved tab
+        // was the last one.
+        match self.pending_after_save.take() {
+            Some(AfterSave::ContinueQuit) => Ok(self.close_current_and_continue()),
+            Some(AfterSave::CloseTab) => Ok(self.close_tab()),
+            None => Ok(false),
+        }
     }
 
     pub fn cancel_filename_input(&mut self) {
         self.input_mode = InputMode::Normal;
         self.input_buffer.clear();
-        self.quit_after_save = false;
+        self.pending_after_save = None;
         self.set_temporary_status_message("Cancelled".to_string());
     }
 
@@ -443,7 +466,7 @@ impl TabManager {
                     return Ok(false);
                 }
             } else {
-                self.quit_after_save = true;
+                self.pending_after_save = Some(AfterSave::ContinueQuit);
                 self.start_filename_input();
                 return Ok(false);
             }
@@ -1447,5 +1470,117 @@ mod tests {
         assert_eq!(t.input_mode, InputMode::Normal);
         // "hello" should be replaced with "HELLO"
         assert!(content(&t).contains("HELLO"));
+    }
+
+    #[test]
+    fn confirm_close_tab_untitled_prompts_for_filename_then_saves_and_closes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut t = make_tabs("precious data\n");
+        t.new_tab(); // second tab so closing the first doesn't quit the app
+        t.active_tab = 0;
+        t.active_editor_mut().modified = true;
+        assert!(t.active_editor().file_path.is_none());
+
+        // Alt+W answered with 'y' on an untitled buffer: must NOT close the
+        // tab yet — it should prompt for a filename instead.
+        t.input_mode = InputMode::ConfirmCloseTab;
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let quit = crate::input::handle_key_event(&mut t, y).unwrap();
+        assert!(!quit);
+        assert_eq!(t.tabs.len(), 2, "tab must not close before the save");
+        assert_eq!(t.input_mode, InputMode::EnteringFilename);
+        assert_eq!(t.pending_after_save, Some(AfterSave::CloseTab));
+
+        // Enter a filename and confirm: the content is written and only the
+        // saved tab closes (the app keeps running with the remaining tab).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("untitled_close.txt");
+        t.input_buffer = path.display().to_string();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let quit = crate::input::handle_key_event(&mut t, enter).unwrap();
+        assert!(!quit, "other tabs remain, so the app must not exit");
+        assert_eq!(t.tabs.len(), 1, "saved tab should now be closed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "precious data\n",
+            "buffer content must be written before the tab closes"
+        );
+        assert_eq!(t.pending_after_save, None);
+    }
+
+    #[test]
+    fn confirm_close_tab_untitled_save_closes_last_tab_and_quits() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut t = make_tabs("only tab\n");
+        t.active_editor_mut().modified = true;
+        t.input_mode = InputMode::ConfirmCloseTab;
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, y).unwrap();
+        assert_eq!(t.input_mode, InputMode::EnteringFilename);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("last_tab.txt");
+        t.input_buffer = path.display().to_string();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let quit = crate::input::handle_key_event(&mut t, enter).unwrap();
+        assert!(quit, "closing the last tab should exit the app");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "only tab\n");
+    }
+
+    #[test]
+    fn confirm_close_tab_filename_cancel_keeps_tab_open() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut t = make_tabs("keep me\n");
+        t.new_tab();
+        t.active_tab = 0;
+        t.active_editor_mut().modified = true;
+        t.input_mode = InputMode::ConfirmCloseTab;
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, y).unwrap();
+        assert_eq!(t.input_mode, InputMode::EnteringFilename);
+
+        // Esc cancels the filename prompt: nothing is closed or saved.
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let _ = crate::input::handle_key_event(&mut t, esc).unwrap();
+        assert_eq!(t.tabs.len(), 2);
+        assert_eq!(t.pending_after_save, None);
+        assert_eq!(content(&t), "keep me\n");
+    }
+
+    #[test]
+    fn quit_confirmation_untitled_save_continues_to_next_modified_tab() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        // Tab 0: modified untitled; tab 1: also modified. Ctrl+Q -> Y ->
+        // filename -> Enter must close tab 0 and prompt for tab 1 instead of
+        // exiting the whole app.
+        let mut t = make_tabs("first\n");
+        t.active_editor_mut().modified = true;
+        t.new_tab();
+        t.active_editor_mut().rope = Rope::from_str("second\n");
+        t.active_editor_mut().modified = true;
+        t.active_tab = 0;
+
+        assert!(!t.try_quit());
+        assert_eq!(t.input_mode, InputMode::ConfirmQuit);
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let quit = crate::input::handle_key_event(&mut t, y).unwrap();
+        assert!(!quit);
+        assert_eq!(t.input_mode, InputMode::EnteringFilename);
+        assert_eq!(t.pending_after_save, Some(AfterSave::ContinueQuit));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("first.txt");
+        t.input_buffer = path.display().to_string();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let quit = crate::input::handle_key_event(&mut t, enter).unwrap();
+        assert!(!quit, "a modified tab remains; the app must not exit yet");
+        assert_eq!(t.tabs.len(), 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
+        // The remaining modified tab is now being prompted for.
+        assert_eq!(t.input_mode, InputMode::ConfirmQuit);
     }
 }
