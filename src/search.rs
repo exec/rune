@@ -64,16 +64,28 @@ impl Default for SearchState {
 
 impl SearchState {
     pub fn find_all_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
+        self.find_all_match_spans(rope)
+            .into_iter()
+            .map(|(line, col, _)| (line, col))
+            .collect()
+    }
+
+    /// Like `find_all_matches`, but each entry also carries the match length
+    /// in chars: `(line, char_col, char_len)`. Regex match lengths vary per
+    /// match, so replace needs this richer form; the UI keeps consuming the
+    /// plain `(line, char_col)` pairs in `search_matches`.
+    pub fn find_all_match_spans(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize, usize)> {
         self.search_matches_truncated = false;
         if self.search_buffer.is_empty() {
             return Vec::new();
         }
 
         if self.use_regex {
-            return self.find_all_regex_matches(rope);
+            return self.find_all_regex_match_spans(rope);
         }
 
         let search_term = self.search_buffer.clone();
+        let search_char_len = search_term.chars().count();
         let case_sensitive = self.case_sensitive;
         let search_lower = if case_sensitive {
             String::new()
@@ -98,7 +110,7 @@ impl SearchState {
 
             for col in line_matches {
                 if validate_match_at_position(line_content, col, &search_term, case_sensitive) {
-                    matches.push((line_idx, col));
+                    matches.push((line_idx, col, search_char_len));
                     if matches.len() >= MAX_SEARCH_MATCHES {
                         self.search_matches_truncated = true;
                         break 'outer;
@@ -111,7 +123,7 @@ impl SearchState {
         matches
     }
 
-    fn find_all_regex_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
+    fn find_all_regex_match_spans(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize, usize)> {
         let pattern = if self.case_sensitive {
             self.search_buffer.clone()
         } else {
@@ -149,7 +161,8 @@ impl SearchState {
 
             for m in re.find_iter(line_content) {
                 let char_pos = line_content[..m.start()].chars().count();
-                matches.push((line_idx, char_pos));
+                let char_len = line_content[m.start()..m.end()].chars().count();
+                matches.push((line_idx, char_pos, char_len));
                 if matches.len() >= MAX_SEARCH_MATCHES {
                     self.search_matches_truncated = true;
                     break 'outer;

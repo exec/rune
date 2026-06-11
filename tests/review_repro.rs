@@ -62,7 +62,6 @@ fn repro_save_and_close_untitled_discards_buffer() {
 // Finding: insert_char advances cursor by 1 display column even for
 // wide (CJK) characters, so subsequent inserts land at the wrong index.
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_wide_char_typing_scrambles_text() {
     let mut t = make_tabs("");
     for c in ['あ', 'x', 'y'] {
@@ -75,7 +74,6 @@ fn repro_wide_char_typing_scrambles_text() {
 // Finding: Replace-All ignores regex and case-insensitive modes even though
 // Find honors them.
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_replace_all_ignores_regex_mode() {
     let mut t = make_tabs("abc adc\n");
     {
@@ -91,7 +89,6 @@ fn repro_replace_all_ignores_regex_mode() {
 }
 
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_replace_all_ignores_case_insensitive_mode() {
     let mut t = make_tabs("Hello hello\n");
     {
@@ -107,7 +104,6 @@ fn repro_replace_all_ignores_case_insensitive_mode() {
 
 // Finding: read-only mode does not block Replace or word-completion edits.
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_read_only_allows_replace() {
     let mut t = make_tabs("hello\n");
     t.read_only = true;

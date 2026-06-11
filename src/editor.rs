@@ -224,7 +224,7 @@ impl Editor {
             self.viewport.cursor_pos.0 += 1;
             self.viewport.cursor_pos.1 = 0;
         } else {
-            self.viewport.cursor_pos.1 += 1;
+            self.viewport.cursor_pos.1 += UnicodeWidthChar::width(c).unwrap_or(0);
         }
         self.modified = true;
     }
@@ -236,9 +236,13 @@ impl Editor {
                 self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
             if pos > 0 {
                 self.save_undo_state();
+                // Move the cursor back by the deleted char's display width
+                // (a wide CJK char occupies 2 columns, not 1).
+                let deleted_width = UnicodeWidthChar::width(self.rope.char(pos - 1)).unwrap_or(0);
                 self.rope.remove(pos - 1..pos);
                 self.mark_document_changed(self.viewport.cursor_pos.0);
-                self.move_cursor_left();
+                self.viewport.cursor_pos.1 =
+                    self.viewport.cursor_pos.1.saturating_sub(deleted_width);
                 self.modified = true;
             }
         } else if self.viewport.cursor_pos.0 > 0 {
@@ -312,7 +316,19 @@ impl Editor {
 
     pub fn move_cursor_left(&mut self) {
         if self.viewport.cursor_pos.1 > 0 {
-            self.viewport.cursor_pos.1 -= 1;
+            // Step over a whole character (wide chars span 2 display
+            // columns): convert the display column to a char index, step the
+            // index back past any zero-width chars, and convert back.
+            let line = self.viewport.cursor_pos.0;
+            let line_start = self.rope.line_to_char(line);
+            let mut char_idx =
+                self.line_col_to_char_idx(line, self.viewport.cursor_pos.1) - line_start;
+            let mut new_col = self.viewport.cursor_pos.1;
+            while new_col >= self.viewport.cursor_pos.1 && char_idx > 0 {
+                char_idx -= 1;
+                new_col = self.char_idx_to_display_col(line, char_idx);
+            }
+            self.viewport.cursor_pos.1 = new_col;
         } else if self.viewport.cursor_pos.0 > 0 {
             self.viewport.cursor_pos.0 -= 1;
             self.viewport.cursor_pos.1 = self.line_display_width_cached(self.viewport.cursor_pos.0);
@@ -320,9 +336,21 @@ impl Editor {
     }
 
     pub fn move_cursor_right(&mut self) {
-        let line_len = self.line_display_width_cached(self.viewport.cursor_pos.0);
+        let line = self.viewport.cursor_pos.0;
+        let line_len = self.line_display_width_cached(line);
         if self.viewport.cursor_pos.1 < line_len {
-            self.viewport.cursor_pos.1 += 1;
+            // Step over a whole character (wide chars span 2 display
+            // columns): convert the display column to a char index, advance
+            // the index past any zero-width chars, and convert back.
+            let line_start = self.rope.line_to_char(line);
+            let mut char_idx =
+                self.line_col_to_char_idx(line, self.viewport.cursor_pos.1) - line_start;
+            let mut new_col = self.viewport.cursor_pos.1;
+            while new_col <= self.viewport.cursor_pos.1 {
+                char_idx += 1;
+                new_col = self.char_idx_to_display_col(line, char_idx);
+            }
+            self.viewport.cursor_pos.1 = new_col;
         } else if self.viewport.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
             self.viewport.cursor_pos.0 += 1;
             self.viewport.cursor_pos.1 = 0;
@@ -607,9 +635,12 @@ impl Editor {
 
             if let Some(index) = self.search.current_match_index {
                 if let Some(&(line, col)) = self.search.search_matches.get(index) {
-                    self.viewport.cursor_pos = (line, col);
+                    // Matches store CHAR offsets; the cursor stores DISPLAY
+                    // columns. The viewport scrolls the cursor into view on
+                    // the next frame via `update_viewport_for_size`.
+                    let display_col = self.char_idx_to_display_col(line, col);
+                    self.viewport.cursor_pos = (line, display_col);
                     self.clamp_cursor_to_line();
-                    self.viewport.viewport_offset.0 = line;
                 } else {
                     self.search.current_match_index = None;
                 }
@@ -624,9 +655,9 @@ impl Editor {
 
     pub fn find_next_match(&mut self) -> bool {
         if let Some((line, col)) = self.search.navigate_match(true) {
-            self.viewport.cursor_pos = (line, col);
+            let display_col = self.char_idx_to_display_col(line, col);
+            self.viewport.cursor_pos = (line, display_col);
             self.clamp_cursor_to_line();
-            self.viewport.viewport_offset.0 = line;
             true
         } else {
             false
@@ -635,9 +666,9 @@ impl Editor {
 
     pub fn find_previous_match(&mut self) -> bool {
         if let Some((line, col)) = self.search.navigate_match(false) {
-            self.viewport.cursor_pos = (line, col);
+            let display_col = self.char_idx_to_display_col(line, col);
+            self.viewport.cursor_pos = (line, display_col);
             self.clamp_cursor_to_line();
-            self.viewport.viewport_offset.0 = line;
             true
         } else {
             false
@@ -649,6 +680,10 @@ impl Editor {
         self.viewport.cursor_pos = start_pos;
     }
 
+    /// Replace every match of `search_term` with `replace_term`, honoring
+    /// the active search modes (`use_regex`, `case_sensitive`) just like
+    /// find does. The replacement text is inserted literally — no `$1`
+    /// capture-group expansion. Returns the number of replacements made.
     pub fn perform_replace(&mut self, search_term: &str, replace_term: &str) -> usize {
         if search_term.is_empty() {
             return 0;
@@ -656,38 +691,46 @@ impl Editor {
 
         self.save_undo_state();
 
-        // Scan once for matches, tracking char positions incrementally to
-        // avoid O(n) `chars().count()` recomputes per match.
-        let text = self.rope.to_string();
-        let search_char_len = search_term.chars().count();
-        let mut match_positions: Vec<usize> = Vec::new();
-        let mut byte_cursor = 0;
-        let mut char_cursor = 0;
-        while let Some(rel) = text[byte_cursor..].find(search_term) {
-            let match_byte = byte_cursor + rel;
-            char_cursor += text[byte_cursor..match_byte].chars().count();
-            match_positions.push(char_cursor);
-            byte_cursor = match_byte + search_term.len();
-            char_cursor += search_char_len;
+        // Locate matches with the same engine find uses, so replace honors
+        // regex and case-insensitive modes.
+        self.search.search_buffer = search_term.to_string();
+        let spans = self.search.find_all_match_spans(&self.rope);
+
+        // Convert (line, char_col, char_len) to absolute char ranges,
+        // dropping overlapping matches (the literal scanner can report
+        // overlaps) so reverse application stays sound.
+        let first_line = spans.first().map(|&(line, _, _)| line).unwrap_or(0);
+        let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        let mut prev_end = 0;
+        for &(line, col, len) in &spans {
+            let start = self.rope.line_to_char(line) + col;
+            if start >= prev_end {
+                ranges.push((start, start + len));
+                prev_end = start + len;
+            }
         }
 
-        let replacements = match_positions.len();
+        let replacements = ranges.len();
         if replacements > 0 {
             // Apply in reverse so earlier char indices stay valid.
-            let first_match_char = match_positions[0];
-            for &char_pos in match_positions.iter().rev() {
-                self.rope.remove(char_pos..char_pos + search_char_len);
-                self.rope.insert(char_pos, replace_term);
+            for &(start, end) in ranges.iter().rev() {
+                self.rope.remove(start..end);
+                self.rope.insert(start, replace_term);
             }
             self.modified = true;
-            let first_line = self.rope.char_to_line(first_match_char);
-            self.clamp_cursor_to_line();
+            // Invalidate caches before clamping — the clamp queries the
+            // (now stale) line width cache otherwise.
             self.mark_document_changed(first_line);
+            self.clamp_cursor_to_line();
         }
 
         replacements
     }
 
+    /// Replace the first match of `search_term`, honoring the active search
+    /// modes (`use_regex`, `case_sensitive`) just like find does. The
+    /// replacement text is inserted literally — no `$1` capture-group
+    /// expansion. Returns 1 if a replacement was made, 0 otherwise.
     pub fn perform_replace_interactive(&mut self, search_term: &str, replace_term: &str) -> usize {
         if search_term.is_empty() {
             return 0;
@@ -695,41 +738,29 @@ impl Editor {
 
         self.save_undo_state();
 
-        // Per-line rope scan for the first literal match.
-        let search_char_len = search_term.chars().count();
-        let mut line_start_char: usize = 0;
-        let mut found: Option<usize> = None;
-        for line_slice in self.rope.lines() {
-            let line_len_chars = line_slice.len_chars();
-            let owned;
-            let line_str: &str = match line_slice.as_str() {
-                Some(s) => s,
-                None => {
-                    owned = line_slice.chars().collect::<String>();
-                    owned.as_str()
-                }
-            };
-            let content = line_str.trim_end_matches('\n');
-            if let Some(byte_pos) = content.find(search_term) {
-                let char_offset = content[..byte_pos].chars().count();
-                found = Some(line_start_char + char_offset);
-                break;
-            }
-            line_start_char += line_len_chars;
-        }
+        // Locate matches with the same engine find uses, so replace honors
+        // regex and case-insensitive modes.
+        self.search.search_buffer = search_term.to_string();
+        let first = self
+            .search
+            .find_all_match_spans(&self.rope)
+            .into_iter()
+            .next();
 
-        if let Some(char_pos) = found {
-            self.rope.remove(char_pos..char_pos + search_char_len);
+        if let Some((line, col, char_len)) = first {
+            let char_pos = self.rope.line_to_char(line) + col;
+            self.rope.remove(char_pos..char_pos + char_len);
             self.rope.insert(char_pos, replace_term);
             self.modified = true;
 
-            let line = self.rope.char_to_line(char_pos);
-            let line_start = self.rope.line_to_char(line);
-            let col = char_pos - line_start;
-            self.viewport.cursor_pos = (line, col);
-            self.clamp_cursor_to_line();
-
+            // Invalidate caches before clamping — the clamp queries the
+            // (now stale) line width cache otherwise.
             self.mark_document_changed(line);
+
+            // `col` is a CHAR offset; the cursor stores DISPLAY columns.
+            let display_col = self.char_idx_to_display_col(line, col);
+            self.viewport.cursor_pos = (line, display_col);
+            self.clamp_cursor_to_line();
 
             return 1;
         }
@@ -1597,5 +1628,122 @@ mod navigation_tests {
         e.viewport.cursor_pos = (4, 0);
         e.update_viewport_for_size(6, 20, 0, true);
         assert!(e.viewport.viewport_offset.0 >= 2);
+    }
+}
+
+#[cfg(test)]
+mod wide_char_tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_wide_char_advances_by_display_width() {
+        let mut e = Editor::new_for_test();
+        e.insert_char('あ');
+        assert_eq!(e.viewport.cursor_pos, (0, 2));
+        e.insert_char('x');
+        assert_eq!(e.rope.to_string(), "あx");
+        assert_eq!(e.viewport.cursor_pos, (0, 3));
+    }
+
+    #[test]
+    fn test_backspace_after_wide_char() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("あ");
+        e.viewport.cursor_pos = (0, 2);
+        e.delete_char();
+        assert_eq!(e.rope.to_string(), "");
+        assert_eq!(e.viewport.cursor_pos, (0, 0));
+    }
+
+    #[test]
+    fn test_arrow_keys_step_over_wide_chars() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("あx");
+        e.viewport.cursor_pos = (0, 0);
+        // Right over "あx": col goes 0 -> 2 -> 3, never landing mid-glyph.
+        e.move_cursor_right();
+        assert_eq!(e.viewport.cursor_pos, (0, 2));
+        e.move_cursor_right();
+        assert_eq!(e.viewport.cursor_pos, (0, 3));
+        // And back: 3 -> 2 -> 0.
+        e.move_cursor_left();
+        assert_eq!(e.viewport.cursor_pos, (0, 2));
+        e.move_cursor_left();
+        assert_eq!(e.viewport.cursor_pos, (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod find_replace_tests {
+    use super::*;
+
+    #[test]
+    fn test_find_jump_uses_display_columns() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("ああ target\n");
+        e.viewport.cursor_pos = (0, 0);
+        assert!(e.perform_find("target"));
+        // "target" starts at CHAR offset 3 but DISPLAY column 5 (2+2+1).
+        assert_eq!(e.viewport.cursor_pos, (0, 5));
+    }
+
+    #[test]
+    fn test_replace_all_honors_regex_mode() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("a1 b22 c333\n");
+        e.search.use_regex = true;
+        let n = e.perform_replace(r"\d+", "N");
+        assert_eq!(n, 3);
+        assert_eq!(e.rope.to_string(), "aN bN cN\n");
+    }
+
+    #[test]
+    fn test_replace_all_honors_case_insensitive_mode() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("Hello hello HELLO\n");
+        e.search.case_sensitive = false;
+        let n = e.perform_replace("hello", "X");
+        assert_eq!(n, 3);
+        assert_eq!(e.rope.to_string(), "X X X\n");
+    }
+
+    #[test]
+    fn test_replace_all_case_sensitive_mode() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("Hello hello HELLO\n");
+        e.search.case_sensitive = true;
+        let n = e.perform_replace("hello", "X");
+        assert_eq!(n, 1);
+        assert_eq!(e.rope.to_string(), "Hello X HELLO\n");
+    }
+
+    #[test]
+    fn test_replace_interactive_honors_regex_mode() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("a1 b22\n");
+        e.search.use_regex = true;
+        let n = e.perform_replace_interactive(r"\d+", "N");
+        assert_eq!(n, 1);
+        assert_eq!(e.rope.to_string(), "aN b22\n");
+    }
+
+    #[test]
+    fn test_replace_interactive_honors_case_insensitive_mode() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("HELLO hello\n");
+        e.search.case_sensitive = false;
+        let n = e.perform_replace_interactive("hello", "x");
+        assert_eq!(n, 1);
+        assert_eq!(e.rope.to_string(), "x hello\n");
+    }
+
+    #[test]
+    fn test_replace_interactive_cursor_at_display_column() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("ああ target\n");
+        let n = e.perform_replace_interactive("target", "T");
+        assert_eq!(n, 1);
+        // Replacement starts at CHAR offset 3 but DISPLAY column 5.
+        assert_eq!(e.viewport.cursor_pos, (0, 5));
     }
 }
