@@ -90,7 +90,7 @@ pub fn fuzzy_filter(query: &str, candidates: &[(usize, String)]) -> Vec<(usize, 
         .filter_map(|(idx, name)| fuzzy_score(query, name).map(|score| (*idx, name.clone(), score)))
         .collect();
 
-    scored.sort_by(|a, b| b.2.cmp(&a.2));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.2));
     scored
 }
 
@@ -110,7 +110,7 @@ pub fn fuzzy_filter_prepared<'a>(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.1));
     scored
 }
 

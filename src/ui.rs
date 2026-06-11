@@ -602,14 +602,15 @@ fn draw_editor_word_wrap(
 
         if line_idx == editor.viewport.cursor_pos.0 {
             let cursor_col = editor.viewport.cursor_pos.1;
-            let (cursor_sub_row, cursor_col_in_row) = if content_width > 0 {
-                // Clamp to the line's last rendered row: a cursor at the end
-                // of an exactly-full row would otherwise land on the next
-                // document line's row.
-                let sub_row = (cursor_col / content_width).min(rows_needed - 1);
-                (sub_row, cursor_col - sub_row * content_width)
-            } else {
-                (0, cursor_col)
+            // Clamp to the line's last rendered row: a cursor at the end
+            // of an exactly-full row would otherwise land on the next
+            // document line's row.
+            let (cursor_sub_row, cursor_col_in_row) = match cursor_col.checked_div(content_width) {
+                Some(row) => {
+                    let sub_row = row.min(rows_needed - 1);
+                    (sub_row, cursor_col - sub_row * content_width)
+                }
+                None => (0, cursor_col),
             };
             cursor_screen_pos = Some((screen_row + cursor_sub_row, cursor_col_in_row));
         }
