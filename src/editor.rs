@@ -140,18 +140,49 @@ pub struct Editor {
 /// Source of unique `buffer_id`s for `Editor::new_buffer`.
 static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Tab stop width used to expand hard '\t' characters at the display layer.
+/// Matches the stop Tab-key insertion aligns to by default
+/// (`constants::DEFAULT_TAB_WIDTH`, see `TabManager::handle_tab_insertion`).
+/// The rope keeps storing '\t'; only the column math and the renderer expand
+/// it, and both must use this constant so they agree.
+pub const TAB_WIDTH: usize = crate::constants::DEFAULT_TAB_WIDTH;
+
+/// Display width of `c` when it starts at display column `current_col`.
+/// A hard tab advances to the next multiple of `TAB_WIDTH` (so its width is
+/// position-dependent); every other char uses its Unicode width. All display
+/// column math in the editor and the renderer routes through this helper.
+pub fn char_display_width(c: char, current_col: usize) -> usize {
+    if c == '\t' {
+        TAB_WIDTH - (current_col % TAB_WIDTH)
+    } else {
+        UnicodeWidthChar::width(c).unwrap_or(0)
+    }
+}
+
+/// Display width of `s` when it starts at display column `start_col`,
+/// expanding hard tabs to `TAB_WIDTH` stops.
+pub fn str_display_width(s: &str, start_col: usize) -> usize {
+    let mut col = start_col;
+    for c in s.chars() {
+        col += char_display_width(c, col);
+    }
+    col - start_col
+}
+
 /// Get the display width of a line, handling the case where the line spans chunk boundaries.
 pub fn line_display_width(rope: &Rope, line: usize) -> usize {
     let rope_line = rope.line(line);
     if let Some(s) = rope_line.as_str() {
-        s.trim_end_matches('\n').width()
-    } else {
-        rope_line
-            .chars()
-            .filter(|&c| c != '\n')
-            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-            .sum()
+        let s = s.trim_end_matches('\n');
+        if !s.contains('\t') {
+            return s.width();
+        }
     }
+    let mut col = 0;
+    for c in rope_line.chars().filter(|&c| c != '\n') {
+        col += char_display_width(c, col);
+    }
+    col
 }
 
 impl Default for Editor {
@@ -230,7 +261,7 @@ impl Editor {
             self.viewport.cursor_pos.0 += 1;
             self.viewport.cursor_pos.1 = 0;
         } else {
-            self.viewport.cursor_pos.1 += UnicodeWidthChar::width(c).unwrap_or(0);
+            self.viewport.cursor_pos.1 += char_display_width(c, self.viewport.cursor_pos.1);
         }
         self.modified = true;
     }
@@ -242,13 +273,16 @@ impl Editor {
                 self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
             if pos > 0 {
                 self.save_undo_state();
-                // Move the cursor back by the deleted char's display width
-                // (a wide CJK char occupies 2 columns, not 1).
-                let deleted_width = UnicodeWidthChar::width(self.rope.char(pos - 1)).unwrap_or(0);
+                // Land the cursor on the deleted char's start column. Its
+                // display width is position-dependent (a wide CJK char
+                // occupies 2 columns, a tab up to TAB_WIDTH), so compute the
+                // column from the char index before mutating the rope.
+                let line_start = self.rope.line_to_char(self.viewport.cursor_pos.0);
+                let new_col =
+                    self.char_idx_to_display_col(self.viewport.cursor_pos.0, pos - 1 - line_start);
                 self.rope.remove(pos - 1..pos);
                 self.mark_document_changed(self.viewport.cursor_pos.0);
-                self.viewport.cursor_pos.1 =
-                    self.viewport.cursor_pos.1.saturating_sub(deleted_width);
+                self.viewport.cursor_pos.1 = new_col;
                 self.modified = true;
             }
         } else if self.viewport.cursor_pos.0 > 0 {
@@ -292,7 +326,8 @@ impl Editor {
         self.rope.insert(pos, &insert_str);
         self.mark_document_changed(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.0 += 1;
-        self.viewport.cursor_pos.1 = UnicodeWidthStr::width(indent.as_str());
+        // The indent starts at column 0; it may contain hard tabs.
+        self.viewport.cursor_pos.1 = str_display_width(&indent, 0);
         self.modified = true;
     }
 
@@ -382,7 +417,7 @@ impl Editor {
     }
 
     /// Convert a char offset (number of chars from line start) to a display column,
-    /// accounting for character widths (e.g. wide CJK characters).
+    /// accounting for character widths (e.g. wide CJK characters, hard tabs).
     pub fn char_idx_to_display_col(&self, line: usize, char_offset: usize) -> usize {
         let rope_line = self.rope.line(line);
         let mut display_col = 0;
@@ -390,7 +425,7 @@ impl Editor {
             if i >= char_offset || ch == '\n' {
                 break;
             }
-            display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+            display_col += char_display_width(ch, display_col);
         }
         display_col
     }
@@ -404,8 +439,14 @@ impl Editor {
             if display_col >= col || ch == '\n' {
                 break;
             }
+            let w = char_display_width(ch, display_col);
+            if display_col + w > col {
+                // `col` falls inside this char's span (mid-tab, mid-CJK):
+                // snap to the char itself rather than past it.
+                break;
+            }
             char_idx = i + 1;
-            display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+            display_col += w;
         }
         line_start + char_idx
     }
@@ -491,7 +532,11 @@ impl Editor {
             for line_idx in self.viewport.viewport_offset.0..self.rope.len_lines() {
                 let rows = self.wrapped_line_height(line_idx, content_width);
                 if line_idx == cursor_line {
-                    let cursor_sub_row = self.viewport.cursor_pos.1 / content_width;
+                    // Clamp to the line's last rendered row: a cursor at the
+                    // end of an exactly-full row would otherwise compute one
+                    // sub-row past the rows the renderer produces.
+                    let cursor_sub_row =
+                        (self.viewport.cursor_pos.1 / content_width).min(rows.saturating_sub(1));
                     let cursor_screen_y = screen_rows + cursor_sub_row;
                     if cursor_screen_y < editor_height {
                         found_cursor = true;
@@ -921,16 +966,16 @@ impl Editor {
         let mut col = 0;
         let mut dcol = 0;
         while col < line_chars.len() && dcol < display_col {
-            dcol += UnicodeWidthChar::width(line_chars[col]).unwrap_or(0);
+            dcol += char_display_width(line_chars[col], dcol);
             col += 1;
         }
 
         while col < line_chars.len() && !line_chars[col].is_whitespace() {
-            dcol += UnicodeWidthChar::width(line_chars[col]).unwrap_or(0);
+            dcol += char_display_width(line_chars[col], dcol);
             col += 1;
         }
         while col < line_chars.len() && line_chars[col].is_whitespace() {
-            dcol += UnicodeWidthChar::width(line_chars[col]).unwrap_or(0);
+            dcol += char_display_width(line_chars[col], dcol);
             col += 1;
         }
 
@@ -963,7 +1008,7 @@ impl Editor {
         let mut prefix_dcol: Vec<usize> = vec![0];
         let mut running = 0usize;
         for ch in rope_line.chars().filter(|&c| c != '\n') {
-            running += UnicodeWidthChar::width(ch).unwrap_or(0);
+            running += char_display_width(ch, running);
             line_chars.push(ch);
             prefix_dcol.push(running);
         }
@@ -1125,7 +1170,7 @@ impl Editor {
                 break;
             }
             char_idx += 1;
-            current_display_col += UnicodeWidthChar::width(ch).unwrap_or(0);
+            current_display_col += char_display_width(ch, current_display_col);
         }
 
         let before_cursor: String = line_chars[..char_idx].iter().collect();
@@ -1712,6 +1757,112 @@ mod wide_char_tests {
         assert_eq!(e.viewport.cursor_pos, (0, 2));
         e.move_cursor_left();
         assert_eq!(e.viewport.cursor_pos, (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod hard_tab_tests {
+    use super::*;
+
+    #[test]
+    fn test_char_idx_to_display_col_leading_tab() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("\tx\n");
+        // 'x' (char 1) sits at the first tab stop.
+        assert_eq!(e.char_idx_to_display_col(0, 0), 0);
+        assert_eq!(e.char_idx_to_display_col(0, 1), TAB_WIDTH);
+    }
+
+    #[test]
+    fn test_char_idx_to_display_col_tab_advances_to_next_stop() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("ab\tx\n");
+        // The tab starts at col 2 and advances to the next TAB_WIDTH stop,
+        // not by a fixed width.
+        assert_eq!(e.char_idx_to_display_col(0, 2), 2);
+        assert_eq!(e.char_idx_to_display_col(0, 3), TAB_WIDTH);
+    }
+
+    #[test]
+    fn test_display_col_round_trip_snaps_mid_tab_to_tab_char() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("\tx\n");
+        // Clicking inside the tab's span resolves to the tab char itself...
+        for col in 0..TAB_WIDTH {
+            assert_eq!(e.line_col_to_char_idx(0, col), 0, "col {col}");
+        }
+        // ...and the tab stop boundary resolves to the char after it.
+        assert_eq!(e.line_col_to_char_idx(0, TAB_WIDTH), 1);
+        // Round trip from the snapped char index lands on the tab's column.
+        let snapped = e.line_col_to_char_idx(0, TAB_WIDTH / 2);
+        assert_eq!(e.char_idx_to_display_col(0, snapped), 0);
+    }
+
+    #[test]
+    fn test_cursor_movement_steps_full_tab_width() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("\tx\n");
+        e.viewport.cursor_pos = (0, 0);
+        e.move_cursor_right();
+        assert_eq!(e.viewport.cursor_pos, (0, TAB_WIDTH));
+        e.move_cursor_right();
+        assert_eq!(e.viewport.cursor_pos, (0, TAB_WIDTH + 1));
+        e.move_cursor_left();
+        assert_eq!(e.viewport.cursor_pos, (0, TAB_WIDTH));
+        e.move_cursor_left();
+        assert_eq!(e.viewport.cursor_pos, (0, 0));
+    }
+
+    #[test]
+    fn test_line_display_width_mixed_tabs_and_cjk() {
+        let mut e = Editor::new_for_test();
+        // "あ" occupies cols 0-1, so the tab starts at col 2 and advances to
+        // the stop at TAB_WIDTH; 'x' adds one more column.
+        e.rope = Rope::from_str("あ\tx\n");
+        assert_eq!(e.line_display_width_cached(0), TAB_WIDTH + 1);
+        // Two leading tabs: two full stops.
+        e.rope = Rope::from_str("\t\t\n");
+        e.invalidate_cache();
+        assert_eq!(e.line_display_width_cached(0), 2 * TAB_WIDTH);
+    }
+
+    #[test]
+    fn test_insert_tab_char_advances_to_next_stop() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("ab\n");
+        e.viewport.cursor_pos = (0, 2);
+        e.insert_char('\t');
+        assert_eq!(e.rope.to_string(), "ab\t\n");
+        assert_eq!(e.viewport.cursor_pos, (0, TAB_WIDTH));
+    }
+
+    #[test]
+    fn test_backspace_over_tab_returns_to_tab_start() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("ab\t\n");
+        e.viewport.cursor_pos = (0, TAB_WIDTH);
+        e.delete_char();
+        assert_eq!(e.rope.to_string(), "ab\n");
+        assert_eq!(e.viewport.cursor_pos, (0, 2));
+    }
+
+    #[test]
+    fn test_auto_indent_with_tab_indent_uses_tab_width() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("\thello\n");
+        e.viewport.cursor_pos = (0, TAB_WIDTH + 5);
+        e.insert_newline(true);
+        assert!(e.rope.to_string().starts_with("\thello\n\t"));
+        assert_eq!(e.viewport.cursor_pos, (1, TAB_WIDTH));
+    }
+
+    #[test]
+    fn test_str_display_width_position_dependent() {
+        // Starting at col 0 the tab spans the full stop; starting at col 3
+        // it only spans one column.
+        assert_eq!(str_display_width("\t", 0), TAB_WIDTH);
+        assert_eq!(str_display_width("\t", TAB_WIDTH - 1), 1);
+        assert_eq!(str_display_width("a\tb", 0), TAB_WIDTH + 1);
     }
 }
 

@@ -6,6 +6,12 @@ config, updater, main) at v1.5.3. Every Critical/High finding below was
 (`cargo test --test review_repro -- --ignored` — each test asserts the
 *correct* behavior and currently fails).
 
+> **Resolution status (2026-06-11):** all findings below are fixed on this
+> branch except **L8** (Ctrl+H help-vs-backspace is a keybinding product
+> decision) and **L12** (panic-hook/updater ordering, documented behavior).
+> The repro tests in `tests/review_repro.rs` are no longer `#[ignore]`d and
+> run as part of the normal suite.
+
 Overall the architecture is solid: the atomic-save path (temp file + fsync +
 rename + permission preservation, `tabs.rs`), the RAII terminal guard + panic
 hook (`main.rs`), the undo design (rope clones are cheap with ropey), the
