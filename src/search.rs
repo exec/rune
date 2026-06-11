@@ -1,5 +1,4 @@
 use regex::Regex;
-use std::collections::HashMap;
 
 /// Maximum number of matches returned by a single search. Beyond this,
 /// accumulation stops and the caller is expected to notify the user.
@@ -35,6 +34,11 @@ pub struct SearchState {
     pub search_history_index: Option<usize>,
     pub find_navigation_mode: FindNavigationMode,
     pub replace_phase: ReplacePhase,
+    /// Absolute char index the interactive replace session resumes from.
+    /// Reset to 0 when a session enters the confirm phase; advanced past
+    /// each handled (replaced or skipped) match so the session always
+    /// makes forward progress.
+    pub replace_resume_char: usize,
     pub goto_line_buffer: String,
     cached_regex_pattern: Option<String>,
     cached_regex: Option<Regex>,
@@ -55,6 +59,7 @@ impl Default for SearchState {
             search_history_index: None,
             find_navigation_mode: FindNavigationMode::HistoryBrowsing,
             replace_phase: ReplacePhase::FindPattern,
+            replace_resume_char: 0,
             goto_line_buffer: String::new(),
             cached_regex_pattern: None,
             cached_regex: None,
@@ -64,16 +69,28 @@ impl Default for SearchState {
 
 impl SearchState {
     pub fn find_all_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
+        self.find_all_match_spans(rope)
+            .into_iter()
+            .map(|(line, col, _)| (line, col))
+            .collect()
+    }
+
+    /// Like `find_all_matches`, but each entry also carries the match length
+    /// in chars: `(line, char_col, char_len)`. Regex match lengths vary per
+    /// match, so replace needs this richer form; the UI keeps consuming the
+    /// plain `(line, char_col)` pairs in `search_matches`.
+    pub fn find_all_match_spans(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize, usize)> {
         self.search_matches_truncated = false;
         if self.search_buffer.is_empty() {
             return Vec::new();
         }
 
         if self.use_regex {
-            return self.find_all_regex_matches(rope);
+            return self.find_all_regex_match_spans(rope);
         }
 
         let search_term = self.search_buffer.clone();
+        let search_char_len = search_term.chars().count();
         let case_sensitive = self.case_sensitive;
         let search_lower = if case_sensitive {
             String::new()
@@ -81,13 +98,10 @@ impl SearchState {
             search_term.to_lowercase()
         };
 
-        let mut line_cache: HashMap<usize, String> = HashMap::new();
         let mut matches = Vec::new();
 
         'outer: for line_idx in 0..rope.len_lines() {
-            let line_string = line_cache
-                .entry(line_idx)
-                .or_insert_with(|| crate::get_line_str(rope, line_idx));
+            let line_string = crate::get_line_str(rope, line_idx);
             let line_content = line_string.trim_end_matches('\n');
 
             let line_matches = if case_sensitive {
@@ -98,7 +112,7 @@ impl SearchState {
 
             for col in line_matches {
                 if validate_match_at_position(line_content, col, &search_term, case_sensitive) {
-                    matches.push((line_idx, col));
+                    matches.push((line_idx, col, search_char_len));
                     if matches.len() >= MAX_SEARCH_MATCHES {
                         self.search_matches_truncated = true;
                         break 'outer;
@@ -111,7 +125,7 @@ impl SearchState {
         matches
     }
 
-    fn find_all_regex_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
+    fn find_all_regex_match_spans(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize, usize)> {
         let pattern = if self.case_sensitive {
             self.search_buffer.clone()
         } else {
@@ -149,7 +163,8 @@ impl SearchState {
 
             for m in re.find_iter(line_content) {
                 let char_pos = line_content[..m.start()].chars().count();
-                matches.push((line_idx, char_pos));
+                let char_len = line_content[m.start()..m.end()].chars().count();
+                matches.push((line_idx, char_pos, char_len));
                 if matches.len() >= MAX_SEARCH_MATCHES {
                     self.search_matches_truncated = true;
                     break 'outer;

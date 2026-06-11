@@ -534,9 +534,14 @@ impl SyntaxHighlighter {
     }
 
     pub fn invalidate_cache_from_line(&mut self, start_line: usize) {
-        // Remove cached lines from start_line onwards
+        // Remove cached lines from start_line onwards. Lines before the
+        // edit stay textually valid (highlighting is per-line, with no
+        // cross-line state), and any line shifted by an insert/delete is at
+        // or after start_line and thus evicted — so the retained entries
+        // remain correct. Do NOT bump `file_version` here: that would mark
+        // the retained entries stale and clear the whole cache on every
+        // edit.
         self.line_cache.retain(|&line_num, _| line_num < start_line);
-        self.file_version += 1;
     }
 
     /// Evict least recently used entries when cache exceeds MAX_CACHE_ENTRIES

@@ -45,19 +45,20 @@ struct Cli {
 
 /// Expand a list of paths into individual files.
 ///
-/// - Plain files are passed through directly.
+/// - Plain files are passed through directly — even binary ones. The user
+///   named them explicitly, so loading should be attempted (and any failure
+///   surfaced) rather than silently dropping them.
 /// - Directories are walked using `ignore::WalkBuilder` which respects
 ///   `.gitignore` and skips hidden files by default.
 /// - When `recursive` is false, only immediate children are listed (max_depth 1).
-/// - Binary files (containing null bytes in the first 512 bytes) are skipped.
+/// - Binary files (containing null bytes in the first 512 bytes) discovered
+///   via directory walking are skipped.
 fn expand_paths(paths: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
     let mut result = Vec::new();
 
     for path in paths {
         if path.is_file() {
-            if !is_binary(path) {
-                result.push(path.clone());
-            }
+            result.push(path.clone());
         } else if path.is_dir() {
             let mut builder = ignore::WalkBuilder::new(path);
             builder.hidden(true); // skip hidden files
@@ -315,15 +316,29 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_paths_skips_binary() {
+    fn test_expand_paths_explicit_binary_passes_through() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("binary.bin");
-        let mut data = vec![0u8; 100];
+        let mut data = vec![1u8; 100];
         data[50] = 0; // null byte
         fs::write(&file, &data).unwrap();
 
-        let result = expand_paths(&[file], false);
-        assert!(result.is_empty());
+        // Explicitly named files are not filtered, even if binary.
+        let result = expand_paths(std::slice::from_ref(&file), false);
+        assert_eq!(result, vec![file]);
+    }
+
+    #[test]
+    fn test_expand_paths_skips_binary_in_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = dir.path().join("notes.txt");
+        let binary = dir.path().join("binary.bin");
+        fs::write(&text, "hello").unwrap();
+        fs::write(&binary, b"\x00\x01\x02").unwrap();
+
+        // Files discovered via directory walking still skip binaries.
+        let result = expand_paths(&[dir.path().to_path_buf()], false);
+        assert_eq!(result, vec![text]);
     }
 
     #[test]

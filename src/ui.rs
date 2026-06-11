@@ -6,19 +6,19 @@ use ratatui::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::editor::{Editor, InputMode};
+use crate::editor::{char_display_width, Editor, InputMode};
 use crate::get_line_str;
 use crate::tabs::TabManager;
 
 /// Per-line cache of fully-assembled content spans (post-syntax, post-search,
 /// pre-selection, pre-horizontal-slice). Only populated when search and
 /// selection are both inactive — the common cursor-navigation case. The cache
-/// is invalidated whenever `dirty_generation` or the active rope identity
+/// is invalidated whenever `dirty_generation` or the active buffer identity
 /// changes, so entries are always valid for the current frame if they exist.
 struct RenderCache {
-    rope_id: usize,
-    rope_len_chars: usize,
+    buffer_id: Option<u64>,
     dirty_generation: u64,
     show_whitespace: bool,
     lines: HashMap<usize, Rc<Vec<Span<'static>>>>,
@@ -27,28 +27,19 @@ struct RenderCache {
 impl RenderCache {
     fn new() -> Self {
         Self {
-            rope_id: 0,
-            rope_len_chars: 0,
+            buffer_id: None,
             dirty_generation: 0,
             show_whitespace: false,
             lines: HashMap::new(),
         }
     }
 
-    fn reset_if_stale(
-        &mut self,
-        rope_id: usize,
-        rope_len_chars: usize,
-        dirty_generation: u64,
-        show_whitespace: bool,
-    ) {
-        if self.rope_id != rope_id
-            || self.rope_len_chars != rope_len_chars
+    fn reset_if_stale(&mut self, buffer_id: u64, dirty_generation: u64, show_whitespace: bool) {
+        if self.buffer_id != Some(buffer_id)
             || self.dirty_generation != dirty_generation
             || self.show_whitespace != show_whitespace
         {
-            self.rope_id = rope_id;
-            self.rope_len_chars = rope_len_chars;
+            self.buffer_id = Some(buffer_id);
             self.dirty_generation = dirty_generation;
             self.show_whitespace = show_whitespace;
             self.lines.clear();
@@ -306,7 +297,13 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
             format!(" {}{} ", tab.display_name, modified)
         })
         .collect();
-    let tab_widths: Vec<usize> = tab_titles.iter().map(|t| t.len()).collect();
+    // Display width, not byte length -- multibyte tab names would otherwise
+    // break the overflow math and the click hit-testing in tabs.rs (which
+    // replays this layout and must agree with it).
+    let tab_widths: Vec<usize> = tab_titles
+        .iter()
+        .map(|t| UnicodeWidthStr::width(t.as_str()))
+        .collect();
 
     // Adjust scroll offset so the active tab is always visible.
     // 1) If active tab is before the scroll offset, scroll left.
@@ -317,7 +314,7 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     // 2) If active tab is past the right edge, scroll right until it fits.
     loop {
         let left_indicator_width = if tabs.tab_scroll_offset > 0 {
-            format!(" <{} ", tabs.tab_scroll_offset).len()
+            UnicodeWidthStr::width(format!(" <{} ", tabs.tab_scroll_offset).as_str())
         } else {
             0
         };
@@ -363,7 +360,7 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     // Left overflow indicator
     if tabs.tab_scroll_offset > 0 {
         let left_label = format!(" <{} ", tabs.tab_scroll_offset);
-        used_width += left_label.len();
+        used_width += UnicodeWidthStr::width(left_label.as_str());
         spans.push(Span::styled(
             left_label,
             Style::default().fg(Color::DarkGray),
@@ -420,13 +417,12 @@ fn draw_editor_horizontal_scroll(
     let selection_range = compute_selection_range(editor);
     let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
 
-    let rope_id = (&editor.rope as *const _) as usize;
-    let rope_len_chars = editor.rope.len_chars();
+    let buffer_id = editor.buffer_id;
     let dirty_gen = editor.dirty_generation;
     let can_cache = selection_range.is_none() && search_term_char_len == 0;
     RENDER_CACHE.with(|c| {
         c.borrow_mut()
-            .reset_if_stale(rope_id, rope_len_chars, dirty_gen, show_whitespace)
+            .reset_if_stale(buffer_id, dirty_gen, show_whitespace)
     });
 
     for i in 0..visible_lines {
@@ -476,8 +472,13 @@ fn draw_editor_horizontal_scroll(
                     }
                 }
 
-                let final_spans =
-                    apply_selection_highlighting(search_spans, line_idx, editor, selection_range);
+                // Expand tabs last: search and selection highlighting work in
+                // rope char positions, which a tab-to-spaces expansion would
+                // shift.
+                let final_spans = expand_tabs_in_spans(
+                    apply_selection_highlighting(search_spans, line_idx, editor, selection_range),
+                    show_whitespace,
+                );
 
                 let sliced = slice_spans_horizontal(&final_spans, h_offset, content_width);
 
@@ -547,7 +548,7 @@ fn draw_editor_word_wrap(
 
     let mut lines: Vec<Line> = vec![];
     let mut screen_row = 0;
-    let mut cursor_screen_y: Option<usize> = None;
+    let mut cursor_screen_pos: Option<(usize, usize)> = None;
     let mut line_idx = editor.viewport.viewport_offset.0;
     let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
 
@@ -580,11 +581,19 @@ fn draw_editor_word_wrap(
             }
         }
 
-        let final_spans =
-            apply_selection_highlighting(search_spans, line_idx, editor, selection_range);
+        // Expand tabs last: search and selection highlighting work in rope
+        // char positions, which a tab-to-spaces expansion would shift.
+        let final_spans = expand_tabs_in_spans(
+            apply_selection_highlighting(search_spans, line_idx, editor, selection_range),
+            show_whitespace,
+        );
 
-        let total_chars: usize = final_spans.iter().map(|s| s.content.chars().count()).sum();
-        let line_width = line_content.chars().count().max(total_chars);
+        // Wrap by display columns (wide chars count 2, tabs are expanded),
+        // matching the editor's `wrapped_line_height` math.
+        let line_width: usize = final_spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
         let rows_needed = if content_width == 0 || line_width == 0 {
             1
         } else {
@@ -592,12 +601,18 @@ fn draw_editor_word_wrap(
         };
 
         if line_idx == editor.viewport.cursor_pos.0 {
-            let cursor_sub_row = if content_width > 0 {
-                editor.viewport.cursor_pos.1 / content_width
-            } else {
-                0
+            let cursor_col = editor.viewport.cursor_pos.1;
+            // Clamp to the line's last rendered row: a cursor at the end
+            // of an exactly-full row would otherwise land on the next
+            // document line's row.
+            let (cursor_sub_row, cursor_col_in_row) = match cursor_col.checked_div(content_width) {
+                Some(row) => {
+                    let sub_row = row.min(rows_needed - 1);
+                    (sub_row, cursor_col - sub_row * content_width)
+                }
+                None => (0, cursor_col),
             };
-            cursor_screen_y = Some(screen_row + cursor_sub_row);
+            cursor_screen_pos = Some((screen_row + cursor_sub_row, cursor_col_in_row));
         }
 
         for sub_row in 0..rows_needed {
@@ -621,9 +636,9 @@ fn draw_editor_word_wrap(
             }
 
             let start_col = sub_row * content_width;
-            let end_col = (start_col + content_width).min(total_chars);
+            let end_col = start_col + content_width;
 
-            if start_col < total_chars {
+            if start_col < line_width {
                 let sub_chars = collect_span_chars_range(&final_spans, start_col, end_col);
                 styled_spans.extend(group_chars_into_spans(&sub_chars));
             }
@@ -656,21 +671,22 @@ fn draw_editor_word_wrap(
     f.render_widget(editor_widget, editor_area);
 
     // Draw cursor
-    if let Some(screen_y) = cursor_screen_y {
+    if let Some((screen_y, cursor_col_in_row)) = cursor_screen_pos {
         if screen_y < visible_lines {
-            let cursor_col_in_row = if content_width > 0 {
-                editor.viewport.cursor_pos.1 % content_width
-            } else {
-                editor.viewport.cursor_pos.1
-            };
-            let cursor_x = cursor_col_in_row as u16 + line_num_width as u16;
+            // A cursor clamped onto the last row of an exactly-full line sits
+            // one column past it; keep the drawn cursor inside the area.
+            let cursor_x = (cursor_col_in_row as u16 + line_num_width as u16)
+                .min(editor_area.width.saturating_sub(1));
             f.set_cursor_position(Position::new(cursor_x, screen_y as u16 + editor_area.y));
         }
     }
 }
 
-/// Slice a list of spans to only include characters in the display column range
-/// [h_offset, h_offset + width). This handles multi-char spans that straddle the boundary.
+/// Slice a list of spans to only include the display column range
+/// [h_offset, h_offset + width). Columns are display columns (wide chars
+/// count 2; tabs must already be expanded by `expand_tabs_in_spans`). A wide
+/// char straddling either edge is replaced by padding spaces for its visible
+/// columns so the slice stays column-exact.
 fn slice_spans_horizontal(spans: &[Span<'_>], h_offset: usize, width: usize) -> Vec<Span<'static>> {
     if h_offset == 0 && width == usize::MAX {
         return spans
@@ -688,27 +704,36 @@ fn slice_spans_horizontal(spans: &[Span<'_>], h_offset: usize, width: usize) -> 
             break;
         }
 
-        let span_len = span.content.chars().count();
-        let span_end = col + span_len;
+        let span_width = UnicodeWidthStr::width(span.content.as_ref());
+        let span_end = col + span_width;
 
         if span_end <= h_offset {
             col = span_end;
             continue;
         }
 
-        let start_in_span = h_offset.saturating_sub(col);
-        let end_in_span = if span_end > end { end - col } else { span_len };
-
-        if start_in_span < end_in_span {
-            let mut visible = String::new();
-            for (i, ch) in span.content.chars().enumerate() {
-                if i >= end_in_span {
-                    break;
-                }
-                if i >= start_in_span {
-                    visible.push(ch);
+        let mut visible = String::new();
+        let mut ch_col = col;
+        for ch in span.content.chars() {
+            if ch_col >= end {
+                break;
+            }
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let ch_end = ch_col + w;
+            if ch_end <= h_offset {
+                ch_col = ch_end;
+                continue;
+            }
+            if ch_col >= h_offset && ch_end <= end {
+                visible.push(ch);
+            } else {
+                for _ in ch_col.max(h_offset)..ch_end.min(end) {
+                    visible.push(' ');
                 }
             }
+            ch_col = ch_end;
+        }
+        if !visible.is_empty() {
             result.push(Span::styled(visible, span.style));
         }
 
@@ -719,8 +744,10 @@ fn slice_spans_horizontal(spans: &[Span<'_>], h_offset: usize, width: usize) -> 
 }
 
 /// Collect characters with their styles from a list of spans, but only those
-/// whose character index falls in `[start_col, end_col)`. Avoids materializing
-/// the entire line when rendering a single wrapped sub-row.
+/// whose display columns fall in `[start_col, end_col)`. Columns are display
+/// columns (wide chars count 2; tabs must already be expanded). A wide char
+/// straddling either edge contributes padding spaces for its visible columns
+/// so each wrapped sub-row stays column-exact.
 fn collect_span_chars_range(
     spans: &[Span<'_>],
     start_col: usize,
@@ -730,20 +757,30 @@ fn collect_span_chars_range(
     if end_col <= start_col {
         return result;
     }
-    let mut pos = 0usize;
+    let mut col = 0usize;
     for span in spans {
-        if pos >= end_col {
+        if col >= end_col {
             break;
         }
         let span_style = span.style;
         for ch in span.content.chars() {
-            if pos >= end_col {
+            if col >= end_col {
                 break;
             }
-            if pos >= start_col {
-                result.push((ch, span_style));
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let ch_end = col + w;
+            if ch_end <= start_col {
+                col = ch_end;
+                continue;
             }
-            pos += 1;
+            if col >= start_col && ch_end <= end_col {
+                result.push((ch, span_style));
+            } else {
+                for _ in col.max(start_col)..ch_end.min(end_col) {
+                    result.push((' ', span_style));
+                }
+            }
+            col = ch_end;
         }
     }
     result
@@ -882,49 +919,56 @@ fn apply_search_highlighting(
         .filter(|(match_line, _)| *match_line == line_idx)
         .map(|(_, match_col)| *match_col);
 
-    let mut result_spans = Vec::new();
-    line_chars_buf.clear();
-    line_chars_buf.extend(line_content.chars());
-    let line_chars = line_chars_buf.as_slice();
-    let mut current_char_pos = 0;
-
+    // Clip overlapping matches up-front (the literal scanner can report
+    // overlaps) into non-overlapping highlight ranges in char positions.
+    let mut highlight_ranges: Vec<(usize, usize, Style)> = Vec::with_capacity(line_matches.len());
+    let mut prev_end = 0;
     for &(_, match_char_pos) in line_matches {
-        if match_char_pos < current_char_pos {
+        if match_char_pos < prev_end {
             continue;
         }
-        if match_char_pos > current_char_pos {
-            let before_chars: String = line_chars[current_char_pos..match_char_pos]
-                .iter()
-                .collect();
-            if !before_chars.is_empty() {
-                result_spans.push(Span::styled(
-                    before_chars,
-                    get_syntax_style_at_position(syntax_spans, current_char_pos),
-                ));
-            }
-        }
-
-        let match_end_char = (match_char_pos + search_term_char_len).min(line_chars.len());
-        let match_chars: String = line_chars[match_char_pos..match_end_char].iter().collect();
-
-        let highlight_style = if Some(match_char_pos) == current_match_col {
+        let style = if Some(match_char_pos) == current_match_col {
             Style::default().bg(Color::Red).fg(Color::White)
         } else {
             Style::default().bg(Color::Yellow).fg(Color::Black)
         };
-
-        result_spans.push(Span::styled(match_chars, highlight_style));
-        current_char_pos = match_end_char;
+        prev_end = match_char_pos + search_term_char_len;
+        highlight_ranges.push((match_char_pos, prev_end, style));
     }
 
-    if current_char_pos < line_chars.len() {
-        let remaining_chars: String = line_chars[current_char_pos..].iter().collect();
-        if !remaining_chars.is_empty() {
+    // Single forward pass: walk the line's chars and the syntax spans in
+    // lockstep (one style per char), overriding with the highlight style
+    // inside match ranges, and group consecutive same-style chars into spans.
+    line_chars_buf.clear();
+    line_chars_buf.extend(line_content.chars());
+    let per_char_syntax = syntax_spans
+        .iter()
+        .flat_map(|(style, text)| text.chars().filter(|&c| c != '\n').map(move |_| *style))
+        .chain(std::iter::repeat(Style::default()));
+
+    let mut result_spans = Vec::new();
+    let mut current_text = String::new();
+    let mut current_style = Style::default();
+    let mut range_i = 0;
+    for (char_pos, (&ch, syntax_style)) in line_chars_buf.iter().zip(per_char_syntax).enumerate() {
+        while range_i < highlight_ranges.len() && highlight_ranges[range_i].1 <= char_pos {
+            range_i += 1;
+        }
+        let style = match highlight_ranges.get(range_i) {
+            Some(&(start, _, highlight)) if char_pos >= start => highlight,
+            _ => syntax_style,
+        };
+        if style != current_style && !current_text.is_empty() {
             result_spans.push(Span::styled(
-                remaining_chars,
-                get_syntax_style_at_position(syntax_spans, current_char_pos),
+                std::mem::take(&mut current_text),
+                current_style,
             ));
         }
+        current_style = style;
+        current_text.push(ch);
+    }
+    if !current_text.is_empty() {
+        result_spans.push(Span::styled(current_text, current_style));
     }
 
     result_spans
@@ -938,20 +982,44 @@ fn line_match_slice(search_matches: &[(usize, usize)], line_idx: usize) -> (usiz
     (start, end)
 }
 
+/// Make spaces visible for show-whitespace mode. Hard tabs are left alone
+/// here (so char positions stay aligned with the rope for selection
+/// highlighting); `expand_tabs_in_spans` draws their visible marker instead.
 fn render_whitespace(text: &str) -> String {
-    text.replace(' ', "\u{00B7}").replace('\t', "\u{2192}")
+    text.replace(' ', "\u{00B7}")
 }
 
-fn get_syntax_style_at_position(syntax_spans: &[(Style, String)], position: usize) -> Style {
-    let mut current_pos = 0;
-    for (style, text) in syntax_spans {
-        let text_len = text.trim_end_matches('\n').len();
-        if position >= current_pos && position < current_pos + text_len {
-            return *style;
+/// Expand hard tabs in fully-styled spans into spaces aligned to `TAB_WIDTH`
+/// stops, tracking the running display column across spans (wide chars count
+/// 2 columns). This is the renderer half of the tab handling: it must agree
+/// with `char_display_width` so the terminal layout matches the cursor math.
+/// With `show_whitespace`, the first cell of each expansion is a visible
+/// marker, padded with plain spaces.
+fn expand_tabs_in_spans(spans: Vec<Span<'static>>, show_whitespace: bool) -> Vec<Span<'static>> {
+    let mut col = 0usize;
+    let mut result = Vec::with_capacity(spans.len());
+    for span in spans {
+        if !span.content.contains('\t') {
+            col += UnicodeWidthStr::width(span.content.as_ref());
+            result.push(span);
+            continue;
         }
-        current_pos += text_len;
+        let mut text = String::with_capacity(span.content.len());
+        for ch in span.content.chars() {
+            let w = char_display_width(ch, col);
+            if ch == '\t' {
+                text.push(if show_whitespace { '\u{2192}' } else { ' ' });
+                for _ in 1..w {
+                    text.push(' ');
+                }
+            } else {
+                text.push(ch);
+            }
+            col += w;
+        }
+        result.push(Span::styled(text, span.style));
     }
-    Style::default()
+    result
 }
 
 /// Compute the active selection range as `(start_char_idx, end_char_idx)` once
@@ -1037,6 +1105,29 @@ fn apply_selection_highlighting(
     result
 }
 
+/// Truncate `label` to at most `max_width` display columns, appending "..."
+/// when truncation occurs. Operates on display width rather than bytes, so
+/// multibyte and wide (CJK) characters never split a char boundary.
+fn truncate_to_width(label: String, max_width: usize) -> String {
+    if UnicodeWidthStr::width(label.as_str()) <= max_width {
+        return label;
+    }
+    let ellipsis = "...";
+    let budget = max_width.saturating_sub(UnicodeWidthStr::width(ellipsis));
+    let mut truncated = String::with_capacity(budget + ellipsis.len());
+    let mut used = 0;
+    for ch in label.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        truncated.push(ch);
+        used += w;
+    }
+    truncated.push_str(ellipsis);
+    truncated
+}
+
 /// Render the fuzzy finder as a centered overlay.
 fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
     use ratatui::widgets::Clear;
@@ -1098,11 +1189,7 @@ fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
             ""
         };
         let label = format!(" {}: {}{}", tab_idx + 1, name, modified);
-        let truncated = if label.len() > (width as usize).saturating_sub(2) {
-            format!("{}...", &label[..(width as usize).saturating_sub(5)])
-        } else {
-            label
-        };
+        let truncated = truncate_to_width(label, (width as usize).saturating_sub(2));
 
         let style = if i == selected {
             Style::default().bg(Color::Cyan).fg(Color::Black)
@@ -1126,4 +1213,213 @@ fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, overlay_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_to_width_ascii() {
+        let out = truncate_to_width("abcdefghij".to_string(), 8);
+        assert_eq!(out, "abcde...");
+        assert!(UnicodeWidthStr::width(out.as_str()) <= 8);
+    }
+
+    #[test]
+    fn truncate_to_width_cjk() {
+        // Each CJK char is 2 columns wide; total width 20 > 9.
+        let out = truncate_to_width("日本語のファイル名前".to_string(), 9);
+        // Budget is 6 columns -> 3 CJK chars, then "...": width 9.
+        assert_eq!(out, "日本語...");
+        assert!(UnicodeWidthStr::width(out.as_str()) <= 9);
+    }
+
+    #[test]
+    fn truncate_to_width_short_label_unchanged() {
+        let out = truncate_to_width("short".to_string(), 20);
+        assert_eq!(out, "short");
+    }
+
+    use crate::editor::TAB_WIDTH;
+    use crate::tabs::TabManager;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use ropey::Rope;
+
+    fn span_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn expand_tabs_places_next_char_at_tab_stop() {
+        let spans = vec![Span::raw("a\tb".to_string())];
+        let out = span_text(&expand_tabs_in_spans(spans, false));
+        // 'b' must land at the column the editor math predicts.
+        let mut e = crate::editor::Editor::new_for_test();
+        e.rope = Rope::from_str("a\tb\n");
+        let predicted = e.char_idx_to_display_col(0, 2);
+        assert_eq!(predicted, TAB_WIDTH);
+        assert_eq!(out, format!("a{}b", " ".repeat(TAB_WIDTH - 1)));
+        assert_eq!(out.chars().position(|c| c == 'b'), Some(predicted));
+    }
+
+    #[test]
+    fn expand_tabs_tracks_columns_across_spans_and_wide_chars() {
+        // "あ" occupies cols 0-1, so the tab in the second span starts at
+        // col 2 and expands to only 2 spaces.
+        let spans = vec![Span::raw("あ".to_string()), Span::raw("\tx".to_string())];
+        let out = expand_tabs_in_spans(spans, false);
+        assert_eq!(out[1].content.as_ref(), "  x");
+    }
+
+    #[test]
+    fn expand_tabs_show_whitespace_keeps_marker_first_cell() {
+        let spans = vec![Span::raw("\t".to_string())];
+        let out = span_text(&expand_tabs_in_spans(spans, true));
+        assert_eq!(out, format!("\u{2192}{}", " ".repeat(TAB_WIDTH - 1)));
+    }
+
+    #[test]
+    fn slice_spans_horizontal_uses_display_columns() {
+        // 'あ' spans cols 0-1; slicing from col 1 pads its visible half with
+        // a space so 'a' (col 2) stays at screen col 1.
+        let spans = vec![Span::raw("あab".to_string())];
+        let out = slice_spans_horizontal(&spans, 1, 3);
+        assert_eq!(span_text(&out), " ab");
+    }
+
+    #[test]
+    fn collect_span_chars_range_uses_display_columns() {
+        // Row of width 2 over "aあ": 'あ' straddles the row end, so only its
+        // first column is padded into this row.
+        let spans = vec![Span::raw("aあ".to_string())];
+        let out = collect_span_chars_range(&spans, 0, 2);
+        let text: String = out.iter().map(|(c, _)| *c).collect();
+        assert_eq!(text, "a ");
+    }
+
+    #[test]
+    fn search_highlight_preserves_syntax_styles_per_char() {
+        let s1 = Style::default().fg(Color::Green);
+        let s2 = Style::default().fg(Color::Blue);
+        // Multibyte chars: byte-based style lookup would misattribute these.
+        let syntax = vec![(s1, "あa".to_string()), (s2, "bc\n".to_string())];
+        let matches = vec![(0usize, 3usize)];
+        let mut buf = Vec::new();
+        let spans =
+            apply_search_highlighting(&syntax, "あabc", 0, 1, &matches, None, (0, 1), &mut buf);
+        let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec!["あa", "b", "c"]);
+        assert_eq!(spans[0].style, s1);
+        assert_eq!(spans[1].style, s2);
+        assert_eq!(
+            spans[2].style,
+            Style::default().bg(Color::Yellow).fg(Color::Black)
+        );
+    }
+
+    #[test]
+    fn rendered_tab_line_matches_editor_column_math() {
+        let mut t = TabManager::new_for_test();
+        t.active_editor_mut().rope = Rope::from_str("a\tb\n");
+        let predicted = t.active_editor().char_idx_to_display_col(0, 2);
+
+        let backend = TestBackend::new(40, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw_ui(f, &mut t)).unwrap();
+        let buf = term.backend().buffer();
+        // Editor area starts at row 1 (below the tab bar).
+        assert_eq!(buf[(predicted as u16, 1)].symbol(), "b");
+    }
+
+    #[test]
+    fn rendered_search_highlight_lands_on_tab_expanded_column() {
+        let mut t = TabManager::new_for_test();
+        {
+            let e = t.active_editor_mut();
+            e.rope = Rope::from_str("\tfoo\n");
+            // Matches store (line, CHAR col); 'f' is char 1, display col
+            // TAB_WIDTH.
+            e.search.search_buffer = "foo".to_string();
+            e.search.search_matches = vec![(0, 1)];
+            e.search.current_match_index = Some(0);
+        }
+
+        let backend = TestBackend::new(40, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw_ui(f, &mut t)).unwrap();
+        let buf = term.backend().buffer();
+        let cell = &buf[(TAB_WIDTH as u16, 1)];
+        assert_eq!(cell.symbol(), "f");
+        assert_eq!(cell.style().bg, Some(Color::Red));
+        // The tab's own cells are not highlighted.
+        assert_ne!(buf[(0, 1)].style().bg, Some(Color::Red));
+    }
+
+    #[test]
+    fn rendered_selection_covers_whole_tab_expansion() {
+        let mut t = TabManager::new_for_test();
+        {
+            let e = t.active_editor_mut();
+            e.rope = Rope::from_str("\tx\n");
+            e.mark_anchor = Some((0, 0));
+            e.viewport.cursor_pos = (0, TAB_WIDTH);
+        }
+
+        let backend = TestBackend::new(40, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw_ui(f, &mut t)).unwrap();
+        let buf = term.backend().buffer();
+        for col in 0..TAB_WIDTH as u16 {
+            assert_eq!(
+                buf[(col, 1)].style().bg,
+                Some(Color::White),
+                "tab expansion col {col} should be selected"
+            );
+        }
+        assert_ne!(buf[(TAB_WIDTH as u16, 1)].style().bg, Some(Color::White));
+    }
+
+    #[test]
+    fn word_wrap_cursor_at_exact_row_end_stays_on_line() {
+        let width = 40u16;
+        let mut t = TabManager::new_for_test();
+        t.config.word_wrap = true;
+        {
+            let e = t.active_editor_mut();
+            // First line exactly fills one wrapped row; cursor at its end.
+            e.rope = Rope::from_str(&format!("{}\nzz\n", "a".repeat(width as usize)));
+            e.viewport.cursor_pos = (0, width as usize);
+        }
+
+        let backend = TestBackend::new(width, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw_ui(f, &mut t)).unwrap();
+        let pos = term.get_cursor_position().unwrap();
+        // Row 1 is the first editor row (line 0); the cursor must not be
+        // drawn on row 2 (which renders document line 1).
+        assert_eq!(pos.y, 1);
+    }
+
+    #[test]
+    fn word_wrap_wraps_wide_chars_by_display_width() {
+        let width = 40u16;
+        let mut t = TabManager::new_for_test();
+        t.config.word_wrap = true;
+        {
+            let e = t.active_editor_mut();
+            // 30 CJK chars = 60 display columns: two wrapped rows even though
+            // the char count (30) fits in one.
+            e.rope = Rope::from_str(&format!("{}\n", "あ".repeat(30)));
+        }
+
+        let backend = TestBackend::new(width, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw_ui(f, &mut t)).unwrap();
+        let buf = term.backend().buffer();
+        // Row 2 is the continuation row; it must start with the 21st 'あ'
+        // (display col 40 = char 20).
+        assert_eq!(buf[(0, 2)].symbol(), "あ");
+    }
 }
