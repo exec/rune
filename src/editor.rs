@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::constants;
@@ -130,7 +131,14 @@ pub struct Editor {
     /// the render layer) can sample this to detect whether the document
     /// changed since the last frame.
     pub dirty_generation: u64,
+    /// Globally unique, never-reused identifier for this buffer. Used by the
+    /// render layer to key per-buffer caches without relying on memory
+    /// addresses (which can be reused after a tab is closed).
+    pub buffer_id: u64,
 }
+
+/// Source of unique `buffer_id`s for `Editor::new_buffer`.
+static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Get the display width of a line, handling the case where the line spans chunk boundaries.
 pub fn line_display_width(rope: &Rope, line: usize) -> usize {
@@ -173,6 +181,7 @@ impl Editor {
             word_complete_prefix_len: 0,
             line_width_cache: Cell::new(None),
             dirty_generation: 0,
+            buffer_id: NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 

@@ -6,6 +6,7 @@ use ratatui::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::editor::{Editor, InputMode};
 use crate::get_line_str;
@@ -14,11 +15,10 @@ use crate::tabs::TabManager;
 /// Per-line cache of fully-assembled content spans (post-syntax, post-search,
 /// pre-selection, pre-horizontal-slice). Only populated when search and
 /// selection are both inactive — the common cursor-navigation case. The cache
-/// is invalidated whenever `dirty_generation` or the active rope identity
+/// is invalidated whenever `dirty_generation` or the active buffer identity
 /// changes, so entries are always valid for the current frame if they exist.
 struct RenderCache {
-    rope_id: usize,
-    rope_len_chars: usize,
+    buffer_id: Option<u64>,
     dirty_generation: u64,
     show_whitespace: bool,
     lines: HashMap<usize, Rc<Vec<Span<'static>>>>,
@@ -27,28 +27,19 @@ struct RenderCache {
 impl RenderCache {
     fn new() -> Self {
         Self {
-            rope_id: 0,
-            rope_len_chars: 0,
+            buffer_id: None,
             dirty_generation: 0,
             show_whitespace: false,
             lines: HashMap::new(),
         }
     }
 
-    fn reset_if_stale(
-        &mut self,
-        rope_id: usize,
-        rope_len_chars: usize,
-        dirty_generation: u64,
-        show_whitespace: bool,
-    ) {
-        if self.rope_id != rope_id
-            || self.rope_len_chars != rope_len_chars
+    fn reset_if_stale(&mut self, buffer_id: u64, dirty_generation: u64, show_whitespace: bool) {
+        if self.buffer_id != Some(buffer_id)
             || self.dirty_generation != dirty_generation
             || self.show_whitespace != show_whitespace
         {
-            self.rope_id = rope_id;
-            self.rope_len_chars = rope_len_chars;
+            self.buffer_id = Some(buffer_id);
             self.dirty_generation = dirty_generation;
             self.show_whitespace = show_whitespace;
             self.lines.clear();
@@ -420,13 +411,12 @@ fn draw_editor_horizontal_scroll(
     let selection_range = compute_selection_range(editor);
     let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
 
-    let rope_id = (&editor.rope as *const _) as usize;
-    let rope_len_chars = editor.rope.len_chars();
+    let buffer_id = editor.buffer_id;
     let dirty_gen = editor.dirty_generation;
     let can_cache = selection_range.is_none() && search_term_char_len == 0;
     RENDER_CACHE.with(|c| {
         c.borrow_mut()
-            .reset_if_stale(rope_id, rope_len_chars, dirty_gen, show_whitespace)
+            .reset_if_stale(buffer_id, dirty_gen, show_whitespace)
     });
 
     for i in 0..visible_lines {
@@ -1037,6 +1027,29 @@ fn apply_selection_highlighting(
     result
 }
 
+/// Truncate `label` to at most `max_width` display columns, appending "..."
+/// when truncation occurs. Operates on display width rather than bytes, so
+/// multibyte and wide (CJK) characters never split a char boundary.
+fn truncate_to_width(label: String, max_width: usize) -> String {
+    if UnicodeWidthStr::width(label.as_str()) <= max_width {
+        return label;
+    }
+    let ellipsis = "...";
+    let budget = max_width.saturating_sub(UnicodeWidthStr::width(ellipsis));
+    let mut truncated = String::with_capacity(budget + ellipsis.len());
+    let mut used = 0;
+    for ch in label.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        truncated.push(ch);
+        used += w;
+    }
+    truncated.push_str(ellipsis);
+    truncated
+}
+
 /// Render the fuzzy finder as a centered overlay.
 fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
     use ratatui::widgets::Clear;
@@ -1098,11 +1111,7 @@ fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
             ""
         };
         let label = format!(" {}: {}{}", tab_idx + 1, name, modified);
-        let truncated = if label.len() > (width as usize).saturating_sub(2) {
-            format!("{}...", &label[..(width as usize).saturating_sub(5)])
-        } else {
-            label
-        };
+        let truncated = truncate_to_width(label, (width as usize).saturating_sub(2));
 
         let style = if i == selected {
             Style::default().bg(Color::Cyan).fg(Color::Black)
@@ -1126,4 +1135,31 @@ fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, overlay_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_to_width_ascii() {
+        let out = truncate_to_width("abcdefghij".to_string(), 8);
+        assert_eq!(out, "abcde...");
+        assert!(UnicodeWidthStr::width(out.as_str()) <= 8);
+    }
+
+    #[test]
+    fn truncate_to_width_cjk() {
+        // Each CJK char is 2 columns wide; total width 20 > 9.
+        let out = truncate_to_width("日本語のファイル名前".to_string(), 9);
+        // Budget is 6 columns -> 3 CJK chars, then "...": width 9.
+        assert_eq!(out, "日本語...");
+        assert!(UnicodeWidthStr::width(out.as_str()) <= 9);
+    }
+
+    #[test]
+    fn truncate_to_width_short_label_unchanged() {
+        let out = truncate_to_width("short".to_string(), 20);
+        assert_eq!(out, "short");
+    }
 }
