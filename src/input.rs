@@ -678,21 +678,23 @@ fn handle_replace(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 tabs.needs_redraw = true;
             }
         },
-        KeyCode::Char(c) if is_text_input(&key) => match tabs.active_editor().search.replace_phase {
-            ReplacePhase::FindPattern => {
-                tabs.active_editor_mut().search.search_buffer.push(c);
-                let search_buf = tabs.active_editor().search.search_buffer.clone();
-                tabs.status_message = format!("Find: {}", search_buf);
-                tabs.needs_redraw = true;
+        KeyCode::Char(c) if is_text_input(&key) => {
+            match tabs.active_editor().search.replace_phase {
+                ReplacePhase::FindPattern => {
+                    tabs.active_editor_mut().search.search_buffer.push(c);
+                    let search_buf = tabs.active_editor().search.search_buffer.clone();
+                    tabs.status_message = format!("Find: {}", search_buf);
+                    tabs.needs_redraw = true;
+                }
+                ReplacePhase::ReplaceWith => {
+                    tabs.active_editor_mut().search.replace_buffer.push(c);
+                    let search_buf = tabs.active_editor().search.search_buffer.clone();
+                    let replace_buf = tabs.active_editor().search.replace_buffer.clone();
+                    tabs.status_message = format!("Replace '{}' with: {}", search_buf, replace_buf);
+                    tabs.needs_redraw = true;
+                }
             }
-            ReplacePhase::ReplaceWith => {
-                tabs.active_editor_mut().search.replace_buffer.push(c);
-                let search_buf = tabs.active_editor().search.search_buffer.clone();
-                let replace_buf = tabs.active_editor().search.replace_buffer.clone();
-                tabs.status_message = format!("Replace '{}' with: {}", search_buf, replace_buf);
-                tabs.needs_redraw = true;
-            }
-        },
+        }
         _ => {}
     }
     Ok(false)
@@ -1395,7 +1397,11 @@ mod tests {
         );
         // `true` produces no output, so the selection is replaced by nothing.
         assert_eq!(t.active_editor().rope.len_chars(), 0);
-        assert!(t.status_message.contains("Executed"), "{}", t.status_message);
+        assert!(
+            t.status_message.contains("Executed"),
+            "{}",
+            t.status_message
+        );
     }
 
     // L9: non-zero exits are surfaced in the status message.

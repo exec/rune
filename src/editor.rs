@@ -782,7 +782,10 @@ impl Editor {
     /// replace session's resume position (`search.replace_resume_char`),
     /// honoring the active search modes. Returns
     /// `(line, char_col, abs_char_pos, char_len)`.
-    fn next_interactive_match(&mut self, search_term: &str) -> Option<(usize, usize, usize, usize)> {
+    fn next_interactive_match(
+        &mut self,
+        search_term: &str,
+    ) -> Option<(usize, usize, usize, usize)> {
         // Locate matches with the same engine find uses, so replace honors
         // regex and case-insensitive modes.
         self.search.search_buffer = search_term.to_string();

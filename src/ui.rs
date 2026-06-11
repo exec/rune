@@ -958,7 +958,10 @@ fn apply_search_highlighting(
             _ => syntax_style,
         };
         if style != current_style && !current_text.is_empty() {
-            result_spans.push(Span::styled(std::mem::take(&mut current_text), current_style));
+            result_spans.push(Span::styled(
+                std::mem::take(&mut current_text),
+                current_style,
+            ));
         }
         current_style = style;
         current_text.push(ch);
@@ -1264,10 +1267,7 @@ mod tests {
     fn expand_tabs_tracks_columns_across_spans_and_wide_chars() {
         // "あ" occupies cols 0-1, so the tab in the second span starts at
         // col 2 and expands to only 2 spaces.
-        let spans = vec![
-            Span::raw("あ".to_string()),
-            Span::raw("\tx".to_string()),
-        ];
+        let spans = vec![Span::raw("あ".to_string()), Span::raw("\tx".to_string())];
         let out = expand_tabs_in_spans(spans, false);
         assert_eq!(out[1].content.as_ref(), "  x");
     }

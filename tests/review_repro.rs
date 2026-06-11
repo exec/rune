@@ -157,7 +157,8 @@ fn repro_fuzzy_finder_multibyte_name_panics() {
     use ratatui::Terminal;
 
     let mut t = make_tabs("hi\n");
-    t.active_editor_mut().display_name = "日本語のとても長いファイル名前前前前前前前前前.txt".to_string();
+    t.active_editor_mut().display_name =
+        "日本語のとても長いファイル名前前前前前前前前前.txt".to_string();
     t.input_mode = InputMode::FuzzyFinder;
     t.rebuild_fuzzy_candidates();
 

@@ -992,8 +992,10 @@ impl TabManager {
         // move the cursor. Scroll events are allowed regardless of row:
         // scrolling with the pointer over the status bar is harmless and
         // matches common terminal-app behavior.
-        if matches!(adjusted.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_))
-            && (adjusted.row as usize) >= editor_height
+        if matches!(
+            adjusted.kind,
+            MouseEventKind::Down(_) | MouseEventKind::Drag(_)
+        ) && (adjusted.row as usize) >= editor_height
         {
             return;
         }
