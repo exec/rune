@@ -175,14 +175,23 @@ impl TabManager {
     /// Create a new empty tab.
     pub fn new_tab(&mut self) {
         let mut tab = Editor::new_buffer();
-        // Generate unique untitled name
-        let untitled_count = self
-            .tabs
-            .iter()
-            .filter(|t| t.display_name.starts_with("[untitled"))
-            .count();
-        if untitled_count > 0 {
-            tab.display_name = format!("[untitled-{}]", untitled_count + 1);
+        // Pick the smallest free untitled suffix; plain "[untitled]" counts
+        // as 1, so with "[untitled]" open the first duplicate becomes
+        // "[untitled-2]", and closed tabs free their suffix for reuse.
+        let suffix_in_use = |n: usize| {
+            let name = if n == 1 {
+                "[untitled]".to_string()
+            } else {
+                format!("[untitled-{n}]")
+            };
+            self.tabs.iter().any(|t| t.display_name == name)
+        };
+        let mut suffix = 1;
+        while suffix_in_use(suffix) {
+            suffix += 1;
+        }
+        if suffix > 1 {
+            tab.display_name = format!("[untitled-{suffix}]");
         }
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -533,9 +542,11 @@ impl TabManager {
             editor.modified = true;
             editor.invalidate_cache();
             editor.highlighter.invalidate_cache_from_line(0);
+            self.needs_redraw = true;
+            self.set_temporary_status_message("Undo".to_string());
+        } else {
+            self.set_temporary_status_message("Nothing to undo".to_string());
         }
-        self.needs_redraw = true;
-        self.set_temporary_status_message("Undo".to_string());
     }
 
     pub fn redo(&mut self) {
@@ -547,9 +558,11 @@ impl TabManager {
             editor.modified = true;
             editor.invalidate_cache();
             editor.highlighter.invalidate_cache_from_line(0);
+            self.needs_redraw = true;
+            self.set_temporary_status_message("Redo".to_string());
+        } else {
+            self.set_temporary_status_message("Nothing to redo".to_string());
         }
-        self.needs_redraw = true;
-        self.set_temporary_status_message("Redo".to_string());
     }
 
     pub fn start_find(&mut self) {
@@ -801,19 +814,25 @@ impl TabManager {
         let idx = self.active_tab;
         self.tabs[idx].save_undo_state();
 
-        let insert_pos = self.tabs[idx]
-            .rope
-            .line_to_char(self.tabs[idx].viewport.cursor_pos.0);
+        let paste_line = self.tabs[idx].viewport.cursor_pos.0;
+        let insert_pos = self.tabs[idx].rope.line_to_char(paste_line);
 
         self.tabs[idx].rope.insert(insert_pos, &paste_text);
         self.tabs[idx].modified = true;
 
-        self.tabs[idx].viewport.cursor_pos.1 = 0;
-        let cursor_line = self.tabs[idx].viewport.cursor_pos.0;
-        self.tabs[idx].mark_document_changed(cursor_line);
+        // Nano places the cursor AFTER the pasted text: the line below the
+        // last pasted line (clamped to the document), column 0. An inline
+        // fragment without newlines leaves the cursor on the paste line.
+        let newline_count = paste_text.matches('\n').count();
+        let max_line = self.tabs[idx].rope.len_lines().saturating_sub(1);
+        self.tabs[idx].viewport.cursor_pos = ((paste_line + newline_count).min(max_line), 0);
+        self.tabs[idx].mark_document_changed(paste_line);
 
-        let lines_pasted = paste_text.matches('\n').count();
-        self.set_temporary_status_message(format!("Pasted {} line(s)", lines_pasted.max(1)));
+        if newline_count > 0 {
+            self.set_temporary_status_message(format!("Pasted {newline_count} line(s)"));
+        } else {
+            self.set_temporary_status_message("Pasted text".to_string());
+        }
     }
 
     /// Paste clipboard at current cursor position (inline, not above line).
@@ -927,13 +946,19 @@ impl TabManager {
         let tab_width = self.config.tab_width;
         let editor = self.active_editor_mut();
         editor.save_undo_state();
+        editor.mark_anchor = None;
 
-        let current_col = editor.viewport.cursor_pos.1;
+        let (line, current_col) = editor.viewport.cursor_pos;
         let spaces_to_next_tab = tab_width - (current_col % tab_width.max(1));
 
-        for _ in 0..spaces_to_next_tab {
-            editor.insert_char(' ');
-        }
+        // Insert all the spaces as one rope edit so a single Tab press is
+        // one undo step (insert_char would save an undo state per space).
+        let spaces = " ".repeat(spaces_to_next_tab);
+        let pos = editor.line_col_to_char_idx(line, current_col);
+        editor.rope.insert(pos, &spaces);
+        editor.viewport.cursor_pos.1 += spaces_to_next_tab;
+        editor.modified = true;
+        editor.mark_document_changed(line);
     }
 
     pub fn insert_newline(&mut self) {
@@ -946,33 +971,52 @@ impl TabManager {
         event: crossterm::event::MouseEvent,
         terminal_height: usize,
     ) {
+        use crossterm::event::MouseEventKind;
+
         // Row 0 is the tab bar -- only respond to clicks, not hover/drag
         let mut adjusted = event;
         if adjusted.row == 0 {
-            if matches!(event.kind, crossterm::event::MouseEventKind::Down(_)) {
+            if matches!(event.kind, MouseEventKind::Down(_)) {
                 self.handle_tab_bar_click(adjusted.column as usize);
                 self.needs_redraw = true;
             }
             return;
         }
         adjusted.row = adjusted.row.saturating_sub(1);
+
+        // Layout (see draw_ui): tab bar (1 row) + editor + status bar (1) +
+        // help bar (1), so the editor pane is terminal_height - 3 rows tall.
+        let editor_height = terminal_height.saturating_sub(3);
+
+        // Ignore clicks/drags on the status and help bars -- they must not
+        // move the cursor. Scroll events are allowed regardless of row:
+        // scrolling with the pointer over the status bar is harmless and
+        // matches common terminal-app behavior.
+        if matches!(adjusted.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_))
+            && (adjusted.row as usize) >= editor_height
+        {
+            return;
+        }
+
         let line_num_width = if self.config.show_line_numbers {
             self.active_editor().rope.len_lines().to_string().len() + 1
         } else {
             0
         };
         let editor = self.active_editor_mut();
-        editor.handle_mouse_event(adjusted, terminal_height, line_num_width);
+        editor.handle_mouse_event(adjusted, editor_height, line_num_width);
         self.needs_redraw = true;
     }
 
     fn handle_tab_bar_click(&mut self, click_col: usize) {
+        use unicode_width::UnicodeWidthStr;
+
         let mut col = 0;
 
         // Account for left overflow indicator width when tabs are scrolled
         if self.tab_scroll_offset > 0 {
             let left_label = format!(" <{} ", self.tab_scroll_offset);
-            col += left_label.len();
+            col += UnicodeWidthStr::width(left_label.as_str());
         }
 
         // Start iterating from tab_scroll_offset, matching the rendering order
@@ -980,9 +1024,16 @@ impl TabManager {
             let tab = &self.tabs[i];
             let modified = if tab.modified { "*" } else { "" };
             let title = format!(" {}{} ", tab.display_name, modified);
-            let title_len = title.len();
+            // Display width, not byte length -- must match draw_tab_bar's
+            // layout math for multibyte tab names.
+            let title_len = UnicodeWidthStr::width(title.as_str());
             if click_col >= col && click_col < col + title_len {
-                self.active_tab = i;
+                if i != self.active_tab {
+                    // Drop per-tab modes (Find/HexView/...) just like
+                    // keyboard tab switching does.
+                    self.reset_editor_mode_on_tab_switch();
+                    self.active_tab = i;
+                }
                 return;
             }
             col += title_len;
@@ -1582,5 +1633,203 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
         // The remaining modified tab is now being prompted for.
         assert_eq!(t.input_mode, InputMode::ConfirmQuit);
+    }
+
+    // M2: one Tab press must be exactly one undo step.
+    #[test]
+    fn test_tab_insertion_single_undo() {
+        let mut t = make_tabs("");
+        t.handle_tab_insertion();
+        assert_eq!(content(&t), "    ");
+        assert_eq!(t.active_editor().viewport.cursor_pos, (0, 4));
+        t.undo();
+        assert_eq!(content(&t), "", "one undo should revert one Tab press");
+    }
+
+    #[test]
+    fn test_tab_insertion_aligns_to_next_tab_stop() {
+        let mut t = make_tabs("ab\n");
+        t.active_editor_mut().viewport.cursor_pos = (0, 2);
+        t.handle_tab_insertion();
+        assert_eq!(content(&t), "ab  \n");
+        assert_eq!(t.active_editor().viewport.cursor_pos, (0, 4));
+    }
+
+    // M3: clicking a different tab in the tab bar must reset per-tab modes
+    // (HexView state lives on the Editor being switched away from).
+    #[test]
+    fn test_tab_bar_click_resets_hex_view_mode() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut t = make_tabs("hello\n");
+        t.new_tab();
+        t.active_tab = 0;
+        t.input_mode = InputMode::HexView;
+
+        // Tab 0 title " [untitled] " spans columns 0..12; column 13 is
+        // inside tab 1 (" [untitled-2] ").
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 13,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        t.handle_mouse_event(click, 24);
+        assert_eq!(t.active_tab, 1);
+        assert_eq!(t.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_tab_bar_click_same_tab_keeps_mode() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut t = make_tabs("hello\n");
+        t.new_tab();
+        t.active_tab = 0;
+        t.input_mode = InputMode::HexView;
+
+        // Column 2 is inside the already-active tab 0 -- no switch, no reset.
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        t.handle_mouse_event(click, 24);
+        assert_eq!(t.active_tab, 0);
+        assert_eq!(t.input_mode, InputMode::HexView);
+    }
+
+    // L5: tab-bar hit-testing must use display width, not byte length.
+    #[test]
+    fn test_tab_bar_click_multibyte_name_hit_test() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut t = make_tabs("a\n");
+        t.active_editor_mut().display_name = "日本語".to_string();
+        t.new_tab();
+        t.active_tab = 0;
+
+        // " 日本語 " renders 8 columns wide (3 CJK chars x 2 + 2 spaces),
+        // so tab 1 starts at column 8. Byte-length math (9 bytes + 2 = 11)
+        // would wrongly keep a click at column 8 on tab 0.
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 8,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        t.handle_mouse_event(click, 24);
+        assert_eq!(t.active_tab, 1);
+    }
+
+    // M4: clicks on the status/help rows must not move the cursor.
+    #[test]
+    fn test_mouse_click_on_status_row_ignored() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut t = make_tabs("l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n");
+        t.active_editor_mut().viewport.cursor_pos = (0, 0);
+
+        // Terminal height 10: tab bar row 0, editor rows 1..=7, status row 8,
+        // help row 9.
+        for row in [8u16, 9u16] {
+            let click = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row,
+                modifiers: KeyModifiers::NONE,
+            };
+            t.handle_mouse_event(click, 10);
+            assert_eq!(
+                t.active_editor().viewport.cursor_pos,
+                (0, 0),
+                "click on row {row} must not move the cursor"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mouse_click_in_editor_area_moves_cursor() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut t = make_tabs("l1\nl2\nl3\n");
+        t.active_editor_mut().viewport.cursor_pos = (0, 0);
+        // Row 3 is editor row 2 (tab bar occupies row 0).
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        t.handle_mouse_event(click, 10);
+        assert_eq!(t.active_editor().viewport.cursor_pos, (2, 0));
+    }
+
+    // L2: untitled naming picks the smallest free suffix.
+    #[test]
+    fn test_new_tab_untitled_naming_picks_free_suffix() {
+        let mut t = TabManager::new_for_test();
+        assert_eq!(t.active_editor().display_name, "[untitled]");
+
+        // With "[untitled]" open the first duplicate is "[untitled-2]".
+        t.new_tab();
+        assert_eq!(t.active_editor().display_name, "[untitled-2]");
+
+        // With only "[untitled-2]" open, plain "[untitled]" is free again.
+        t.tabs.remove(0);
+        t.active_tab = 0;
+        t.new_tab();
+        assert_eq!(t.active_editor().display_name, "[untitled]");
+
+        // Both 1 and 2 taken -> next is 3.
+        t.new_tab();
+        assert_eq!(t.active_editor().display_name, "[untitled-3]");
+    }
+
+    // L3: undo/redo on an empty stack must say so instead of flashing
+    // "Undo"/"Redo".
+    #[test]
+    fn test_undo_redo_empty_stack_report_nothing() {
+        let mut t = make_tabs("hello\n");
+        t.undo();
+        assert_eq!(t.status_message, "Nothing to undo");
+        t.redo();
+        assert_eq!(t.status_message, "Nothing to redo");
+        assert!(!t.active_editor().modified);
+    }
+
+    // L10: paste places the cursor after the pasted lines (nano behavior).
+    #[test]
+    fn test_paste_places_cursor_after_pasted_lines() {
+        let mut t = make_tabs("line1\nline2\n");
+        t.clipboard = vec!["a\nb\n".to_string()];
+        t.active_editor_mut().viewport.cursor_pos = (1, 3);
+        t.paste();
+        assert_eq!(content(&t), "line1\na\nb\nline2\n");
+        assert_eq!(t.active_editor().viewport.cursor_pos, (3, 0));
+        assert_eq!(t.status_message, "Pasted 2 line(s)");
+    }
+
+    #[test]
+    fn test_paste_at_last_line_clamps_cursor() {
+        let mut t = make_tabs("x\n");
+        t.clipboard = vec!["y\n".to_string()];
+        t.active_editor_mut().viewport.cursor_pos = (1, 0);
+        t.paste();
+        assert_eq!(content(&t), "x\ny\n");
+        assert_eq!(t.active_editor().viewport.cursor_pos, (2, 0));
+    }
+
+    #[test]
+    fn test_paste_inline_fragment_reports_text_not_lines() {
+        let mut t = make_tabs("hello\n");
+        t.clipboard = vec!["abc".to_string()];
+        t.active_editor_mut().viewport.cursor_pos = (0, 2);
+        t.paste();
+        assert_eq!(content(&t), "abchello\n");
+        // No newline pasted: cursor stays on the paste line, column 0.
+        assert_eq!(t.active_editor().viewport.cursor_pos, (0, 0));
+        assert_eq!(t.status_message, "Pasted text");
     }
 }

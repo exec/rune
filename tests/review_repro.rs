@@ -170,7 +170,6 @@ fn repro_fuzzy_finder_multibyte_name_panics() {
 // Finding: Tab insertion saves one undo state per inserted space (plus one
 // extra), so a single Tab press needs multiple Ctrl+Z to undo.
 #[test]
-#[ignore = "documents a known bug found in code review; run with --ignored"]
 fn repro_tab_needs_multiple_undos() {
     let mut t = make_tabs("");
     let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);

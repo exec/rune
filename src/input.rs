@@ -178,17 +178,8 @@ fn handle_hex_view(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         _ => {}
     }
 
-    // Keep cursor row visible
-    if let Some(state) = &mut tabs.active_editor_mut().hex_state {
-        let cursor_row = state.cursor / BYTES_PER_ROW;
-        if cursor_row < state.scroll_offset {
-            state.scroll_offset = cursor_row;
-        }
-        let visible_rows = 20;
-        if cursor_row >= state.scroll_offset + visible_rows {
-            state.scroll_offset = cursor_row.saturating_sub(visible_rows - 1);
-        }
-    }
+    // Scroll-to-cursor is owned by `draw_hex_view`, which clamps
+    // `scroll_offset` against the real rendered area each frame.
 
     Ok(false)
 }
@@ -388,6 +379,9 @@ fn handle_filename_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             return tabs.finish_filename_input();
         }
         KeyCode::Esc => {
+            tabs.cancel_filename_input();
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             tabs.cancel_filename_input();
         }
         KeyCode::Backspace => {
@@ -649,6 +643,9 @@ fn handle_replace(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             }
             ReplacePhase::ReplaceWith => {
                 tabs.input_mode = InputMode::ReplaceConfirm;
+                // Each confirm session walks the document from the top;
+                // Y/N advance this past handled matches.
+                tabs.active_editor_mut().search.replace_resume_char = 0;
                 let search_buf = tabs.active_editor().search.search_buffer.clone();
                 let replace_buf = tabs.active_editor().search.replace_buffer.clone();
                 tabs.status_message = format!(
@@ -720,8 +717,16 @@ fn handle_replace_confirm(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             tabs.needs_redraw = true;
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
-            tabs.input_mode = InputMode::Normal;
-            tabs.set_temporary_status_message("Replace skipped".to_string());
+            let search_buf = tabs.active_editor().search.search_buffer.clone();
+            if tabs.active_editor_mut().skip_next_match(&search_buf) {
+                tabs.status_message =
+                    "Skipped. Continue? Y: Replace This | N: Skip | A: Replace All | ^C: Cancel"
+                        .to_string();
+            } else {
+                tabs.set_temporary_status_message("No more matches found".to_string());
+                tabs.input_mode = InputMode::Normal;
+            }
+            tabs.needs_redraw = true;
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             let search_buf = tabs.active_editor().search.search_buffer.clone();

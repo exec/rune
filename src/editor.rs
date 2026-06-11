@@ -195,7 +195,13 @@ impl Editor {
         // `Rope::from_reader` on warm SSD across the 1MB–50MB range tested
         // (measured via `load_file` benchmarks). A streaming path would be
         // worth reconsidering for cold-disk / network-mount scenarios.
-        let content = fs::read_to_string(&path)?;
+        let content = fs::read_to_string(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                anyhow::anyhow!("{}: binary or non-UTF-8 file", path.display())
+            } else {
+                anyhow::Error::from(e)
+            }
+        })?;
         self.rope = Rope::from_str(&content);
 
         let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
@@ -727,31 +733,46 @@ impl Editor {
         replacements
     }
 
-    /// Replace the first match of `search_term`, honoring the active search
-    /// modes (`use_regex`, `case_sensitive`) just like find does. The
-    /// replacement text is inserted literally — no `$1` capture-group
-    /// expansion. Returns 1 if a replacement was made, 0 otherwise.
+    /// Find the next match of `search_term` at or after the interactive
+    /// replace session's resume position (`search.replace_resume_char`),
+    /// honoring the active search modes. Returns
+    /// `(line, char_col, abs_char_pos, char_len)`.
+    fn next_interactive_match(&mut self, search_term: &str) -> Option<(usize, usize, usize, usize)> {
+        // Locate matches with the same engine find uses, so replace honors
+        // regex and case-insensitive modes.
+        self.search.search_buffer = search_term.to_string();
+        let resume = self.search.replace_resume_char;
+        self.search
+            .find_all_match_spans(&self.rope)
+            .into_iter()
+            .find_map(|(line, col, len)| {
+                let start = self.rope.line_to_char(line) + col;
+                (start >= resume).then_some((line, col, start, len))
+            })
+    }
+
+    /// Replace the next match of `search_term` in the interactive replace
+    /// session, honoring the active search modes (`use_regex`,
+    /// `case_sensitive`) just like find does. The replacement text is
+    /// inserted literally — no `$1` capture-group expansion. Returns 1 if a
+    /// replacement was made, 0 otherwise.
     pub fn perform_replace_interactive(&mut self, search_term: &str, replace_term: &str) -> usize {
         if search_term.is_empty() {
             return 0;
         }
 
-        self.save_undo_state();
-
-        // Locate matches with the same engine find uses, so replace honors
-        // regex and case-insensitive modes.
-        self.search.search_buffer = search_term.to_string();
-        let first = self
-            .search
-            .find_all_match_spans(&self.rope)
-            .into_iter()
-            .next();
-
-        if let Some((line, col, char_len)) = first {
-            let char_pos = self.rope.line_to_char(line) + col;
+        if let Some((line, col, char_pos, char_len)) = self.next_interactive_match(search_term) {
+            self.save_undo_state();
             self.rope.remove(char_pos..char_pos + char_len);
             self.rope.insert(char_pos, replace_term);
             self.modified = true;
+
+            // Resume just past the inserted text so a replacement that
+            // still contains the pattern isn't re-matched (`a` -> `aa`
+            // must terminate). Zero-width matches advance one extra char
+            // so the session always makes progress.
+            self.search.replace_resume_char =
+                char_pos + replace_term.chars().count() + usize::from(char_len == 0);
 
             // Invalidate caches before clamping — the clamp queries the
             // (now stale) line width cache otherwise.
@@ -766,6 +787,27 @@ impl Editor {
         }
 
         0
+    }
+
+    /// Skip the next match of the interactive replace session: advance the
+    /// resume position past it and move the cursor there, leaving the text
+    /// untouched. Returns true if there was a match to skip.
+    pub fn skip_next_match(&mut self, search_term: &str) -> bool {
+        if search_term.is_empty() {
+            return false;
+        }
+
+        if let Some((line, col, char_pos, char_len)) = self.next_interactive_match(search_term) {
+            // Always advance at least one char so zero-width matches can't
+            // stall the session.
+            self.search.replace_resume_char = char_pos + char_len.max(1);
+            let display_col = self.char_idx_to_display_col(line, col);
+            self.viewport.cursor_pos = (line, display_col);
+            self.clamp_cursor_to_line();
+            true
+        } else {
+            false
+        }
     }
 
     /// Toggle mark (start/stop selection).
@@ -1745,5 +1787,48 @@ mod find_replace_tests {
         assert_eq!(n, 1);
         // Replacement starts at CHAR offset 3 but DISPLAY column 5.
         assert_eq!(e.viewport.cursor_pos, (0, 5));
+    }
+
+    #[test]
+    fn test_replace_interactive_advances_past_each_match() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("aaa\n");
+        // Replacement contains the pattern; each Y must still make forward
+        // progress and the session must terminate.
+        assert_eq!(e.perform_replace_interactive("a", "aa"), 1);
+        assert_eq!(e.perform_replace_interactive("a", "aa"), 1);
+        assert_eq!(e.perform_replace_interactive("a", "aa"), 1);
+        assert_eq!(e.rope.to_string(), "aaaaaa\n");
+        assert_eq!(e.perform_replace_interactive("a", "aa"), 0);
+        assert_eq!(e.rope.to_string(), "aaaaaa\n");
+    }
+
+    #[test]
+    fn test_replace_interactive_skip_keeps_match_and_continues() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("x x x\n");
+        // Y, N, Y: replace first, skip second, replace third.
+        assert_eq!(e.perform_replace_interactive("x", "y"), 1);
+        assert!(e.skip_next_match("x"));
+        // Skip moved the cursor onto the skipped match.
+        assert_eq!(e.viewport.cursor_pos, (0, 2));
+        assert_eq!(e.perform_replace_interactive("x", "y"), 1);
+        assert_eq!(e.rope.to_string(), "y x y\n");
+        assert!(!e.skip_next_match("x"));
+    }
+
+    #[test]
+    fn test_replace_interactive_resume_resets_per_session() {
+        let mut e = Editor::new_for_test();
+        e.rope = Rope::from_str("b b\n");
+        assert_eq!(e.perform_replace_interactive("b", "c"), 1);
+        assert_eq!(e.perform_replace_interactive("b", "c"), 1);
+        assert_eq!(e.perform_replace_interactive("b", "c"), 0);
+        assert_eq!(e.rope.to_string(), "c c\n");
+        // A new session resets the resume position to the document start
+        // (the input layer does this when entering the confirm phase).
+        e.search.replace_resume_char = 0;
+        assert_eq!(e.perform_replace_interactive("c", "d"), 1);
+        assert_eq!(e.rope.to_string(), "d c\n");
     }
 }

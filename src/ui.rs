@@ -297,7 +297,13 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
             format!(" {}{} ", tab.display_name, modified)
         })
         .collect();
-    let tab_widths: Vec<usize> = tab_titles.iter().map(|t| t.len()).collect();
+    // Display width, not byte length -- multibyte tab names would otherwise
+    // break the overflow math and the click hit-testing in tabs.rs (which
+    // replays this layout and must agree with it).
+    let tab_widths: Vec<usize> = tab_titles
+        .iter()
+        .map(|t| UnicodeWidthStr::width(t.as_str()))
+        .collect();
 
     // Adjust scroll offset so the active tab is always visible.
     // 1) If active tab is before the scroll offset, scroll left.
@@ -308,7 +314,7 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     // 2) If active tab is past the right edge, scroll right until it fits.
     loop {
         let left_indicator_width = if tabs.tab_scroll_offset > 0 {
-            format!(" <{} ", tabs.tab_scroll_offset).len()
+            UnicodeWidthStr::width(format!(" <{} ", tabs.tab_scroll_offset).as_str())
         } else {
             0
         };
@@ -354,7 +360,7 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     // Left overflow indicator
     if tabs.tab_scroll_offset > 0 {
         let left_label = format!(" <{} ", tabs.tab_scroll_offset);
-        used_width += left_label.len();
+        used_width += UnicodeWidthStr::width(left_label.as_str());
         spans.push(Span::styled(
             left_label,
             Style::default().fg(Color::DarkGray),

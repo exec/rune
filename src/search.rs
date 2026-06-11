@@ -1,5 +1,4 @@
 use regex::Regex;
-use std::collections::HashMap;
 
 /// Maximum number of matches returned by a single search. Beyond this,
 /// accumulation stops and the caller is expected to notify the user.
@@ -35,6 +34,11 @@ pub struct SearchState {
     pub search_history_index: Option<usize>,
     pub find_navigation_mode: FindNavigationMode,
     pub replace_phase: ReplacePhase,
+    /// Absolute char index the interactive replace session resumes from.
+    /// Reset to 0 when a session enters the confirm phase; advanced past
+    /// each handled (replaced or skipped) match so the session always
+    /// makes forward progress.
+    pub replace_resume_char: usize,
     pub goto_line_buffer: String,
     cached_regex_pattern: Option<String>,
     cached_regex: Option<Regex>,
@@ -55,6 +59,7 @@ impl Default for SearchState {
             search_history_index: None,
             find_navigation_mode: FindNavigationMode::HistoryBrowsing,
             replace_phase: ReplacePhase::FindPattern,
+            replace_resume_char: 0,
             goto_line_buffer: String::new(),
             cached_regex_pattern: None,
             cached_regex: None,
@@ -93,13 +98,10 @@ impl SearchState {
             search_term.to_lowercase()
         };
 
-        let mut line_cache: HashMap<usize, String> = HashMap::new();
         let mut matches = Vec::new();
 
         'outer: for line_idx in 0..rope.len_lines() {
-            let line_string = line_cache
-                .entry(line_idx)
-                .or_insert_with(|| crate::get_line_str(rope, line_idx));
+            let line_string = crate::get_line_str(rope, line_idx);
             let line_content = line_string.trim_end_matches('\n');
 
             let line_matches = if case_sensitive {
