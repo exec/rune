@@ -33,6 +33,37 @@ fn truncate_to_char_boundary(s: &mut String, max_bytes: usize) {
     s.truncate(idx);
 }
 
+/// True when the active tab must not be mutated: `--view` mode or a `[Help]` tab.
+fn is_read_only(tabs: &TabManager) -> bool {
+    tabs.read_only || tabs.active_editor().display_name == "[Help]"
+}
+
+/// Drain `reader` to EOF on a background thread, keeping at most `cap` bytes.
+/// Reading continues past the cap (discarding) so the child never blocks on a
+/// full pipe; without this, commands producing more than the ~64KB pipe
+/// buffer would stall forever and falsely hit the execute timeout.
+fn spawn_capped_reader<R: std::io::Read + Send + 'static>(
+    mut reader: R,
+    cap: usize,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if out.len() < cap {
+                        let take = n.min(cap - out.len());
+                        out.extend_from_slice(&buf[..take]);
+                    }
+                }
+            }
+        }
+        out
+    })
+}
+
 /// Build the standard find status message: "Find: term (N/M matches) - Use arrows..."
 fn format_find_status(tabs: &TabManager) -> String {
     let editor = tabs.active_editor();
@@ -436,7 +467,9 @@ fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
 fn handle_find(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-            if !tabs.active_editor().search.search_buffer.is_empty() {
+            // Replace mutates the buffer, so read-only tabs only get the
+            // regex toggle (same as when no search term is entered yet).
+            if !is_read_only(tabs) && !tabs.active_editor().search.search_buffer.is_empty() {
                 tabs.input_mode = InputMode::Replace;
                 tabs.active_editor_mut().search.replace_buffer.clear();
                 tabs.active_editor_mut().search.replace_phase = ReplacePhase::ReplaceWith;
@@ -755,7 +788,7 @@ fn handle_goto_line(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
 }
 
 fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
-    let is_read_only = tabs.read_only || tabs.active_editor().display_name == "[Help]";
+    let is_read_only = is_read_only(tabs);
 
     // Reset cut accumulation for any key that isn't Ctrl+K
     if !(key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('k')) {
@@ -796,7 +829,7 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
             tabs.start_find();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('\\')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('\\')) if !is_read_only => {
             tabs.start_replace();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
@@ -876,7 +909,7 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.toggle_comment();
             tabs.needs_redraw = true;
         }
-        (KeyModifiers::ALT, KeyCode::Char('\\')) => {
+        (KeyModifiers::ALT, KeyCode::Char('\\')) if !is_read_only => {
             tabs.active_editor_mut().word_complete();
             tabs.needs_redraw = true;
         }
@@ -1147,20 +1180,43 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 }
             };
 
-            if let Some(ref input) = selection_text {
-                use std::io::Write;
-                if let Some(mut stdin) = child.stdin.take() {
+            // Feed the selection to the child from a thread: writing on the
+            // editor thread blocks the UI forever if the child never reads
+            // stdin and the selection exceeds the pipe buffer. Dropping the
+            // handle closes the pipe; write errors (EPIPE when the child
+            // ignores stdin) are expected and ignored.
+            let stdin_writer = match (selection_text, child.stdin.take()) {
+                (Some(input), Some(mut stdin)) => Some(std::thread::spawn(move || {
+                    use std::io::Write;
                     let _ = stdin.write_all(input.as_bytes());
-                }
-            }
+                })),
+                _ => None,
+            };
+
+            // Drain stdout/stderr concurrently so the child can't block on a
+            // full pipe while we poll for exit. Keep a little more than the
+            // cap so the truncation below can tell "exactly 1MB" from "over".
+            const MAX_OUTPUT: usize = 1024 * 1024; // 1MB
+            let stdout_reader = child
+                .stdout
+                .take()
+                .map(|out| spawn_capped_reader(out, MAX_OUTPUT + 8));
+            let stderr_reader = child
+                .stderr
+                .take()
+                .map(|err| spawn_capped_reader(err, MAX_OUTPUT + 8));
 
             // Wait with a 10-second timeout using try_wait polling
             let timeout = std::time::Duration::from_secs(10);
             let poll_interval = std::time::Duration::from_millis(50);
             let start_time = std::time::Instant::now();
+            let mut exit_status = None;
             let timed_out = loop {
                 match child.try_wait() {
-                    Ok(Some(_status)) => break false,
+                    Ok(Some(status)) => {
+                        exit_status = Some(status);
+                        break false;
+                    }
                     Ok(None) => {
                         if start_time.elapsed() >= timeout {
                             let _ = child.kill();
@@ -1173,6 +1229,20 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 }
             };
 
+            // The child has exited (or been killed), so its pipes are closed
+            // and these threads finish promptly.
+            if let Some(writer) = stdin_writer {
+                let _ = writer.join();
+            }
+            let stdout_bytes = stdout_reader
+                .map(|r| r.join().unwrap_or_default())
+                .unwrap_or_default();
+            // Drained only so the child can't block on a full stderr pipe;
+            // stderr is never inserted into the buffer.
+            if let Some(reader) = stderr_reader {
+                let _ = reader.join();
+            }
+
             if timed_out {
                 tabs.input_mode = InputMode::Normal;
                 tabs.input_buffer.clear();
@@ -1181,62 +1251,59 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 return Ok(false);
             }
 
-            // Read output from the completed child
-            const MAX_OUTPUT: usize = 1024 * 1024; // 1MB
-            let output = child.wait_with_output();
+            let mut stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+            let mut truncated = false;
+            if stdout.len() > MAX_OUTPUT {
+                truncate_to_char_boundary(&mut stdout, MAX_OUTPUT);
+                stdout.push_str("\n[Output truncated at 1MB]");
+                truncated = true;
+            }
 
-            match output {
-                Ok(output) => {
-                    let raw_stdout = String::from_utf8_lossy(&output.stdout);
-                    let mut stdout = raw_stdout.to_string();
-                    let mut truncated = false;
-                    if stdout.len() > MAX_OUTPUT {
-                        truncate_to_char_boundary(&mut stdout, MAX_OUTPUT);
-                        stdout.push_str("\n[Output truncated at 1MB]");
-                        truncated = true;
+            if let Some((start, end)) = tabs.active_editor().get_selection_range() {
+                // Replace selection with output
+                let editor = tabs.active_editor_mut();
+                editor.save_undo_state();
+                editor.rope.remove(start..end);
+                editor.rope.insert(start, &stdout);
+                editor.mark_anchor = None;
+                editor.modified = true;
+                let line = editor.rope.char_to_line(start);
+                editor.mark_document_changed(line);
+                // Position cursor at end of insertion
+                let end_pos = start + stdout.chars().count();
+                let char_count = editor.rope.len_chars();
+                let clamped = end_pos.min(char_count.saturating_sub(1));
+                let line = editor.rope.char_to_line(clamped);
+                let line_start = editor.rope.line_to_char(line);
+                editor.viewport.cursor_pos = (line, end_pos.saturating_sub(line_start));
+            } else {
+                // Insert output at cursor
+                let editor = tabs.active_editor_mut();
+                editor.save_undo_state();
+                let pos = editor.line_col_to_char_idx(
+                    editor.viewport.cursor_pos.0,
+                    editor.viewport.cursor_pos.1,
+                );
+                editor.rope.insert(pos, &stdout);
+                editor.modified = true;
+                let cursor_line = editor.viewport.cursor_pos.0;
+                editor.mark_document_changed(cursor_line);
+            }
+            let mut msg = if truncated {
+                format!("Executed: {command} (output truncated at 1MB)")
+            } else {
+                format!("Executed: {command}")
+            };
+            // Surface failures (stdout is still inserted either way).
+            if let Some(status) = exit_status {
+                if !status.success() {
+                    match status.code() {
+                        Some(code) => msg.push_str(&format!(" (exit status {code})")),
+                        None => msg.push_str(" (terminated by signal)"),
                     }
-
-                    if let Some((start, end)) = tabs.active_editor().get_selection_range() {
-                        // Replace selection with output
-                        let editor = tabs.active_editor_mut();
-                        editor.save_undo_state();
-                        editor.rope.remove(start..end);
-                        editor.rope.insert(start, &stdout);
-                        editor.mark_anchor = None;
-                        editor.modified = true;
-                        let line = editor.rope.char_to_line(start);
-                        editor.mark_document_changed(line);
-                        // Position cursor at end of insertion
-                        let end_pos = start + stdout.chars().count();
-                        let char_count = editor.rope.len_chars();
-                        let clamped = end_pos.min(char_count.saturating_sub(1));
-                        let line = editor.rope.char_to_line(clamped);
-                        let line_start = editor.rope.line_to_char(line);
-                        editor.viewport.cursor_pos = (line, end_pos.saturating_sub(line_start));
-                    } else {
-                        // Insert output at cursor
-                        let editor = tabs.active_editor_mut();
-                        editor.save_undo_state();
-                        let pos = editor.line_col_to_char_idx(
-                            editor.viewport.cursor_pos.0,
-                            editor.viewport.cursor_pos.1,
-                        );
-                        editor.rope.insert(pos, &stdout);
-                        editor.modified = true;
-                        let cursor_line = editor.viewport.cursor_pos.0;
-                        editor.mark_document_changed(cursor_line);
-                    }
-                    let msg = if truncated {
-                        format!("Executed: {command} (output truncated at 1MB)")
-                    } else {
-                        format!("Executed: {command}")
-                    };
-                    tabs.set_temporary_status_message(msg);
-                }
-                Err(e) => {
-                    tabs.set_temporary_status_message(format!("Error: {e}"));
                 }
             }
+            tabs.set_temporary_status_message(msg);
 
             tabs.input_mode = InputMode::Normal;
             tabs.input_buffer.clear();
@@ -1262,6 +1329,129 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ropey::Rope;
+
+    fn make_tabs(text: &str) -> TabManager {
+        let mut tabs = TabManager::new_for_test();
+        tabs.active_editor_mut().rope = Rope::from_str(text);
+        tabs
+    }
+
+    /// Drive ExecuteCommand -> ConfirmExecute -> Y for `command`, returning
+    /// how long the confirmation (the actual execution) took.
+    fn run_execute(t: &mut TabManager, command: &str) -> std::time::Duration {
+        t.input_mode = InputMode::ExecuteCommand;
+        t.input_buffer = command.to_string();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = handle_key_event(t, enter).unwrap();
+        assert_eq!(t.input_mode, InputMode::ConfirmExecute);
+        let start = std::time::Instant::now();
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let _ = handle_key_event(t, y).unwrap();
+        assert_eq!(t.input_mode, InputMode::Normal);
+        start.elapsed()
+    }
+
+    // H1 regression: a command writing far more than the ~64KB pipe buffer
+    // used to block on a full stdout pipe and get killed at the 10s timeout.
+    #[test]
+    fn execute_large_output_completes_without_timeout() {
+        let mut t = make_tabs("");
+        let elapsed = run_execute(&mut t, "head -c 262144 /dev/zero | tr '\\0' 'x'");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "large-output command took {elapsed:?}, suggesting a pipe stall"
+        );
+        assert!(
+            !t.status_message.contains("timed out"),
+            "falsely reported a timeout: {}",
+            t.status_message
+        );
+        assert_eq!(
+            t.active_editor().rope.len_chars(),
+            262144,
+            "expected the full 256KB of output to be inserted"
+        );
+    }
+
+    // H1 regression: piping a selection larger than the pipe buffer into a
+    // command that never reads stdin used to block the editor thread forever
+    // in stdin.write_all (before the timeout even started).
+    #[test]
+    fn execute_large_selection_into_stdin_ignoring_command_does_not_hang() {
+        let big = "x".repeat(256 * 1024);
+        let mut t = make_tabs(&big);
+        t.active_editor_mut().mark_anchor = Some((0, 0));
+        t.active_editor_mut().viewport.cursor_pos = (0, big.len());
+        let elapsed = run_execute(&mut t, "true");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "piping a large selection into `true` took {elapsed:?}"
+        );
+        // `true` produces no output, so the selection is replaced by nothing.
+        assert_eq!(t.active_editor().rope.len_chars(), 0);
+        assert!(t.status_message.contains("Executed"), "{}", t.status_message);
+    }
+
+    // L9: non-zero exits are surfaced in the status message.
+    #[test]
+    fn execute_reports_nonzero_exit_status() {
+        let mut t = make_tabs("");
+        run_execute(&mut t, "echo out; exit 3");
+        assert!(
+            t.status_message.contains("exit status 3"),
+            "status was: {}",
+            t.status_message
+        );
+        // stdout is still inserted even when the command fails.
+        assert!(t.active_editor().rope.to_string().contains("out"));
+    }
+
+    // H5: read-only (--view / [Help]) must not open the Replace flow.
+    #[test]
+    fn read_only_blocks_replace() {
+        let mut t = make_tabs("hello\n");
+        t.read_only = true;
+        let key = KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL);
+        let _ = handle_key_event(&mut t, key).unwrap();
+        assert_eq!(
+            t.input_mode,
+            InputMode::Normal,
+            "Ctrl+\\ should be a no-op in read-only mode"
+        );
+        assert_eq!(t.active_editor().rope.to_string(), "hello\n");
+    }
+
+    // H5: read-only must not allow word-completion to mutate the buffer.
+    #[test]
+    fn read_only_blocks_word_complete() {
+        let mut t = make_tabs("alpha alp\n");
+        t.read_only = true;
+        t.active_editor_mut().viewport.cursor_pos = (0, 9);
+        let key = KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::ALT);
+        let _ = handle_key_event(&mut t, key).unwrap();
+        assert_eq!(
+            t.active_editor().rope.to_string(),
+            "alpha alp\n",
+            "Alt+\\ should be a no-op in read-only mode"
+        );
+    }
+
+    // H5: the Find-mode Ctrl+R shortcut is another door into Replace.
+    #[test]
+    fn read_only_blocks_replace_via_find_ctrl_r() {
+        let mut t = make_tabs("hello\n");
+        t.read_only = true;
+        t.input_mode = InputMode::Find;
+        t.active_editor_mut().search.search_buffer = "hello".to_string();
+        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        let _ = handle_key_event(&mut t, key).unwrap();
+        assert_ne!(
+            t.input_mode,
+            InputMode::Replace,
+            "Find-mode Ctrl+R should not enter Replace in read-only mode"
+        );
+    }
 
     #[test]
     fn truncate_to_char_boundary_noop_when_short_enough() {
