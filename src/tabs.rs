@@ -1524,7 +1524,10 @@ mod tests {
         t.perform_save(file_path.clone()).unwrap();
 
         // The redirect target must be untouched.
-        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "DO NOT CLOBBER\n");
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "DO NOT CLOBBER\n"
+        );
         // The backup path is now a regular file (not a symlink) holding the
         // pre-save contents.
         let meta = std::fs::symlink_metadata(&backup_path).unwrap();
