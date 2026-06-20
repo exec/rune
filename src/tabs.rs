@@ -376,6 +376,16 @@ impl TabManager {
         // still reads the old file (which exists until the rename below).
         if self.config.backup_on_save && path.exists() {
             let backup_path = PathBuf::from(format!("{}~", path.display()));
+            // If the backup path already exists as a symlink, an attacker in a
+            // shared directory could have planted it to redirect the copy
+            // (and thus the file's contents) to a destination of their choice.
+            // Replace a symlink with a regular file before copying.
+            // `symlink_metadata` does not follow the link.
+            if let Ok(meta) = std::fs::symlink_metadata(&backup_path) {
+                if meta.file_type().is_symlink() {
+                    let _ = std::fs::remove_file(&backup_path);
+                }
+            }
             if let Err(e) = std::fs::copy(&path, &backup_path) {
                 self.set_temporary_status_message(format!("Warning: backup failed: {e}"));
             }
@@ -1049,11 +1059,14 @@ impl TabManager {
 ///
 /// Steps:
 /// 1. Create a temp file in the same directory as `path` (so rename is on
-///    the same filesystem — cross-FS rename is not atomic).
-/// 2. Write bytes, then `sync_all()` to flush to disk before rename.
-/// 3. On Unix, if the target already exists, copy its permissions onto the
-///    temp file so a `chmod 600`-style restrictive mode isn't weakened by
-///    the rename swap.
+///    the same filesystem — cross-FS rename is not atomic). The temp is
+///    created with `O_EXCL` (`create_new`) so it can never follow or
+///    truncate a pre-existing path (e.g. an attacker-planted symlink in a
+///    shared directory).
+/// 2. On Unix, when overwriting an existing file, tighten the (still empty)
+///    temp file's permissions to match the target *before* writing any
+///    bytes — see the in-body comment for why this ordering matters.
+/// 3. Write bytes, then `sync_all()` to flush to disk before rename.
 /// 4. `fs::rename(temp, path)` — POSIX rename is atomic within a filesystem.
 /// 5. On any error between steps 1 and 4, best-effort remove the temp file.
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -1079,23 +1092,38 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
     // From here on, any early return must best-effort clean up temp_path.
     let result: std::io::Result<()> = (|| {
-        let mut file = std::fs::File::create(&temp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
+        // `create_new(true)` => O_EXCL: fail rather than open an existing
+        // path. Combined with the pid+nanos name this prevents a symlink or
+        // collision at `temp_path` from redirecting/clobbering the write.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
 
         // On Unix, preserve the target file's permissions across the rename.
         // `fs::rename` replaces the target inode with the temp file's inode,
         // so without this a restrictive mode (e.g. 0o600) on the original
         // file could be weakened to the umask-default applied at temp creation.
+        //
+        // Crucially, apply the mode to the *empty* temp file BEFORE writing
+        // the contents. The file is created at the umask default (often
+        // world-readable 0o644); if we wrote the data first and tightened
+        // afterwards, a copy of a secret file's contents would be briefly
+        // readable by other local users. Tightening while the file is still
+        // empty closes that window. The already-open write handle keeps
+        // working even if we set a read-only mode like 0o400, because Unix
+        // checks permissions at open() time, not on each write().
         #[cfg(unix)]
         {
             if let Ok(meta) = std::fs::metadata(path) {
-                let perms = meta.permissions();
                 // Best-effort: don't fail the save if we can't apply perms.
-                let _ = std::fs::set_permissions(&temp_path, perms);
+                let _ = file.set_permissions(meta.permissions());
             }
         }
+
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
 
         std::fs::rename(&temp_path, path)?;
         Ok(())
@@ -1442,6 +1470,66 @@ mod tests {
         let mode = std::fs::metadata(&file_path).unwrap().permissions().mode();
         // Mask to perm bits; file-type bits vary.
         assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn perform_save_into_readonly_mode_file() {
+        // Saving over a 0o400 (owner read-only) file must succeed and keep the
+        // mode. This is a regression guard for the atomic_write ordering: the
+        // restrictive mode is applied to the temp file *after* it's opened for
+        // writing, so the open handle can still write even when the resulting
+        // mode forbids it. If perms were applied via a fresh open (or before
+        // opening the write handle) this would fail with EACCES.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("ro.txt");
+
+        std::fs::write(&file_path, "seed").unwrap();
+        let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+        perms.set_mode(0o400);
+        std::fs::set_permissions(&file_path, perms).unwrap();
+
+        let mut t = make_tabs("updated\n");
+        t.active_editor_mut().file_path = Some(file_path.clone());
+        t.perform_save(file_path.clone()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "updated\n");
+        let mode = std::fs::metadata(&file_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o400, "mode was {:o}", mode & 0o777);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn backup_replaces_symlink_instead_of_following_it() {
+        // A pre-existing symlink at the backup path ("<file>~") must not
+        // redirect the backup copy to the symlink's target. It should be
+        // replaced by a regular file containing the saved content.
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("doc.txt");
+        let backup_path = dir.path().join("doc.txt~");
+        let outside = dir.path().join("outside.txt");
+
+        std::fs::write(&file_path, "original\n").unwrap();
+        std::fs::write(&outside, "DO NOT CLOBBER\n").unwrap();
+        // Plant a symlink: doc.txt~ -> outside.txt
+        symlink(&outside, &backup_path).unwrap();
+
+        let mut t = make_tabs("edited\n");
+        t.config.backup_on_save = true;
+        t.active_editor_mut().file_path = Some(file_path.clone());
+        t.perform_save(file_path.clone()).unwrap();
+
+        // The redirect target must be untouched.
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "DO NOT CLOBBER\n");
+        // The backup path is now a regular file (not a symlink) holding the
+        // pre-save contents.
+        let meta = std::fs::symlink_metadata(&backup_path).unwrap();
+        assert!(!meta.file_type().is_symlink(), "backup is still a symlink");
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), "original\n");
     }
 
     #[test]
