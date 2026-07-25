@@ -24,7 +24,7 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 ### Built for Developers
 - **Interactive Search** - Ctrl+F with live highlighting, arrow key navigation, real-time match count
 - **Go to line** - Ctrl+G to jump to specific lines
-- **Undo/Redo** - Ctrl+Z/Ctrl+Y with 100-action history
+- **Undo/Redo** - Ctrl+Z/Ctrl+R with 100-action history
 - **Line numbers** - Toggle display in options menu
 - **Tab width control** - Configure 2, 4, or 8 space tabs
 - **Word wrap** - Toggle line wrapping
@@ -100,7 +100,8 @@ rune
 - **Ctrl+W** - Save As (save with new filename)
 - **Ctrl+O** - Open options menu (configure settings)
 - **Ctrl+F** - Find text (interactive search with live navigation)
-- **Ctrl+H** - Replace text (find and replace all)
+- **Ctrl+\** - Replace text (find and replace all)
+- **Ctrl+H** - Open the help tab
 - **Ctrl+G** - Go to line number
 - **Ctrl+Z** - Undo last change
 - **Ctrl+R** - Redo last undone change

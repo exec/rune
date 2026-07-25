@@ -376,17 +376,7 @@ impl TabManager {
         // still reads the old file (which exists until the rename below).
         if self.config.backup_on_save && path.exists() {
             let backup_path = PathBuf::from(format!("{}~", path.display()));
-            // If the backup path already exists as a symlink, an attacker in a
-            // shared directory could have planted it to redirect the copy
-            // (and thus the file's contents) to a destination of their choice.
-            // Replace a symlink with a regular file before copying.
-            // `symlink_metadata` does not follow the link.
-            if let Ok(meta) = std::fs::symlink_metadata(&backup_path) {
-                if meta.file_type().is_symlink() {
-                    let _ = std::fs::remove_file(&backup_path);
-                }
-            }
-            if let Err(e) = std::fs::copy(&path, &backup_path) {
+            if let Err(e) = write_backup(&path, &backup_path) {
                 self.set_temporary_status_message(format!("Warning: backup failed: {e}"));
             }
         }
@@ -1037,7 +1027,13 @@ impl TabManager {
         for i in self.tab_scroll_offset..self.tabs.len() {
             let tab = &self.tabs[i];
             let modified = if tab.modified { "*" } else { "" };
-            let title = format!(" {}{} ", tab.display_name, modified);
+            // Must mirror draw_tab_bar exactly, including the control-char
+            // stripping, or a filename containing one shifts the hit-test.
+            let title = format!(
+                " {}{} ",
+                crate::ui::strip_control_chars(&tab.display_name),
+                modified
+            );
             // Display width, not byte length -- must match draw_tab_bar's
             // layout math for multibyte tab names.
             let title_len = UnicodeWidthStr::width(title.as_str());
@@ -1053,6 +1049,53 @@ impl TabManager {
             col += title_len;
         }
     }
+}
+
+/// Copy `path`'s current contents to `backup_path` before it is overwritten.
+///
+/// Deliberately *not* `fs::copy`. `fs::copy` opens the destination with
+/// create+truncate semantics, which follows whatever is already sitting at
+/// `backup_path`:
+///
+/// - A pre-existing regular file owned by another user is truncated **in place**,
+///   preserving their inode, so the contents of a 0600 file land in a file they
+///   own and can then `chmod` and read.
+/// - A FIFO blocks forever in `open(O_WRONLY)` waiting for a reader, hanging the
+///   editor's UI thread on save with no timeout.
+///
+/// Unlinking first and then opening with `create_new` (O_CREAT|O_EXCL) fixes both
+/// and closes the TOCTOU window in the old symlink-only guard: if an attacker
+/// re-plants anything between the unlink and the open, `create_new` fails with
+/// `AlreadyExists` rather than writing through it. O_EXCL also refuses to follow
+/// a symlink, so the separate symlink check is no longer needed.
+fn write_backup(path: &Path, backup_path: &Path) -> std::io::Result<()> {
+    // Replacing the previous backup is the intended behaviour, and a missing
+    // path is equally fine. Errors are deliberately ignored here: whatever the
+    // reason the unlink failed, the `create_new` below refuses to write through
+    // whatever remains, so it reports the problem without ever following it.
+    let _ = std::fs::remove_file(backup_path);
+
+    let mut src = std::fs::File::open(path)?;
+    let mut dst = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(backup_path)?;
+
+    // Same ordering rule as `atomic_write`: tighten the mode while the file is
+    // still empty, so a secret file's contents are never briefly world-readable
+    // under the umask default.
+    #[cfg(unix)]
+    {
+        if let Ok(meta) = src.metadata() {
+            let _ = dst.set_permissions(meta.permissions());
+        }
+    }
+
+    // Streamed rather than buffered: the backup of a large file should not need
+    // a second full copy of it in memory.
+    std::io::copy(&mut src, &mut dst)?;
+    dst.sync_all()?;
+    Ok(())
 }
 
 /// Atomically write `bytes` to `path` using the standard temp-file + rename

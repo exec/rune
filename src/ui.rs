@@ -253,8 +253,10 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
         )
     };
 
-    let status_widget =
-        Paragraph::new(status_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    // The status line interpolates filenames, error text, and shell command
+    // output, all of which can carry attacker-controlled escape sequences.
+    let status_widget = Paragraph::new(strip_control_chars(&status_text).into_owned())
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
     f.render_widget(status_widget, status_area);
 
     // Draw help bar
@@ -294,7 +296,10 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
         .iter()
         .map(|tab| {
             let modified = if tab.modified { "*" } else { "" };
-            format!(" {}{} ", tab.display_name, modified)
+            // Tab names come from filenames, which may contain control chars.
+            // Stripping here (before the width math below) keeps this layout and
+            // the click hit-testing in tabs.rs in agreement.
+            format!(" {}{} ", strip_control_chars(&tab.display_name), modified)
         })
         .collect();
     // Display width, not byte length -- multibyte tab names would otherwise
@@ -999,7 +1004,13 @@ fn expand_tabs_in_spans(spans: Vec<Span<'static>>, show_whitespace: bool) -> Vec
     let mut col = 0usize;
     let mut result = Vec::with_capacity(spans.len());
     for span in spans {
-        if !span.content.contains('\t') {
+        // Fast path only when there is nothing to rewrite. Control characters
+        // must take the slow path even though they are not tabs: ratatui's
+        // `Paragraph` does *not* filter them (unlike `Buffer::set_stringn`), it
+        // only skips zero-*width* graphemes, and unicode-width reports width 1
+        // for a lone ESC. Left alone they reach the terminal as live escape
+        // sequences -- see `strip_control_chars`.
+        if !span.content.contains('\t') && !span.content.contains(is_display_control) {
             col += UnicodeWidthStr::width(span.content.as_ref());
             result.push(span);
             continue;
@@ -1012,6 +1023,12 @@ fn expand_tabs_in_spans(spans: Vec<Span<'static>>, show_whitespace: bool) -> Vec
                 for _ in 1..w {
                     text.push(' ');
                 }
+            } else if is_display_control(ch) {
+                // Dropped rather than substituted, to stay consistent with
+                // `char_display_width`, which reports 0 columns for control
+                // chars. Emitting a visible placeholder would make rendered
+                // columns disagree with the editor's cursor math on any line
+                // containing one. Use hex view (Ctrl+B) to inspect raw bytes.
             } else {
                 text.push(ch);
             }
@@ -1020,6 +1037,24 @@ fn expand_tabs_in_spans(spans: Vec<Span<'static>>, show_whitespace: bool) -> Vec
         result.push(Span::styled(text, span.style));
     }
     result
+}
+
+/// Characters that must never reach the terminal verbatim. `\t` is excluded
+/// because the layout expands it; `\n` never appears inside a single line's span.
+fn is_display_control(c: char) -> bool {
+    c != '\t' && c != '\n' && c.is_control()
+}
+
+/// Strip control characters from text that is rendered outside the editor pane
+/// (status messages, filenames, tab titles, command output echoed into the UI).
+///
+/// Borrows unchanged in the overwhelmingly common case that there is nothing to
+/// strip, so this costs one scan on the per-frame paths that use it.
+pub fn strip_control_chars(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains(is_display_control) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    std::borrow::Cow::Owned(s.chars().filter(|&c| !is_display_control(c)).collect())
 }
 
 /// Compute the active selection range as `(start_char_idx, end_char_idx)` once
