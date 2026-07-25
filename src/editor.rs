@@ -170,12 +170,22 @@ pub fn str_display_width(s: &str, start_col: usize) -> usize {
 }
 
 /// Get the display width of a line, handling the case where the line spans chunk boundaries.
+///
+/// The fast path covers printable ASCII, where the display width is exactly the
+/// byte length. Everything else — wide chars, hard tabs, and crucially control
+/// characters such as the `\r` of a CRLF line ending — falls through to the
+/// `char_display_width` accumulation loop. Routing all non-trivial input through
+/// that one helper is what keeps this function consistent with
+/// `char_idx_to_display_col`: `UnicodeWidthStr::width` counts a lone control
+/// char as 1 column while `UnicodeWidthChar::width` reports `None` (0), and any
+/// disagreement between the two makes `move_cursor_right` spin forever chasing a
+/// column it can never reach.
 pub fn line_display_width(rope: &Rope, line: usize) -> usize {
     let rope_line = rope.line(line);
     if let Some(s) = rope_line.as_str() {
         let s = s.trim_end_matches('\n');
-        if !s.contains('\t') {
-            return s.width();
+        if s.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+            return s.len();
         }
     }
     let mut col = 0;
@@ -245,6 +255,10 @@ impl Editor {
             .unwrap_or_else(|| "[untitled]".to_string());
         self.file_path = Some(path);
         self.modified = false;
+        // The `Editor` (and so its `buffer_id`) is reused when opening a file into
+        // the current tab, so the render cache would otherwise keep serving the
+        // previous document's spans.
+        self.mark_document_changed(0);
         Ok(())
     }
 
@@ -268,16 +282,23 @@ impl Editor {
 
     pub fn delete_char(&mut self) {
         self.mark_anchor = None;
-        if self.viewport.cursor_pos.1 > 0 {
-            let pos =
-                self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        // A mouse click or `+LINE,COL` can park the cursor at a display column
+        // inside a wide char or a tab's span. `line_col_to_char_idx` then snaps
+        // back to that char's start, so a nonzero column can still resolve to
+        // the first char of the line -- which is the line-join case, not the
+        // delete-within-line case. Deciding on the resolved char index rather
+        // than the display column keeps `pos - 1 - line_start` from underflowing.
+        let line_start = self.rope.line_to_char(self.viewport.cursor_pos.0);
+        let resolved =
+            self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        if resolved > line_start {
+            let pos = resolved;
             if pos > 0 {
                 self.save_undo_state();
                 // Land the cursor on the deleted char's start column. Its
                 // display width is position-dependent (a wide CJK char
                 // occupies 2 columns, a tab up to TAB_WIDTH), so compute the
                 // column from the char index before mutating the rope.
-                let line_start = self.rope.line_to_char(self.viewport.cursor_pos.0);
                 let new_col =
                     self.char_idx_to_display_col(self.viewport.cursor_pos.0, pos - 1 - line_start);
                 self.rope.remove(pos - 1..pos);
@@ -332,6 +353,10 @@ impl Editor {
     }
 
     pub fn delete_char_forward(&mut self) {
+        // Matches `insert_char` / `delete_char` / `insert_newline`: an edit
+        // invalidates the mark, which would otherwise point at a line the rope
+        // may no longer have.
+        self.mark_anchor = None;
         let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
         if pos < self.rope.len_chars() {
             self.save_undo_state();
@@ -387,11 +412,16 @@ impl Editor {
             let mut char_idx =
                 self.line_col_to_char_idx(line, self.viewport.cursor_pos.1) - line_start;
             let mut new_col = self.viewport.cursor_pos.1;
-            while new_col <= self.viewport.cursor_pos.1 {
+            // Bounded by the line's char count: `char_idx_to_display_col`
+            // saturates once `char_idx` passes the end of the line, so without
+            // this bound any disagreement between the two width functions would
+            // spin forever waiting for a column that never arrives.
+            let line_char_len = self.rope.line(line).len_chars();
+            while new_col <= self.viewport.cursor_pos.1 && char_idx <= line_char_len {
                 char_idx += 1;
                 new_col = self.char_idx_to_display_col(line, char_idx);
             }
-            self.viewport.cursor_pos.1 = new_col;
+            self.viewport.cursor_pos.1 = new_col.max(self.viewport.cursor_pos.1);
         } else if self.viewport.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
             self.viewport.cursor_pos.0 += 1;
             self.viewport.cursor_pos.1 = 0;
@@ -419,6 +449,10 @@ impl Editor {
     /// Convert a char offset (number of chars from line start) to a display column,
     /// accounting for character widths (e.g. wide CJK characters, hard tabs).
     pub fn char_idx_to_display_col(&self, line: usize, char_offset: usize) -> usize {
+        // Clamp: a stale `mark_anchor` or viewport offset can outlive the lines
+        // it referred to (see `delete_char_forward`), and ropey panics on an
+        // out-of-range line index rather than saturating.
+        let line = line.min(self.rope.len_lines().saturating_sub(1));
         let rope_line = self.rope.line(line);
         let mut display_col = 0;
         for (i, ch) in rope_line.chars().enumerate() {
@@ -431,6 +465,10 @@ impl Editor {
     }
 
     pub fn line_col_to_char_idx(&self, line: usize, col: usize) -> usize {
+        // Clamp for the same reason as `char_idx_to_display_col`: callers such as
+        // `get_selection_range` resolve positions that may name a line the rope
+        // no longer has.
+        let line = line.min(self.rope.len_lines().saturating_sub(1));
         let line_start = self.rope.line_to_char(line);
         let rope_line = self.rope.line(line);
         let mut char_idx = 0;
@@ -595,12 +633,11 @@ impl Editor {
                 }
             }
             MouseEventKind::Drag(_) => {}
-            MouseEventKind::ScrollDown => {
+            MouseEventKind::ScrollDown
                 if self.viewport.viewport_offset.0
-                    < self.rope.len_lines().saturating_sub(terminal_height)
-                {
-                    self.viewport.viewport_offset.0 += constants::SCROLL_SPEED;
-                }
+                    < self.rope.len_lines().saturating_sub(terminal_height) =>
+            {
+                self.viewport.viewport_offset.0 += constants::SCROLL_SPEED;
             }
             MouseEventKind::ScrollUp => {
                 self.viewport.viewport_offset.0 = self
@@ -622,9 +659,12 @@ impl Editor {
         if self.hex_state.is_some() {
             // Restore text cursor from hex cursor byte offset
             if let Some(state) = &self.hex_state {
-                let byte_offset = state.cursor;
-                let text = self.rope.to_string();
-                let char_idx = text[..byte_offset.min(text.len())].chars().count();
+                // The hex cursor moves by raw bytes, so it routinely sits inside a
+                // multi-byte char. `byte_to_char` snaps to the containing char;
+                // slicing a `String` at this offset used to panic instead. Going
+                // through the rope also avoids materializing the whole document.
+                let byte_offset = state.cursor.min(self.rope.len_bytes());
+                let char_idx = self.rope.byte_to_char(byte_offset);
                 let line = self
                     .rope
                     .char_to_line(char_idx.min(self.rope.len_chars().saturating_sub(1)));
@@ -637,20 +677,12 @@ impl Editor {
             return;
         }
 
-        // Materialize rope content once and reuse
-        let text = self.rope.to_string();
-
-        // Get bytes from the live rope content
-        let bytes = text.as_bytes().to_vec();
-
-        // Convert text cursor position to byte offset
+        // Convert the text cursor to a byte offset via the rope (O(log n)) before
+        // materializing, then hand the buffer over without a second copy.
         let char_idx =
             self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
-        let byte_offset = text
-            .char_indices()
-            .nth(char_idx)
-            .map(|(i, _)| i)
-            .unwrap_or(text.len());
+        let byte_offset = self.rope.char_to_byte(char_idx.min(self.rope.len_chars()));
+        let bytes = self.rope.to_string().into_bytes();
 
         let mut state = HexViewState::new(bytes);
         state.cursor = byte_offset.min(state.raw_bytes.len().saturating_sub(1));
@@ -931,14 +963,22 @@ impl Editor {
                     let line_start = self.rope.line_to_char(line_idx);
                     let rope_line = self.rope.line(line_idx);
                     let line_text: String = rope_line.chars().collect();
-                    if let Some(pos) = line_text.find(comment_str.trim_end()) {
-                        let remove_len = if line_text[pos..].starts_with(comment_str) {
-                            comment_str.len()
+                    if let Some(byte_pos) = line_text.find(comment_str.trim_end()) {
+                        // `find` yields a byte offset but `Rope::remove` takes
+                        // char indices. Indentation containing multi-byte
+                        // whitespace (U+3000, NBSP) is trimmed by `trim_start`
+                        // above, so such a line reaches here with a byte offset
+                        // 2-3x larger than the char offset -- which used to eat
+                        // trailing code, or panic on an out-of-bounds range.
+                        let char_pos = line_text[..byte_pos].chars().count();
+                        let remove_len = if line_text[byte_pos..].starts_with(comment_str) {
+                            comment_str.chars().count()
                         } else {
-                            comment_str.trim_end().len()
+                            comment_str.trim_end().chars().count()
                         };
-                        self.rope
-                            .remove(line_start + pos..line_start + pos + remove_len);
+                        let start = line_start + char_pos;
+                        let end = (start + remove_len).min(self.rope.len_chars());
+                        self.rope.remove(start..end);
                     }
                 }
             }

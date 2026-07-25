@@ -278,16 +278,14 @@ fn run_editor(
 
         if event::poll(constants::EVENT_POLL_INTERVAL)? {
             match event::read()? {
-                Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press && input::handle_key_event(tabs, key)? {
-                        break;
-                    }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && input::handle_key_event(tabs, key)? =>
+                {
+                    break;
                 }
-                Event::Mouse(mouse) => {
-                    if tabs.config.mouse_enabled {
-                        let size = terminal.size()?;
-                        tabs.handle_mouse_event(mouse, size.height as usize);
-                    }
+                Event::Mouse(mouse) if tabs.config.mouse_enabled => {
+                    let size = terminal.size()?;
+                    tabs.handle_mouse_event(mouse, size.height as usize);
                 }
                 Event::Resize(_, _) => {
                     tabs.needs_redraw = true;

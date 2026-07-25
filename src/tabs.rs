@@ -550,8 +550,10 @@ impl TabManager {
             .undo(&mut editor.rope, &mut editor.viewport.cursor_pos)
         {
             editor.modified = true;
-            editor.invalidate_cache();
-            editor.highlighter.invalidate_cache_from_line(0);
+            // Must bump `dirty_generation`: the render cache in `ui.rs` is keyed
+            // on it, so invalidating only the width and syntax caches left the
+            // previous frame's spans on screen and undo looked like a no-op.
+            editor.mark_document_changed(0);
             self.needs_redraw = true;
             self.set_temporary_status_message("Undo".to_string());
         } else {
@@ -566,8 +568,8 @@ impl TabManager {
             .redo(&mut editor.rope, &mut editor.viewport.cursor_pos)
         {
             editor.modified = true;
-            editor.invalidate_cache();
-            editor.highlighter.invalidate_cache_from_line(0);
+            // See `undo`: the render cache is keyed on `dirty_generation`.
+            editor.mark_document_changed(0);
             self.needs_redraw = true;
             self.set_temporary_status_message("Redo".to_string());
         } else {
