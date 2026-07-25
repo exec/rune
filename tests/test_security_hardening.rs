@@ -28,34 +28,36 @@ mod backup {
     /// A pre-existing backup path owned by someone else must not be written
     /// through. `fs::copy` truncated it in place, preserving their inode, so a
     /// private file's contents landed in a file they could chmod and read.
+    ///
+    /// Asserted via a hardlink rather than by comparing inode numbers: unlinking
+    /// frees the old inode, and the filesystem is free to hand the very same
+    /// number back to the `create_new` immediately after, which made the naive
+    /// version of this test pass locally and fail on CI. A hardlink keeps the
+    /// original inode alive and observable, so "was it truncated in place?" can
+    /// be answered directly by reading through the second name.
+    #[cfg(unix)]
     #[test]
     fn backup_does_not_write_into_a_preexisting_inode() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("doc.txt");
         std::fs::write(&target, "secret contents\n").unwrap();
 
-        // Stand-in for the attacker's pre-planted file.
+        // Stand-in for the attacker's pre-planted file, plus a second name for
+        // its inode that survives an unlink of the first.
         let backup = dir.path().join("doc.txt~");
         std::fs::write(&backup, "planted\n").unwrap();
-
-        #[cfg(unix)]
-        let inode_before = {
-            use std::os::unix::fs::MetadataExt;
-            std::fs::metadata(&backup).unwrap().ino()
-        };
+        let witness = dir.path().join("witness");
+        std::fs::hard_link(&backup, &witness).unwrap();
 
         let mut tabs = saving_tab(&target, "new contents\n");
         tabs.perform_save(target.clone()).unwrap();
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let inode_after = std::fs::metadata(&backup).unwrap().ino();
-            assert_ne!(
-                inode_before, inode_after,
-                "backup reused the pre-existing inode instead of creating a fresh file"
-            );
-        }
+        assert_eq!(
+            std::fs::read_to_string(&witness).unwrap(),
+            "planted\n",
+            "the pre-existing inode was truncated in place: a private file's \
+             contents were written into an inode the attacker still owns"
+        );
         // The backup must still be correct: the pre-save contents of the target.
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
