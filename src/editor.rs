@@ -148,6 +148,13 @@ pub struct Editor {
     /// the render layer) can sample this to detect whether the document
     /// changed since the last frame.
     pub dirty_generation: u64,
+    /// Lowest line index mutated since a renderer last consumed this value, or
+    /// `usize::MAX` when nothing has changed. Lets the render cache evict only the
+    /// lines an edit could actually have affected instead of clearing wholesale --
+    /// a one-char edit does not change how the lines above the cursor render.
+    /// Accumulates the minimum across edits, so it stays correct when several
+    /// happen between frames.
+    pub dirty_from_line: usize,
     /// Globally unique, never-reused identifier for this buffer. Used by the
     /// render layer to key per-buffer caches without relying on memory
     /// addresses (which can be reused after a tab is closed).
@@ -241,6 +248,7 @@ impl Editor {
             col_index_cache: Cell::new(None),
             width_index_cache: Cell::new(None),
             dirty_generation: 0,
+            dirty_from_line: usize::MAX,
             buffer_id: NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
@@ -1408,6 +1416,7 @@ impl Editor {
     /// Invalidate highlighting and text caches from a given line onwards
     pub fn mark_document_changed(&mut self, from_line: usize) {
         self.dirty_generation = self.dirty_generation.wrapping_add(1);
+        self.dirty_from_line = self.dirty_from_line.min(from_line);
         self.highlighter.invalidate_cache_from_line(from_line);
         self.invalidate_cache();
     }

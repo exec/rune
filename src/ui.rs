@@ -14,9 +14,13 @@ use crate::tabs::TabManager;
 
 /// Per-line cache of fully-assembled content spans (post-syntax, post-search,
 /// pre-selection, pre-horizontal-slice). Only populated when search and
-/// selection are both inactive — the common cursor-navigation case. The cache
-/// is invalidated whenever `dirty_generation` or the active buffer identity
-/// changes, so entries are always valid for the current frame if they exist.
+/// selection are both inactive — the common cursor-navigation case.
+///
+/// Entries are always valid for the current frame if present: see `sync`, which
+/// drops everything on a buffer or whitespace change and only the lines at or
+/// after the edit point on a document change, and `prune`, which bounds growth
+/// from scrolling. `tests/test_render_cache.rs` checks incrementally-edited
+/// renders against from-scratch ones to keep that guarantee honest.
 struct RenderCache {
     buffer_id: Option<u64>,
     dirty_generation: u64,
@@ -34,18 +38,62 @@ impl RenderCache {
         }
     }
 
-    fn reset_if_stale(&mut self, buffer_id: u64, dirty_generation: u64, show_whitespace: bool) {
-        if self.buffer_id != Some(buffer_id)
-            || self.dirty_generation != dirty_generation
-            || self.show_whitespace != show_whitespace
-        {
+    /// Bring the cache in line with the current buffer state.
+    ///
+    /// A different buffer or whitespace setting invalidates everything. A bumped
+    /// `dirty_generation` only invalidates lines at or after `dirty_from_line`:
+    /// editing line N cannot change how lines above it render, and the syntax
+    /// layer next door already invalidates precisely this way. Clearing wholesale
+    /// meant a one-char edit re-composed every visible line's spans -- roughly 40
+    /// line pipelines per keystroke on an 80x40 terminal instead of one.
+    fn sync(
+        &mut self,
+        buffer_id: u64,
+        dirty_generation: u64,
+        show_whitespace: bool,
+        dirty_from_line: usize,
+    ) {
+        if self.buffer_id != Some(buffer_id) || self.show_whitespace != show_whitespace {
             self.buffer_id = Some(buffer_id);
-            self.dirty_generation = dirty_generation;
             self.show_whitespace = show_whitespace;
+            self.dirty_generation = dirty_generation;
             self.lines.clear();
+            return;
+        }
+
+        if self.dirty_generation != dirty_generation {
+            self.dirty_generation = dirty_generation;
+            if dirty_from_line == 0 {
+                self.lines.clear();
+            } else {
+                self.lines.retain(|&line, _| line < dirty_from_line);
+            }
         }
     }
+
+    /// Drop entries far from what is on screen.
+    ///
+    /// Scrolling does not bump `dirty_generation`, so without this a read-only
+    /// pass over a large file retained fully-materialized spans for every line
+    /// ever displayed -- a second copy of the document, measured at +54MB after
+    /// scrolling 200k lines, reclaimed only by an edit or a tab switch. Only the
+    /// visible window is ever read, so keeping a few screens either side is ample.
+    fn prune(&mut self, visible_start: usize, visible_end: usize) {
+        if self.lines.len() <= MAX_RENDER_CACHE_LINES {
+            return;
+        }
+        let keep_from = visible_start.saturating_sub(RENDER_CACHE_SLACK);
+        let keep_to = visible_end.saturating_add(RENDER_CACHE_SLACK);
+        self.lines
+            .retain(|&line, _| line >= keep_from && line <= keep_to);
+    }
 }
+
+/// Upper bound on retained render-cache entries before pruning to the viewport.
+/// Generous next to a typical terminal height, so pruning is rare in practice.
+const MAX_RENDER_CACHE_LINES: usize = 2048;
+/// Lines kept either side of the viewport when pruning, so small scrolls still hit.
+const RENDER_CACHE_SLACK: usize = 256;
 
 thread_local! {
     static RENDER_CACHE: RefCell<RenderCache> = RefCell::new(RenderCache::new());
@@ -425,10 +473,14 @@ fn draw_editor_horizontal_scroll(
     let buffer_id = editor.buffer_id;
     let dirty_gen = editor.dirty_generation;
     let can_cache = selection_range.is_none() && search_term_char_len == 0;
+    let dirty_from = editor.dirty_from_line;
     RENDER_CACHE.with(|c| {
         c.borrow_mut()
-            .reset_if_stale(buffer_id, dirty_gen, show_whitespace)
+            .sync(buffer_id, dirty_gen, show_whitespace, dirty_from)
     });
+    // Consumed: any edit after this point re-arms it. Reset before rendering so a
+    // concurrent edit between frames cannot be missed.
+    editor.dirty_from_line = usize::MAX;
 
     for i in 0..visible_lines {
         let line_idx = editor.viewport.viewport_offset.0 + i;
@@ -514,6 +566,11 @@ fn draw_editor_horizontal_scroll(
 
             lines.push(Line::from(styled_spans));
         }
+    }
+
+    if can_cache {
+        let start = editor.viewport.viewport_offset.0;
+        RENDER_CACHE.with(|c| c.borrow_mut().prune(start, start + visible_lines));
     }
 
     let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
