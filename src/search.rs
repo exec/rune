@@ -110,8 +110,44 @@ impl SearchState {
                 find_matches_in_line(&line_content.to_lowercase(), &search_lower)
             };
 
+            if line_matches.is_empty() {
+                continue;
+            }
+
+            // Matches arrive in ascending char order, so a single cursor walking
+            // the line converts every one of them to a byte offset. Previously
+            // each match re-walked the line from column 0 inside
+            // `validate_match_at_position`, which is the second half of the
+            // O(matches x line_length) cost.
+            let mut chars = line_content.char_indices();
+            let mut cursor_char = 0usize;
+            let mut cursor_byte = 0usize;
+            let mut exhausted = false;
+
             for col in line_matches {
-                if validate_match_at_position(line_content, col, &search_term, case_sensitive) {
+                while cursor_char < col {
+                    match chars.next() {
+                        Some((b, ch)) => {
+                            cursor_byte = b + ch.len_utf8();
+                            cursor_char += 1;
+                        }
+                        None => {
+                            exhausted = true;
+                            break;
+                        }
+                    }
+                }
+                if exhausted || cursor_byte > line_content.len() {
+                    break;
+                }
+
+                if validate_match_at_byte(
+                    line_content,
+                    cursor_byte,
+                    &search_term,
+                    &search_lower,
+                    case_sensitive,
+                ) {
                     matches.push((line_idx, col, search_char_len));
                     if matches.len() >= MAX_SEARCH_MATCHES {
                         self.search_matches_truncated = true;
@@ -161,10 +197,17 @@ impl SearchState {
             let line_string = crate::get_line_str(rope, line_idx);
             let line_content = line_string.trim_end_matches('\n');
 
+            // Same incremental byte->char carry as the literal path: `find_iter`
+            // yields matches in ascending order, so each conversion only needs to
+            // count the gap since the previous match rather than rescan from the
+            // start of the line.
+            let mut prev_byte = 0usize;
+            let mut prev_char = 0usize;
             for m in re.find_iter(line_content) {
-                let char_pos = line_content[..m.start()].chars().count();
+                prev_char += line_content[prev_byte..m.start()].chars().count();
+                prev_byte = m.start();
                 let char_len = line_content[m.start()..m.end()].chars().count();
-                matches.push((line_idx, char_pos, char_len));
+                matches.push((line_idx, prev_char, char_len));
                 if matches.len() >= MAX_SEARCH_MATCHES {
                     self.search_matches_truncated = true;
                     break 'outer;
@@ -262,23 +305,80 @@ impl SearchState {
 }
 
 /// Find all occurrences of search_term in a single line, returning char positions.
+///
+/// The byte->char conversion is carried incrementally rather than recomputed from
+/// the start of the line for each hit. The old `line_content[..byte_pos].chars()
+/// .count()` made this O(matches x line_length): on a 2MB minified-JSON line with
+/// 125k hits it cost ~3.5s, per keystroke, while the user was typing in find mode.
+/// Counting only the gap since the previous match makes the whole scan O(line).
 pub fn find_matches_in_line(line_content: &str, search_term: &str) -> Vec<usize> {
     let mut matches = Vec::new();
-    let mut start_pos = 0;
+    if search_term.is_empty() {
+        return matches;
+    }
 
-    while let Some(pos) = line_content[start_pos..].find(search_term) {
-        let byte_pos = start_pos + pos;
-        // Convert byte offset to char position
-        let char_pos = line_content[..byte_pos].chars().count();
+    let mut start_byte = 0usize;
+    // Char index corresponding to `start_byte`, carried forward across matches.
+    let mut char_pos = 0usize;
+
+    while let Some(rel) = line_content[start_byte..].find(search_term) {
+        let byte_pos = start_byte + rel;
+        char_pos += line_content[start_byte..byte_pos].chars().count();
         matches.push(char_pos);
-        start_pos = byte_pos + 1;
-        // Ensure we don't start in the middle of a multi-byte char
-        while start_pos < line_content.len() && !line_content.is_char_boundary(start_pos) {
-            start_pos += 1;
+
+        // Advance exactly one char past the match start, so overlapping matches
+        // are still found and `start_byte` stays on a char boundary.
+        let step = line_content[byte_pos..]
+            .chars()
+            .next()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
+        start_byte = byte_pos + step;
+        char_pos += 1;
+        if start_byte >= line_content.len() {
+            break;
         }
     }
 
     matches
+}
+
+/// Validate a match whose byte offset within the line is already known.
+///
+/// `validate_match_at_position` has to walk the line to turn a char position into
+/// a byte offset; when the caller is iterating matches in ascending order it can
+/// track that offset itself and skip the walk entirely.
+fn validate_match_at_byte(
+    line_content: &str,
+    byte_start: usize,
+    search_term: &str,
+    search_term_lower: &str,
+    case_sensitive: bool,
+) -> bool {
+    let tail = &line_content[byte_start..];
+
+    if case_sensitive {
+        return tail.starts_with(search_term);
+    }
+
+    // Take exactly as many chars as the search term has, then compare lowercased.
+    // `search_term_lower` is hoisted by the caller: lowercasing the needle once per
+    // match (as the old code did) is pure loop-invariant work.
+    let needed = search_term.chars().count();
+    let mut end = 0usize;
+    let mut taken = 0usize;
+    for (b, ch) in tail.char_indices() {
+        if taken == needed {
+            end = b;
+            break;
+        }
+        taken += 1;
+        end = b + ch.len_utf8();
+    }
+    if taken < needed {
+        return false;
+    }
+    tail[..end].to_lowercase() == search_term_lower
 }
 
 /// Unified match validation — validates that a match actually exists at the specified position

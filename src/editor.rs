@@ -127,6 +127,23 @@ pub struct Editor {
     /// (e.g. right-arrow on a long line) without HashMap overhead. Cleared
     /// on any mutation routed through `invalidate_cache`.
     line_width_cache: Cell<Option<(usize, usize)>>,
+    /// Memo for `line_col_to_char_idx`, as `(line, char_index, display_col)`.
+    ///
+    /// Invariant: `char_index` is the *first* char index on `line` whose prefix
+    /// width equals `display_col`. That is what lets an exact hit on `display_col`
+    /// return `char_index` directly -- zero-width characters (combining marks, a
+    /// stray `\r`) put several indices at the same column, and this conversion is
+    /// defined to yield the first. Only values that preserve the invariant may be
+    /// stored here; `char_idx_to_display_col` therefore uses its own slot below.
+    col_index_cache: Cell<Option<(usize, usize, usize)>>,
+    /// Memo for `char_idx_to_display_col`, same shape but no first-index
+    /// requirement: char index -> width is unambiguous in that direction.
+    ///
+    /// Both conversions are O(column) walks from the start of the line and both
+    /// run on every keystroke, so on a long line (minified JS/JSON, a base64 blob,
+    /// a single-line SQL dump) they dominated typing and arrow-key latency. Both
+    /// slots are cleared by `invalidate_cache` on every mutation.
+    width_index_cache: Cell<Option<(usize, usize, usize)>>,
     /// Monotonic counter bumped on every document mutation. Consumers (e.g.
     /// the render layer) can sample this to detect whether the document
     /// changed since the last frame.
@@ -221,6 +238,8 @@ impl Editor {
             word_complete_cursor: None,
             word_complete_prefix_len: 0,
             line_width_cache: Cell::new(None),
+            col_index_cache: Cell::new(None),
+            width_index_cache: Cell::new(None),
             dirty_generation: 0,
             buffer_id: NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed),
         }
@@ -265,9 +284,11 @@ impl Editor {
     pub fn insert_char(&mut self, c: char) {
         self.mark_anchor = None;
         self.save_undo_state();
-        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        let line = self.viewport.cursor_pos.0;
+        let line_start = self.rope.line_to_char(line);
+        let pos = self.line_col_to_char_idx(line, self.viewport.cursor_pos.1);
         self.rope.insert_char(pos, c);
-        self.mark_document_changed(self.viewport.cursor_pos.0);
+        self.mark_document_changed(line);
         // Advance cursor directly. Avoids `move_cursor_right`'s cache query
         // on the hot typing path; the cache would be cold anyway because
         // `mark_document_changed` just cleared it.
@@ -275,7 +296,23 @@ impl Editor {
             self.viewport.cursor_pos.0 += 1;
             self.viewport.cursor_pos.1 = 0;
         } else {
-            self.viewport.cursor_pos.1 += char_display_width(c, self.viewport.cursor_pos.1);
+            let w = char_display_width(c, self.viewport.cursor_pos.1);
+            self.viewport.cursor_pos.1 += w;
+            // Re-seed the column memo that `mark_document_changed` just cleared.
+            // The post-insert cursor position is known exactly here, so the next
+            // keystroke's `line_col_to_char_idx` can hit instead of re-walking the
+            // line -- which is the whole cost of typing at the end of a long line.
+            //
+            // Only when `w > 0`: a zero-width char (a combining mark) leaves the
+            // prefix width unchanged, so `pos + 1` would not be the *first* index
+            // at that column and would violate the memo's invariant.
+            if w > 0 {
+                self.col_index_cache.set(Some((
+                    line,
+                    pos + 1 - line_start,
+                    self.viewport.cursor_pos.1,
+                )));
+            }
         }
         self.modified = true;
     }
@@ -454,13 +491,30 @@ impl Editor {
         // out-of-range line index rather than saturating.
         let line = line.min(self.rope.len_lines().saturating_sub(1));
         let rope_line = self.rope.line(line);
-        let mut display_col = 0;
-        for (i, ch) in rope_line.chars().enumerate() {
+
+        // Resume from the memo when it refers to this line and sits at or before
+        // the requested offset; otherwise start from the beginning of the line.
+        // `chars_at` seeks in O(log n), so resuming is genuinely cheaper than
+        // rescanning -- which is what made every keystroke O(column) on long lines.
+        let (mut i, mut display_col) = match self.width_index_cache.get() {
+            Some((cached_line, cached_i, cached_col))
+                if cached_line == line && cached_i <= char_offset =>
+            {
+                (cached_i, cached_col)
+            }
+            _ => (0, 0),
+        };
+
+        for ch in rope_line.chars_at(i) {
             if i >= char_offset || ch == '\n' {
                 break;
             }
             display_col += char_display_width(ch, display_col);
+            i += 1;
         }
+
+        // Invariant: `display_col` is the width of this line's first `i` chars.
+        self.width_index_cache.set(Some((line, i, display_col)));
         display_col
     }
 
@@ -471,10 +525,48 @@ impl Editor {
         let line = line.min(self.rope.len_lines().saturating_sub(1));
         let line_start = self.rope.line_to_char(line);
         let rope_line = self.rope.line(line);
-        let mut char_idx = 0;
-        let mut display_col = 0;
-        for (i, ch) in rope_line.chars().enumerate() {
-            if display_col >= col || ch == '\n' {
+
+        // An exact hit returns immediately: the memo's invariant guarantees the
+        // stored index is the *first* at that column, which is what this function
+        // is defined to return. This is the case that matters most -- typing at the
+        // end of a long line re-resolves the same column on every keystroke.
+        //
+        // A memo strictly before the target is a safe place to resume from. One
+        // sitting *past* it is not, and neither is one at exactly the target that
+        // failed the invariant, which is why `char_idx_to_display_col` keeps its own
+        // slot: zero-width characters (combining marks, a stray `\r`) put several
+        // indices at the same column, and only the first is the right answer.
+        match self.col_index_cache.get() {
+            Some((cached_line, cached_i, cached_col))
+                if cached_line == line && cached_col == col =>
+            {
+                return line_start + cached_i;
+            }
+            _ => {}
+        }
+
+        let (mut char_idx, mut display_col) = match self.col_index_cache.get() {
+            Some((cached_line, cached_i, cached_col))
+                if cached_line == line && cached_col < col =>
+            {
+                (cached_i, cached_col)
+            }
+            _ => (0, 0),
+        };
+
+        // Tracks whether the walk actually landed on `col`. If it stopped early --
+        // end of line, or `col` falling inside a wide char's span -- then trailing
+        // zero-width chars may already have been consumed at the final width, so
+        // `char_idx` would not be the first index there and storing it would break
+        // the invariant the exact-hit path above depends on.
+        let mut reached_target = false;
+
+        for ch in rope_line.chars_at(char_idx) {
+            if display_col >= col {
+                reached_target = true;
+                break;
+            }
+            if ch == '\n' {
                 break;
             }
             let w = char_display_width(ch, display_col);
@@ -483,8 +575,13 @@ impl Editor {
                 // snap to the char itself rather than past it.
                 break;
             }
-            char_idx = i + 1;
+            char_idx += 1;
             display_col += w;
+        }
+
+        if reached_target {
+            self.col_index_cache
+                .set(Some((line, char_idx, display_col)));
         }
         line_start + char_idx
     }
@@ -1287,6 +1384,10 @@ impl Editor {
 
     pub fn invalidate_cache(&mut self) {
         self.line_width_cache.set(None);
+        // Both position memos must be cleared with the width cache: any edit can
+        // shift every char index after the edit point.
+        self.col_index_cache.set(None);
+        self.width_index_cache.set(None);
     }
 
     /// Display width of a line, with single-cell memoization. Hits when the
