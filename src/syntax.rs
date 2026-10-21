@@ -702,7 +702,7 @@ impl SyntaxHighlighter {
                             break;
                         }
                     }
-                    break;
+                    flush(&mut result, &mut buf, &mut buf_style, default_style);
                 }
                 '#' => {
                     if buf_style != comment_style {

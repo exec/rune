@@ -38,6 +38,8 @@ pub struct TabManager {
     pub pending_command: Option<String>,
     // Global read-only mode (--view flag)
     pub read_only: bool,
+    pub editor_width: usize,
+    config_path: Option<PathBuf>,
 }
 
 impl Default for TabManager {
@@ -70,6 +72,8 @@ impl TabManager {
             tab_scroll_offset: 0,
             pending_command: None,
             read_only: false,
+            editor_width: 0,
+            config_path: config::config_path(),
         }
     }
 
@@ -95,6 +99,8 @@ impl TabManager {
             tab_scroll_offset: 0,
             pending_command: None,
             read_only: false,
+            editor_width: 0,
+            config_path: None,
         }
     }
 
@@ -147,8 +153,12 @@ impl TabManager {
         Ok(())
     }
 
-    /// Open a file in the current tab (with unsaved check done by caller).
+    /// Open a file in the current tab, refusing to discard unsaved edits.
     pub fn open_in_current_tab(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.active_editor().modified,
+            "Unsaved changes: save or discard before opening another file"
+        );
         self.active_editor_mut().load_file(path)?;
         self.needs_redraw = true;
         Ok(())
@@ -221,8 +231,14 @@ impl TabManager {
             | InputMode::Replace
             | InputMode::ReplaceConfirm
             | InputMode::GoToLine
-            | InputMode::HexView => {
+            | InputMode::HexView
+            | InputMode::ConfirmOpen
+            | InputMode::ConfirmOverwrite
+            | InputMode::EnteringFilename
+            | InputMode::EnteringSaveAs => {
                 self.input_mode = InputMode::Normal;
+                self.pending_after_save = None;
+                self.input_buffer.clear();
                 self.status_message.clear();
             }
             _ => {}
@@ -310,8 +326,13 @@ impl TabManager {
         self.last_cut_line = None;
     }
 
-    pub fn save_config(&self) {
-        let _ = config::save_config(&self.config);
+    pub fn save_config(&mut self) {
+        let Some(path) = &self.config_path else {
+            return;
+        };
+        if let Err(e) = config::save_config_at(&self.config, path) {
+            self.set_temporary_status_message(format!("Error saving settings: {e}"));
+        }
     }
 
     // === Delegated operations that need shared state ===
@@ -359,6 +380,32 @@ impl TabManager {
     }
 
     pub fn perform_save(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        let write_path =
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                std::fs::canonicalize(&path)?
+            } else {
+                path.clone()
+            };
+        let editor = self.active_editor();
+        let same_target = editor
+            .file_path
+            .as_ref()
+            .is_some_and(|original| same_file(original, &path));
+        match (same_target, &editor.saved_content) {
+            (true, Some(saved)) => {
+                let disk = std::fs::read(&write_path)?;
+                anyhow::ensure!(
+                    saved.bytes().eq(disk.iter().copied()),
+                    "File changed on disk; use Save As to preserve your edits"
+                );
+            }
+            _ if write_path.exists() => anyhow::ensure!(
+                self.input_mode == InputMode::ConfirmOverwrite,
+                "Destination already exists; use Save As to confirm overwriting it"
+            ),
+            _ => {}
+        }
+
         let created_parent: Option<PathBuf> = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => {
                 let missing = !parent.is_dir();
@@ -383,7 +430,8 @@ impl TabManager {
 
         let editor = self.active_editor_mut();
         let bytes: Vec<u8> = editor.rope.bytes().collect();
-        atomic_write(&path, &bytes)?;
+        atomic_write(&write_path, &bytes)?;
+        editor.saved_content = Some(editor.rope.clone());
 
         editor.file_path = Some(path.clone());
         editor.modified = false;
@@ -422,6 +470,24 @@ impl TabManager {
         }
 
         let path = PathBuf::from(&self.input_buffer);
+        if self.input_mode != InputMode::ConfirmOverwrite
+            && path.exists()
+            && (self.active_editor().saved_content.is_none()
+                || !self
+                    .active_editor()
+                    .file_path
+                    .as_ref()
+                    .is_some_and(|original| same_file(original, &path)))
+        {
+            self.input_mode = InputMode::ConfirmOverwrite;
+            self.status_message_time = None;
+            self.status_message = format!(
+                "Overwrite '{}'? Y: Overwrite / N/Esc: Cancel",
+                path.display()
+            );
+            self.needs_redraw = true;
+            return Ok(false);
+        }
         if let Err(e) = self.perform_save(path) {
             self.set_temporary_status_message(format!("Error saving file: {e}"));
             self.input_mode = InputMode::Normal;
@@ -854,18 +920,12 @@ impl TabManager {
         self.tabs[idx].rope.insert(pos, &paste_text);
         self.tabs[idx].modified = true;
         let end_pos = pos + paste_text.chars().count();
-        let char_count = self.tabs[idx].rope.len_chars();
-        let clamped = if char_count == 0 {
-            0
-        } else {
-            end_pos.min(char_count - 1)
-        };
-        let line = self.tabs[idx].rope.char_to_line(clamped);
+        self.tabs[idx].mark_document_changed(insert_line);
+        let line = self.tabs[idx].rope.char_to_line(end_pos);
         let line_start = self.tabs[idx].rope.line_to_char(line);
         let col_chars = end_pos.saturating_sub(line_start);
         let display_col = self.tabs[idx].char_idx_to_display_col(line, col_chars);
         self.tabs[idx].viewport.cursor_pos = (line, display_col);
-        self.tabs[idx].mark_document_changed(insert_line);
         self.needs_redraw = true;
     }
 
@@ -1007,8 +1067,77 @@ impl TabManager {
         } else {
             0
         };
+        let word_wrap = self.config.word_wrap;
+        let width = self.editor_width.saturating_sub(line_num_width);
         let editor = self.active_editor_mut();
-        editor.handle_mouse_event(adjusted, editor_height, line_num_width);
+        if matches!(
+            adjusted.kind,
+            MouseEventKind::Down(_) | MouseEventKind::Drag(_)
+        ) {
+            let old_cursor = editor.viewport.cursor_pos;
+            let mut line = editor.viewport.viewport_offset.0;
+            let mut row = adjusted.row as usize
+                + if word_wrap {
+                    editor.viewport.wrapped_offset
+                } else {
+                    0
+                };
+            if word_wrap && width > 0 {
+                while line + 1 < editor.rope.len_lines()
+                    && row >= editor.wrapped_line_height(line, width)
+                {
+                    row -= editor.wrapped_line_height(line, width);
+                    line += 1;
+                }
+            } else {
+                line += row;
+                row = 0;
+            }
+            if line < editor.rope.len_lines() {
+                let col = (adjusted.column as usize).saturating_sub(line_num_width)
+                    + if word_wrap {
+                        row * width
+                    } else {
+                        editor.viewport.viewport_offset.1
+                    };
+                if matches!(adjusted.kind, MouseEventKind::Drag(_)) {
+                    editor.mark_anchor.get_or_insert(old_cursor);
+                } else {
+                    editor.mark_anchor = None;
+                }
+                editor.viewport.cursor_pos = (line, col);
+                editor.viewport.manual_scroll = false;
+                editor.clamp_cursor_to_line();
+            }
+        } else if matches!(
+            adjusted.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+        ) {
+            if word_wrap && width > 0 {
+                for _ in 0..constants::SCROLL_SPEED {
+                    if adjusted.kind == MouseEventKind::ScrollDown {
+                        let height =
+                            editor.wrapped_line_height(editor.viewport.viewport_offset.0, width);
+                        if editor.viewport.wrapped_offset + 1 < height {
+                            editor.viewport.wrapped_offset += 1;
+                        } else if editor.viewport.viewport_offset.0 + 1 < editor.rope.len_lines() {
+                            editor.viewport.viewport_offset.0 += 1;
+                            editor.viewport.wrapped_offset = 0;
+                        }
+                    } else if editor.viewport.wrapped_offset > 0 {
+                        editor.viewport.wrapped_offset -= 1;
+                    } else if editor.viewport.viewport_offset.0 > 0 {
+                        editor.viewport.viewport_offset.0 -= 1;
+                        editor.viewport.wrapped_offset = editor
+                            .wrapped_line_height(editor.viewport.viewport_offset.0, width)
+                            - 1;
+                    }
+                }
+            } else {
+                editor.handle_mouse_event(adjusted, editor_height, line_num_width);
+            }
+            editor.viewport.manual_scroll = true;
+        }
         self.needs_redraw = true;
     }
 
@@ -1068,6 +1197,14 @@ impl TabManager {
 /// re-plants anything between the unlink and the open, `create_new` fails with
 /// `AlreadyExists` rather than writing through it. O_EXCL also refuses to follow
 /// a symlink, so the separate symlink check is no longer needed.
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+}
+
 fn write_backup(path: &Path, backup_path: &Path) -> std::io::Result<()> {
     // Replacing the previous backup is the intended behaviour, and a missing
     // path is equally fine. Errors are deliberately ignored here: whatever the
@@ -1195,6 +1332,31 @@ mod tests {
         let mut tabs = TabManager::new_for_test();
         tabs.active_editor_mut().rope = Rope::from_str(text);
         tabs
+    }
+
+    #[test]
+    fn option_changes_persist_and_report_write_errors() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = TabManager::new_for_test();
+        let path = dir.path().join("config.toml");
+        t.config_path = Some(path.clone());
+        t.input_mode = InputMode::OptionsMenu;
+        crate::input::handle_key_event(
+            &mut t,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        let saved: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved, t.config);
+        t.config_path = Some(path.join("blocked.toml"));
+        t.input_mode = InputMode::OptionsMenu;
+        crate::input::handle_key_event(
+            &mut t,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(t.status_message.contains("Error saving settings"));
     }
 
     #[test]
@@ -1395,6 +1557,9 @@ mod tests {
         let mut t = make_tabs("modified content");
         t.config.backup_on_save = true;
         t.active_editor_mut().file_path = Some(file_path.clone());
+        t.active_editor_mut().saved_content = std::fs::read_to_string(&file_path)
+            .ok()
+            .map(|s| Rope::from_str(&s));
         t.perform_save(file_path.clone()).unwrap();
 
         // Backup should exist with original content
@@ -1421,6 +1586,9 @@ mod tests {
         let mut t = make_tabs("modified");
         t.config.backup_on_save = false;
         t.active_editor_mut().file_path = Some(file_path.clone());
+        t.active_editor_mut().saved_content = std::fs::read_to_string(&file_path)
+            .ok()
+            .map(|s| Rope::from_str(&s));
         t.perform_save(file_path.clone()).unwrap();
 
         assert!(!backup_path.exists());
@@ -1435,6 +1603,9 @@ mod tests {
 
         let mut t = make_tabs("hello atomic world\n");
         t.active_editor_mut().file_path = Some(file_path.clone());
+        t.active_editor_mut().saved_content = std::fs::read_to_string(&file_path)
+            .ok()
+            .map(|s| Rope::from_str(&s));
         t.perform_save(file_path.clone()).unwrap();
 
         // Content matches rope
@@ -1468,6 +1639,9 @@ mod tests {
 
         let mut t = make_tabs("first\n");
         t.active_editor_mut().file_path = Some(file_path.clone());
+        t.active_editor_mut().saved_content = std::fs::read_to_string(&file_path)
+            .ok()
+            .map(|s| Rope::from_str(&s));
         t.perform_save(file_path.clone()).unwrap();
 
         // Save a few more times to exercise the overwrite path.
@@ -1506,6 +1680,9 @@ mod tests {
 
         let mut t = make_tabs("new content\n");
         t.active_editor_mut().file_path = Some(file_path.clone());
+        t.active_editor_mut().saved_content = std::fs::read_to_string(&file_path)
+            .ok()
+            .map(|s| Rope::from_str(&s));
         t.perform_save(file_path.clone()).unwrap();
 
         assert_eq!(
@@ -1538,6 +1715,9 @@ mod tests {
 
         let mut t = make_tabs("updated\n");
         t.active_editor_mut().file_path = Some(file_path.clone());
+        t.active_editor_mut().saved_content = std::fs::read_to_string(&file_path)
+            .ok()
+            .map(|s| Rope::from_str(&s));
         t.perform_save(file_path.clone()).unwrap();
 
         assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "updated\n");
@@ -1566,6 +1746,9 @@ mod tests {
         let mut t = make_tabs("edited\n");
         t.config.backup_on_save = true;
         t.active_editor_mut().file_path = Some(file_path.clone());
+        t.active_editor_mut().saved_content = std::fs::read_to_string(&file_path)
+            .ok()
+            .map(|s| Rope::from_str(&s));
         t.perform_save(file_path.clone()).unwrap();
 
         // The redirect target must be untouched.

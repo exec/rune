@@ -136,6 +136,9 @@ rune
 - **Enter** in filename input - Confirm save
 - **Esc** in filename input - Cancel operation
 - Automatic directory creation if parent directories don't exist
+- Save As asks before overwriting an existing destination
+- Saving refuses to overwrite changes made by another program; use Save As to keep your edits elsewhere
+- Opening another file asks before discarding an unsaved buffer
 
 ### Quit Confirmation
 - **Ctrl+Q** with no changes - Quits immediately

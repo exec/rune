@@ -85,8 +85,37 @@ fn format_find_status(tabs: &TabManager) -> String {
 }
 
 pub fn handle_key_event(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    tabs.active_editor_mut().viewport.manual_scroll = false;
     match tabs.input_mode {
         InputMode::ConfirmQuit => handle_confirm_quit(tabs, key),
+        InputMode::ConfirmOverwrite => match key.code {
+            KeyCode::Char('y' | 'Y') => tabs.finish_filename_input(),
+            KeyCode::Char('n' | 'N' | 'c') | KeyCode::Esc => {
+                tabs.cancel_filename_input();
+                Ok(false)
+            }
+            _ => Ok(false),
+        },
+        InputMode::ConfirmOpen => {
+            match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    let mut editor = crate::editor::Editor::new_buffer();
+                    match editor.load_file(std::path::PathBuf::from(&tabs.input_buffer)) {
+                        Ok(()) => {
+                            tabs.tabs[tabs.active_tab] = editor;
+                            tabs.resolve_display_names();
+                            tabs.set_temporary_status_message("File opened".into());
+                        }
+                        Err(e) => tabs.set_temporary_status_message(format!("Error: {e}")),
+                    }
+                    tabs.input_mode = InputMode::Normal;
+                    tabs.input_buffer.clear();
+                }
+                KeyCode::Char('n' | 'N' | 'c') | KeyCode::Esc => tabs.cancel_filename_input(),
+                _ => {}
+            }
+            Ok(false)
+        }
         InputMode::ConfirmCloseTab => handle_confirm_close_tab(tabs, key),
         InputMode::OptionsMenu => handle_options_menu(tabs, key),
         InputMode::FindOptionsMenu => handle_find_options_menu(tabs, key),
@@ -242,6 +271,7 @@ fn handle_confirm_close_tab(tabs: &mut TabManager, key: KeyEvent) -> Result<bool
 }
 
 fn handle_options_menu(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
+    let old = tabs.config.clone();
     match key.code {
         KeyCode::Char('m') | KeyCode::Char('M') => {
             tabs.toggle_mouse_mode();
@@ -341,6 +371,9 @@ fn handle_options_menu(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         }
         _ => {}
     }
+    if tabs.config != old {
+        tabs.save_config();
+    }
     Ok(false)
 }
 
@@ -411,6 +444,14 @@ fn handle_open_file_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             if tabs.input_buffer.is_empty() {
                 tabs.input_mode = InputMode::Normal;
                 tabs.set_temporary_status_message("Cancelled".to_string());
+                return Ok(false);
+            }
+            if !is_new_tab && tabs.active_editor().modified {
+                tabs.input_mode = InputMode::ConfirmOpen;
+                tabs.status_message_time = None;
+                tabs.status_message =
+                    "Discard unsaved changes and open file? Y: Discard / N/Esc: Cancel".into();
+                tabs.needs_redraw = true;
                 return Ok(false);
             }
             let path = std::path::PathBuf::from(&tabs.input_buffer);
@@ -1086,7 +1127,8 @@ fn handle_verbatim_input(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
                 .line_col_to_char_idx(editor.viewport.cursor_pos.0, editor.viewport.cursor_pos.1);
             editor.rope.insert_char(pos, '\t');
             editor.mark_document_changed(editor.viewport.cursor_pos.0);
-            editor.viewport.cursor_pos.1 += 1;
+            editor.viewport.cursor_pos.1 +=
+                crate::editor::char_display_width('\t', editor.viewport.cursor_pos.1);
             editor.modified = true;
         }
         _ => {} // ignore non-character keys
@@ -1166,7 +1208,13 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
 
             // Execute the command with timeout
             use std::process::{Command, Stdio};
-            let mut child = match Command::new("sh")
+            let mut process = Command::new("sh");
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                process.process_group(0);
+            }
+            let mut child = match process
                 .arg("-c")
                 .arg(&command)
                 .stdin(if selection_text.is_some() {
@@ -1219,34 +1267,42 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
             let start_time = std::time::Instant::now();
             let mut exit_status = None;
             let timed_out = loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        exit_status = Some(status);
-                        break false;
+                if exit_status.is_none() {
+                    match child.try_wait() {
+                        Ok(Some(status)) => exit_status = Some(status),
+                        Ok(None) => {}
+                        Err(_) => break true,
                     }
-                    Ok(None) => {
-                        if start_time.elapsed() >= timeout {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break true;
-                        }
-                        std::thread::sleep(poll_interval);
-                    }
-                    Err(_) => break false,
                 }
+                let pipes_finished = stdin_writer.as_ref().is_none_or(|t| t.is_finished())
+                    && stdout_reader.as_ref().is_none_or(|t| t.is_finished())
+                    && stderr_reader.as_ref().is_none_or(|t| t.is_finished());
+                if exit_status.is_some() && pipes_finished {
+                    break false;
+                }
+                if start_time.elapsed() >= timeout {
+                    break true;
+                }
+                std::thread::sleep(poll_interval);
             };
-
-            // The child has exited (or been killed), so its pipes are closed
-            // and these threads finish promptly.
-            if let Some(writer) = stdin_writer {
+            if timed_out {
+                #[cfg(unix)]
+                {
+                    let _ = Command::new("/bin/kill")
+                        .args(["-KILL", "--", &format!("-{}", child.id())])
+                        .status();
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            if let Some(writer) = stdin_writer.filter(|t| t.is_finished()) {
                 let _ = writer.join();
             }
             let stdout_bytes = stdout_reader
+                .filter(|t| t.is_finished())
                 .map(|r| r.join().unwrap_or_default())
                 .unwrap_or_default();
-            // Drained only so the child can't block on a full stderr pipe;
-            // stderr is never inserted into the buffer.
-            if let Some(reader) = stderr_reader {
+            if let Some(reader) = stderr_reader.filter(|t| t.is_finished()) {
                 let _ = reader.join();
             }
 
@@ -1278,11 +1334,12 @@ fn handle_confirm_execute(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> 
                 editor.mark_document_changed(line);
                 // Position cursor at end of insertion
                 let end_pos = start + stdout.chars().count();
-                let char_count = editor.rope.len_chars();
-                let clamped = end_pos.min(char_count.saturating_sub(1));
-                let line = editor.rope.char_to_line(clamped);
+                let line = editor.rope.char_to_line(end_pos);
                 let line_start = editor.rope.line_to_char(line);
-                editor.viewport.cursor_pos = (line, end_pos.saturating_sub(line_start));
+                editor.viewport.cursor_pos = (
+                    line,
+                    editor.char_idx_to_display_col(line, end_pos - line_start),
+                );
             } else {
                 // Insert output at cursor
                 let editor = tabs.active_editor_mut();

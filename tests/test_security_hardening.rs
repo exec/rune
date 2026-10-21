@@ -22,6 +22,9 @@ mod backup {
         };
         tabs.active_editor_mut().rope = ropey::Rope::from_str(contents);
         tabs.active_editor_mut().file_path = Some(path.to_path_buf());
+        tabs.active_editor_mut().saved_content = Some(ropey::Rope::from_str(
+            &std::fs::read_to_string(path).unwrap(),
+        ));
         tabs
     }
 
@@ -308,6 +311,7 @@ fn backup_handles_a_large_file() {
         backup_on_save: true,
         ..Default::default()
     };
+    tabs.active_editor_mut().load_file(target.clone()).unwrap();
     tabs.active_editor_mut().rope = ropey::Rope::from_str("small\n");
     tabs.perform_save(target.clone()).unwrap();
 

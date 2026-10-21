@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Configuration settings for the editor
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Config {
     pub mouse_enabled: bool,
     pub show_line_numbers: bool,
@@ -39,7 +39,7 @@ impl Default for Config {
     }
 }
 
-fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("rune").join("config.toml"))
 }
 
@@ -57,12 +57,16 @@ pub fn load_config() -> Config {
 
 pub fn save_config(config: &Config) -> Result<()> {
     if let Some(path) = config_path() {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let config_str = toml::to_string(config)?;
-        fs::write(path, config_str)?;
+        save_config_at(config, &path)?;
     }
+    Ok(())
+}
+
+pub(crate) fn save_config_at(config: &Config, path: &std::path::Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, toml::to_string(config)?)?;
     Ok(())
 }
 

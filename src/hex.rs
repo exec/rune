@@ -32,6 +32,9 @@ fn byte_to_ascii_char(b: u8) -> char {
 
 pub fn draw_hex_view(f: &mut Frame, area: Rect, state: &mut HexViewState) {
     let visible_rows = area.height as usize;
+    if visible_rows == 0 {
+        return;
+    }
 
     // Adjust scroll to keep cursor visible
     let cursor_row = state.cursor / BYTES_PER_ROW;

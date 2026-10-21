@@ -23,6 +23,8 @@ pub struct UndoState {
 pub struct ViewportState {
     pub cursor_pos: (usize, usize),
     pub viewport_offset: (usize, usize),
+    pub wrapped_offset: usize,
+    pub manual_scroll: bool,
 }
 
 /// Undo/redo management
@@ -84,6 +86,8 @@ pub enum InputMode {
     EnteringFilename,
     EnteringSaveAs,
     ConfirmQuit,
+    ConfirmOpen,
+    ConfirmOverwrite,
     ConfirmCloseTab,
     OptionsMenu,
     Find,
@@ -109,6 +113,9 @@ pub struct Editor {
     pub file_path: Option<PathBuf>,
     pub display_name: String,
     pub modified: bool,
+    pub saved_content: Option<Rope>,
+    newline: &'static str,
+    insertion_cursor: Option<(u64, (usize, usize), usize)>,
     pub highlighter: SyntaxHighlighter,
     pub syntax_name: Option<String>,
     pub search: SearchState,
@@ -234,6 +241,9 @@ impl Editor {
             file_path: None,
             display_name: "[untitled]".to_string(),
             modified: false,
+            saved_content: None,
+            newline: "\n",
+            insertion_cursor: None,
             highlighter: SyntaxHighlighter::new(),
             syntax_name: None,
             search: SearchState::default(),
@@ -270,7 +280,14 @@ impl Editor {
                 anyhow::Error::from(e)
             }
         })?;
+        *self = Self::new_buffer();
         self.rope = Rope::from_str(&content);
+        self.saved_content = Some(self.rope.clone());
+        self.newline = if content.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
 
         let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
         self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
@@ -282,11 +299,17 @@ impl Editor {
             .unwrap_or_else(|| "[untitled]".to_string());
         self.file_path = Some(path);
         self.modified = false;
-        // The `Editor` (and so its `buffer_id`) is reused when opening a file into
-        // the current tab, so the render cache would otherwise keep serving the
-        // previous document's spans.
         self.mark_document_changed(0);
         Ok(())
+    }
+
+    fn cursor_char_idx(&self) -> usize {
+        if let Some((generation, cursor, index)) = self.insertion_cursor {
+            if generation == self.dirty_generation && cursor == self.viewport.cursor_pos {
+                return index;
+            }
+        }
+        self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1)
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -294,7 +317,7 @@ impl Editor {
         self.save_undo_state();
         let line = self.viewport.cursor_pos.0;
         let line_start = self.rope.line_to_char(line);
-        let pos = self.line_col_to_char_idx(line, self.viewport.cursor_pos.1);
+        let pos = self.cursor_char_idx();
         self.rope.insert_char(pos, c);
         self.mark_document_changed(line);
         // Advance cursor directly. Avoids `move_cursor_right`'s cache query
@@ -322,6 +345,7 @@ impl Editor {
                 )));
             }
         }
+        self.insertion_cursor = Some((self.dirty_generation, self.viewport.cursor_pos, pos + 1));
         self.modified = true;
     }
 
@@ -334,8 +358,7 @@ impl Editor {
         // delete-within-line case. Deciding on the resolved char index rather
         // than the display column keeps `pos - 1 - line_start` from underflowing.
         let line_start = self.rope.line_to_char(self.viewport.cursor_pos.0);
-        let resolved =
-            self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        let resolved = self.cursor_char_idx();
         if resolved > line_start {
             let pos = resolved;
             if pos > 0 {
@@ -358,7 +381,15 @@ impl Editor {
 
                 let junction_col = self.line_display_width_cached(self.viewport.cursor_pos.0 - 1);
 
-                self.rope.remove(pos - 1..pos);
+                let start = if pos >= 2
+                    && self.rope.char(pos - 2) == '\r'
+                    && self.rope.char(pos - 1) == '\n'
+                {
+                    pos - 2
+                } else {
+                    pos - 1
+                };
+                self.rope.remove(start..pos);
                 self.mark_document_changed(self.viewport.cursor_pos.0 - 1);
                 self.viewport.cursor_pos.0 -= 1;
                 self.viewport.cursor_pos.1 = junction_col;
@@ -370,7 +401,7 @@ impl Editor {
     pub fn insert_newline(&mut self, auto_indent: bool) {
         self.mark_anchor = None;
         self.save_undo_state();
-        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        let pos = self.cursor_char_idx();
 
         // Collect leading whitespace from current line if auto_indent is enabled
         let indent = if auto_indent {
@@ -388,7 +419,7 @@ impl Editor {
             String::new()
         };
 
-        let insert_str = format!("\n{}", indent);
+        let insert_str = format!("{}{indent}", self.newline);
         self.rope.insert(pos, &insert_str);
         self.mark_document_changed(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.0 += 1;
@@ -402,10 +433,18 @@ impl Editor {
         // invalidates the mark, which would otherwise point at a line the rope
         // may no longer have.
         self.mark_anchor = None;
-        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        let pos = self.cursor_char_idx();
         if pos < self.rope.len_chars() {
             self.save_undo_state();
-            self.rope.remove(pos..pos + 1);
+            let end = if self.rope.char(pos) == '\r'
+                && pos + 1 < self.rope.len_chars()
+                && self.rope.char(pos + 1) == '\n'
+            {
+                pos + 2
+            } else {
+                pos + 1
+            };
+            self.rope.remove(pos..end);
             self.mark_document_changed(self.viewport.cursor_pos.0);
             self.modified = true;
         }
@@ -487,6 +526,7 @@ impl Editor {
     }
 
     pub fn clamp_cursor_to_line(&mut self) {
+        self.viewport.cursor_pos.0 = self.viewport.cursor_pos.0.min(self.rope.len_lines() - 1);
         let line_len = self.line_display_width_cached(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.1 = self.viewport.cursor_pos.1.min(line_len);
     }
@@ -618,6 +658,9 @@ impl Editor {
             self.clamp_cursor_to_line();
         }
 
+        if self.viewport.manual_scroll {
+            return;
+        }
         let content_width = editor_width.saturating_sub(line_num_width);
 
         if word_wrap {
@@ -625,6 +668,7 @@ impl Editor {
             self.viewport.viewport_offset.1 = 0;
             self.update_viewport_vertical_word_wrap(editor_height, content_width);
         } else {
+            self.viewport.wrapped_offset = 0;
             // No word wrap: use horizontal scrolling
 
             // Vertical scrolling
@@ -667,40 +711,33 @@ impl Editor {
 
         if cursor_line < self.viewport.viewport_offset.0 {
             self.viewport.viewport_offset.0 = cursor_line;
+            self.viewport.wrapped_offset = 0;
         }
 
-        loop {
-            let mut screen_rows = 0;
-            let mut found_cursor = false;
-            for line_idx in self.viewport.viewport_offset.0..self.rope.len_lines() {
-                let rows = self.wrapped_line_height(line_idx, content_width);
-                if line_idx == cursor_line {
-                    // Clamp to the line's last rendered row: a cursor at the
-                    // end of an exactly-full row would otherwise compute one
-                    // sub-row past the rows the renderer produces.
-                    let cursor_sub_row =
-                        (self.viewport.cursor_pos.1 / content_width).min(rows.saturating_sub(1));
-                    let cursor_screen_y = screen_rows + cursor_sub_row;
-                    if cursor_screen_y < editor_height {
-                        found_cursor = true;
-                    }
-                    break;
-                }
-                screen_rows += rows;
-                if screen_rows >= editor_height {
-                    break;
-                }
-            }
-
-            if found_cursor {
+        let cursor_sub = (self.viewport.cursor_pos.1 / content_width)
+            .min(self.wrapped_line_height(cursor_line, content_width) - 1);
+        if self.viewport.viewport_offset.0 == cursor_line
+            && self.viewport.wrapped_offset > cursor_sub
+        {
+            self.viewport.wrapped_offset = cursor_sub;
+        }
+        let rows: usize = (self.viewport.viewport_offset.0..cursor_line)
+            .map(|line| self.wrapped_line_height(line, content_width))
+            .sum();
+        let cursor_row = rows + cursor_sub;
+        let advance = cursor_row.saturating_sub(self.viewport.wrapped_offset + editor_height - 1);
+        self.viewport.wrapped_offset += advance;
+        while self.viewport.viewport_offset.0 < cursor_line {
+            let height = self.wrapped_line_height(self.viewport.viewport_offset.0, content_width);
+            if self.viewport.wrapped_offset < height {
                 break;
             }
-
+            self.viewport.wrapped_offset -= height;
             self.viewport.viewport_offset.0 += 1;
-            if self.viewport.viewport_offset.0 > cursor_line {
-                self.viewport.viewport_offset.0 = cursor_line;
-                break;
-            }
+        }
+        if self.viewport.viewport_offset.0 < cursor_line && self.viewport.wrapped_offset > 0 {
+            self.viewport.viewport_offset.0 += 1;
+            self.viewport.wrapped_offset = 0;
         }
     }
 
@@ -742,7 +779,9 @@ impl Editor {
                 if self.viewport.viewport_offset.0
                     < self.rope.len_lines().saturating_sub(terminal_height) =>
             {
-                self.viewport.viewport_offset.0 += constants::SCROLL_SPEED;
+                self.viewport.viewport_offset.0 = (self.viewport.viewport_offset.0
+                    + constants::SCROLL_SPEED)
+                    .min(self.rope.len_lines().saturating_sub(terminal_height));
             }
             MouseEventKind::ScrollUp => {
                 self.viewport.viewport_offset.0 = self
@@ -816,7 +855,7 @@ impl Editor {
                 .search_matches
                 .iter()
                 .position(|(line, col)| {
-                    let match_char_idx = self.line_col_to_char_idx(*line, *col);
+                    let match_char_idx = self.rope.line_to_char(*line) + col;
                     match_char_idx >= cursor_char_idx
                 })
                 .or(Some(0));
@@ -882,7 +921,7 @@ impl Editor {
         // Locate matches with the same engine find uses, so replace honors
         // regex and case-insensitive modes.
         self.search.search_buffer = search_term.to_string();
-        let spans = self.search.find_all_match_spans(&self.rope);
+        let spans = self.search.match_spans(&self.rope, 0, usize::MAX);
 
         // Convert (line, char_col, char_len) to absolute char ranges,
         // dropping overlapping matches (the literal scanner can report
@@ -928,7 +967,7 @@ impl Editor {
         self.search.search_buffer = search_term.to_string();
         let resume = self.search.replace_resume_char;
         self.search
-            .find_all_match_spans(&self.rope)
+            .match_spans(&self.rope, resume, 1)
             .into_iter()
             .find_map(|(line, col, len)| {
                 let start = self.rope.line_to_char(line) + col;
@@ -1199,7 +1238,7 @@ impl Editor {
 
     /// Jump to matching bracket.
     pub fn match_bracket(&mut self) {
-        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        let pos = self.cursor_char_idx();
         if pos >= self.rope.len_chars() {
             return;
         }
@@ -1377,7 +1416,7 @@ impl Editor {
         // Insert first candidate's suffix
         let suffix = &candidates[0][prefix.len()..];
         self.save_undo_state();
-        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        let pos = self.cursor_char_idx();
         self.rope.insert(pos, suffix);
         self.mark_document_changed(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.1 += UnicodeWidthStr::width(suffix);

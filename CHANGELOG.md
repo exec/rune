@@ -6,7 +6,42 @@ All notable changes to rune are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-21
+
+### Fixed
+
+- Protect unsaved buffers when opening files and reset undo/search/selection state on load.
+- Confirm overwriting Save As destinations and refuse saving over external file changes.
+- Preserve symbolic links when atomically saving their targets.
+- Prevent replacement crashes when edits remove the cursor's line.
+- Bound shell execution and pipe cleanup by one deadline, terminating descendant processes on timeout.
+- Render text following block comments and highlight the actual length of regex matches.
+- Preserve combining-character typing order and CRLF line endings during editing.
+- Replace all occurrences beyond the search display limit; resume interactive replacement without rescanning earlier lines.
+- Bound search-result allocation while scanning long lines and preserve Unicode source offsets in case-insensitive searches.
+- Scroll within tall wrapped lines, map mouse clicks to wrapped text, preserve wheel scrolling, and implement drag selection.
+- Position the cursor correctly after pasting a trailing newline.
+- Persist option changes immediately and report settings write errors.
+- Avoid a debug-build panic when the hex pane has zero height.
+- **Editor no longer hangs on CRLF files.** Two width functions disagreed about
+  control characters (`UnicodeWidthStr` counts a lone `\r` as 1 column,
+  `UnicodeWidthChar` reports 0), so pressing Right at the end of a CRLF line
+  spun forever at 100% CPU and every unsaved buffer was lost.
+- **Panic when a selection mark outlived its line.** `Delete` did not clear the
+  mark, so deleting a newline left it naming a line the rope no longer had.
+- **`Alt+;` destroyed code on lines with multi-byte indentation.** A byte offset
+  was passed to a char-indexed rope operation, so `　// hello` uncommented to
+  `　//llo`, and some inputs panicked outright.
+- **Panic leaving hex view with the cursor inside a multi-byte character.**
+- **Backspace corrupted state after clicking inside a wide char or tab.** Debug
+  builds panicked on underflow; release builds wrapped silently and left the
+  cursor on a nonexistent line.
+- **Undo, redo, and opening a file showed stale text.** The render cache is keyed
+  on a generation counter that none of the three bumped.
+
 ### Security
+
+- Update the updater's TLS dependencies to patched rustls 0.23.46, rustls-webpki 0.103.16, and webpki-roots 1.0.10.
 - **Backup on save no longer writes through a hostile `<path>~`.** The previous
   `fs::copy` had create+truncate semantics, so a pre-existing backup path owned
   by another user was truncated *in place* — preserving their inode, and landing
@@ -24,24 +59,8 @@ All notable changes to rune are documented here. The format follows
   characters are now stripped at the render boundary for buffer text, status
   messages, and tab titles.
 
-### Fixed
-- **Editor no longer hangs on CRLF files.** Two width functions disagreed about
-  control characters (`UnicodeWidthStr` counts a lone `\r` as 1 column,
-  `UnicodeWidthChar` reports 0), so pressing Right at the end of a CRLF line
-  spun forever at 100% CPU and every unsaved buffer was lost.
-- **Panic when a selection mark outlived its line.** `Delete` did not clear the
-  mark, so deleting a newline left it naming a line the rope no longer had.
-- **`Alt+;` destroyed code on lines with multi-byte indentation.** A byte offset
-  was passed to a char-indexed rope operation, so `　// hello` uncommented to
-  `　//llo`, and some inputs panicked outright.
-- **Panic leaving hex view with the cursor inside a multi-byte character.**
-- **Backspace corrupted state after clicking inside a wide char or tab.** Debug
-  builds panicked on underflow; release builds wrapped silently and left the
-  cursor on a nonexistent line.
-- **Undo, redo, and opening a file showed stale text.** The render cache is keyed
-  on a generation counter that none of the three bumped.
-
 ### Documentation
+
 - Corrected two wrong keybindings in the README: replace is `Ctrl+\` (not
   `Ctrl+H`, which opens help), and redo is `Ctrl+R` (not `Ctrl+Y`, which is
   page-up).

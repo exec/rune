@@ -101,8 +101,10 @@ thread_local! {
 
 pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
     let area = f.area();
+    tabs.editor_width = area.width as usize;
 
     let (help_left, help_right) = match tabs.input_mode {
+        InputMode::ConfirmOpen | InputMode::ConfirmOverwrite => ("Y: Confirm  N/Esc: Cancel".into(), String::new()),
         InputMode::ConfirmQuit => (
             "Y: Save and quit  N: Quit without saving  ^C/Esc: Cancel".to_string(),
             String::new(),
@@ -515,6 +517,7 @@ fn draw_editor_horizontal_scroll(
                     line_idx,
                     search_term_char_len,
                     &editor.search.search_matches,
+                    &editor.search.search_match_lengths,
                     editor.search.current_match_index,
                     line_match_range,
                     &mut line_chars_buf,
@@ -582,7 +585,9 @@ fn draw_editor_horizontal_scroll(
         .cursor_pos
         .0
         .saturating_sub(editor.viewport.viewport_offset.0);
-    if cursor_screen_y < visible_lines {
+    if editor.viewport.cursor_pos.0 >= editor.viewport.viewport_offset.0
+        && cursor_screen_y < visible_lines
+    {
         let cursor_col_on_screen = editor.viewport.cursor_pos.1.saturating_sub(h_offset);
         let cursor_x = cursor_col_on_screen as u16 + line_num_width as u16;
         f.set_cursor_position(Position::new(
@@ -629,6 +634,7 @@ fn draw_editor_word_wrap(
             line_idx,
             search_term_char_len,
             &editor.search.search_matches,
+            &editor.search.search_match_lengths,
             editor.search.current_match_index,
             line_match_range,
             &mut line_chars_buf,
@@ -677,7 +683,16 @@ fn draw_editor_word_wrap(
             cursor_screen_pos = Some((screen_row + cursor_sub_row, cursor_col_in_row));
         }
 
-        for sub_row in 0..rows_needed {
+        let first_row = if line_idx == editor.viewport.viewport_offset.0 {
+            editor.viewport.wrapped_offset.min(rows_needed - 1)
+        } else {
+            0
+        };
+        if line_idx == editor.viewport.cursor_pos.0 {
+            cursor_screen_pos =
+                cursor_screen_pos.and_then(|(y, x)| y.checked_sub(first_row).map(|y| (y, x)));
+        }
+        for sub_row in first_row..rows_needed {
             if screen_row >= visible_lines {
                 break;
             }
@@ -959,6 +974,7 @@ fn apply_search_highlighting(
     line_idx: usize,
     search_term_char_len: usize,
     search_matches: &[(usize, usize)],
+    search_match_lengths: &[usize],
     current_match_index: Option<usize>,
     line_match_range: (usize, usize),
     line_chars_buf: &mut Vec<char>,
@@ -985,7 +1001,7 @@ fn apply_search_highlighting(
     // overlaps) into non-overlapping highlight ranges in char positions.
     let mut highlight_ranges: Vec<(usize, usize, Style)> = Vec::with_capacity(line_matches.len());
     let mut prev_end = 0;
-    for &(_, match_char_pos) in line_matches {
+    for (index, &(_, match_char_pos)) in line_matches.iter().enumerate() {
         if match_char_pos < prev_end {
             continue;
         }
@@ -994,7 +1010,11 @@ fn apply_search_highlighting(
         } else {
             Style::default().bg(Color::Yellow).fg(Color::Black)
         };
-        prev_end = match_char_pos + search_term_char_len;
+        prev_end = match_char_pos
+            + search_match_lengths
+                .get(range_start + index)
+                .copied()
+                .unwrap_or(search_term_char_len);
         highlight_ranges.push((match_char_pos, prev_end, style));
     }
 
@@ -1399,8 +1419,17 @@ mod tests {
         let syntax = vec![(s1, "あa".to_string()), (s2, "bc\n".to_string())];
         let matches = vec![(0usize, 3usize)];
         let mut buf = Vec::new();
-        let spans =
-            apply_search_highlighting(&syntax, "あabc", 0, 1, &matches, None, (0, 1), &mut buf);
+        let spans = apply_search_highlighting(
+            &syntax,
+            "あabc",
+            0,
+            1,
+            &matches,
+            &[],
+            None,
+            (0, 1),
+            &mut buf,
+        );
         let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, vec!["あa", "b", "c"]);
         assert_eq!(spans[0].style, s1);
