@@ -43,6 +43,7 @@ pub struct SearchState {
     pub goto_line_buffer: String,
     cached_regex_pattern: Option<String>,
     cached_regex: Option<Regex>,
+    cached_regex_flags: (bool, bool),
 }
 
 impl Default for SearchState {
@@ -65,6 +66,7 @@ impl Default for SearchState {
             goto_line_buffer: String::new(),
             cached_regex_pattern: None,
             cached_regex: None,
+            cached_regex_flags: (false, false),
         }
     }
 }
@@ -72,7 +74,8 @@ impl Default for SearchState {
 impl SearchState {
     pub fn find_all_matches(&mut self, rope: &ropey::Rope) -> Vec<(usize, usize)> {
         let spans = self.find_all_match_spans(rope);
-        self.search_match_lengths = spans.iter().map(|m| m.2).collect();
+        self.search_match_lengths.clear();
+        self.search_match_lengths.extend(spans.iter().map(|m| m.2));
         spans
             .into_iter()
             .map(|(line, col, _)| (line, col))
@@ -94,35 +97,38 @@ impl SearchState {
         if self.search_buffer.is_empty() || resume > rope.len_chars() {
             return Vec::new();
         }
-        let source = if self.use_regex {
-            self.search_buffer.clone()
-        } else {
-            regex::escape(&self.search_buffer)
-        };
-        let pattern = format!(
-            "(?{}:{})",
-            if self.case_sensitive { "" } else { "i" },
-            source
-        );
-        if self.cached_regex_pattern.as_ref() != Some(&pattern) {
-            self.cached_regex = Regex::new(&pattern).ok();
-            self.cached_regex_pattern = Some(pattern);
+        let flags = (self.use_regex, self.case_sensitive);
+        if self.cached_regex_pattern.as_deref() != Some(self.search_buffer.as_str())
+            || self.cached_regex_flags != flags
+        {
+            let source = if self.use_regex {
+                std::borrow::Cow::Borrowed(self.search_buffer.as_str())
+            } else {
+                std::borrow::Cow::Owned(regex::escape(&self.search_buffer))
+            };
+            self.cached_regex = regex::RegexBuilder::new(&source)
+                .case_insensitive(!self.case_sensitive)
+                .build()
+                .ok();
+            self.cached_regex_pattern = Some(self.search_buffer.clone());
+            self.cached_regex_flags = flags;
         }
         let Some(re) = self.cached_regex.as_ref() else {
             return Vec::new();
         };
         let mut matches = Vec::new();
-        for line_idx in rope.char_to_line(resume)..rope.len_lines() {
-            let text = crate::get_line_str(rope, line_idx);
+        let first_line = rope.char_to_line(resume);
+        let mut line_start = rope.line_to_char(first_line);
+        for (offset, rope_line) in rope.lines_at(first_line).enumerate() {
+            let line_idx = first_line + offset;
+            let text: std::borrow::Cow<'_, str> = rope_line.into();
             let text = text.trim_end_matches('\n');
-            let line_start = rope.line_to_char(line_idx);
-            let start_char = resume.saturating_sub(line_start).min(text.chars().count());
-            let mut byte = text
-                .char_indices()
-                .nth(start_char)
-                .map_or(text.len(), |(b, _)| b);
-            let mut previous_byte = 0;
-            let mut previous_char = 0;
+            let mut byte = rope_line
+                .char_to_byte(resume.saturating_sub(line_start))
+                .min(text.len());
+            let mut previous_byte = byte;
+            let mut previous_char = rope_line.byte_to_char(byte);
+            line_start += rope_line.len_chars();
             let mut last_end = None;
             while let Some(m) = re.find_at(text, byte) {
                 if self.use_regex && m.is_empty() && last_end == Some(m.start()) {

@@ -624,27 +624,24 @@ impl SyntaxHighlighter {
         let comment_style = Style::default().fg(Color::DarkGray);
         let number_style = Style::default().fg(Color::Cyan);
 
-        let mut chars = line.chars().peekable();
+        let mut chars = line.chars();
 
         while let Some(ch) = chars.next() {
             if ch.is_alphanumeric() || ch == '_' {
-                // Accumulate identifier chars — we need the full word before we know its style.
-                // Collect into a temporary (short-lived) and then flush with correct style.
-                let mut word = String::new();
-                word.push(ch);
-                while let Some(&next_ch) = chars.peek() {
+                let start = line.len() - chars.as_str().len() - ch.len_utf8();
+                while let Some(next_ch) = chars.clone().next() {
                     if next_ch.is_alphanumeric() || next_ch == '_' {
-                        word.push(next_ch);
                         chars.next();
                     } else {
                         break;
                     }
                 }
-                let style = Self::lookup_keyword(keyword_map, &word);
+                let word = &line[start..line.len() - chars.as_str().len()];
+                let style = Self::lookup_keyword(keyword_map, word);
                 if style != buf_style {
                     flush(&mut result, &mut buf, &mut buf_style, style);
                 }
-                buf.push_str(&word);
+                buf.push_str(word);
                 continue;
             }
 
@@ -677,7 +674,7 @@ impl SyntaxHighlighter {
                         escaped = next_ch == '\\' && !escaped;
                     }
                 }
-                '/' if chars.peek() == Some(&'/') => {
+                '/' if chars.clone().next() == Some('/') => {
                     chars.next();
                     if buf_style != comment_style {
                         flush(&mut result, &mut buf, &mut buf_style, comment_style);
@@ -688,7 +685,7 @@ impl SyntaxHighlighter {
                     }
                     break;
                 }
-                '/' if chars.peek() == Some(&'*') => {
+                '/' if chars.clone().next() == Some('*') => {
                     chars.next();
                     if buf_style != comment_style {
                         flush(&mut result, &mut buf, &mut buf_style, comment_style);
@@ -696,7 +693,7 @@ impl SyntaxHighlighter {
                     buf.push_str("/*");
                     while let Some(next_ch) = chars.next() {
                         buf.push(next_ch);
-                        if next_ch == '*' && chars.peek() == Some(&'/') {
+                        if next_ch == '*' && chars.clone().next() == Some('/') {
                             chars.next();
                             buf.push('/');
                             break;
@@ -714,7 +711,7 @@ impl SyntaxHighlighter {
                     }
                     break;
                 }
-                '-' if chars.peek() == Some(&'-') => {
+                '-' if chars.clone().next() == Some('-') => {
                     chars.next();
                     if buf_style != comment_style {
                         flush(&mut result, &mut buf, &mut buf_style, comment_style);
@@ -730,7 +727,7 @@ impl SyntaxHighlighter {
                         flush(&mut result, &mut buf, &mut buf_style, number_style);
                     }
                     buf.push(c);
-                    while let Some(&next_ch) = chars.peek() {
+                    while let Some(next_ch) = chars.clone().next() {
                         if next_ch.is_ascii_digit()
                             || next_ch == '.'
                             || next_ch == '_'

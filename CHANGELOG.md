@@ -6,6 +6,17 @@ All notable changes to rune are documented here. The format follows
 
 ## [Unreleased]
 
+### Performance
+
+- Reuse cursor conversion positions in both directions and retain exact positions during repeated backspace.
+- Limit wrapped viewport navigation to the visible screen instead of scanning the intervening document.
+- Borrow contiguous search lines, traverse rope lines sequentially, and reuse compiled search patterns across mode-aware queries.
+- Stream save verification and atomic writes without allocating full-file byte buffers.
+- Share rendered line caches between wrapped and horizontal views and draw cached ASCII text without copying spans.
+- Borrow syntax identifiers and word-completion prefixes instead of allocating temporary copies; use prepared fuzzy candidates while rendering.
+- Rebuild dense bulk replacements in one pass while retaining the existing sparse-edit path.
+- Resolve duplicate tab filenames in one counting pass instead of comparing every pair of tabs.
+
 ## [1.6.0] - 2026-10-21
 
 ### Fixed

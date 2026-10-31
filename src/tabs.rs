@@ -188,13 +188,18 @@ impl TabManager {
         // Pick the smallest free untitled suffix; plain "[untitled]" counts
         // as 1, so with "[untitled]" open the first duplicate becomes
         // "[untitled-2]", and closed tabs free their suffix for reuse.
+        let names: std::collections::HashSet<&str> = self
+            .tabs
+            .iter()
+            .map(|tab| tab.display_name.as_str())
+            .collect();
         let suffix_in_use = |n: usize| {
             let name = if n == 1 {
                 "[untitled]".to_string()
             } else {
                 format!("[untitled-{n}]")
             };
-            self.tabs.iter().any(|t| t.display_name == name)
+            names.contains(name.as_str())
         };
         let mut suffix = 1;
         while suffix_in_use(suffix) {
@@ -280,21 +285,18 @@ impl TabManager {
             })
             .collect();
 
-        for (i, tab) in self.tabs.iter_mut().enumerate() {
+        let mut counts = std::collections::HashMap::new();
+        for name in &names {
+            *counts.entry(name.as_str()).or_insert(0usize) += 1;
+        }
+        for tab in &mut self.tabs {
             if let Some(path) = &tab.file_path {
                 let filename = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
-                // Check if this filename collides with another tab
-                let collisions = names
-                    .iter()
-                    .enumerate()
-                    .filter(|(j, n)| *j != i && **n == filename)
-                    .count();
-
-                if collisions > 0 {
+                if counts.get(filename.as_str()).copied().unwrap_or(0) > 1 {
                     // Use relative path or full display path
                     tab.display_name = path.display().to_string();
                 } else {
@@ -393,9 +395,8 @@ impl TabManager {
             .is_some_and(|original| same_file(original, &path));
         match (same_target, &editor.saved_content) {
             (true, Some(saved)) => {
-                let disk = std::fs::read(&write_path)?;
                 anyhow::ensure!(
-                    saved.bytes().eq(disk.iter().copied()),
+                    disk_matches(&write_path, saved)?,
                     "File changed on disk; use Save As to preserve your edits"
                 );
             }
@@ -429,8 +430,7 @@ impl TabManager {
         }
 
         let editor = self.active_editor_mut();
-        let bytes: Vec<u8> = editor.rope.bytes().collect();
-        atomic_write(&write_path, &bytes)?;
+        atomic_write(&write_path, &editor.rope)?;
         editor.saved_content = Some(editor.rope.clone());
 
         editor.file_path = Some(path.clone());
@@ -1197,6 +1197,24 @@ impl TabManager {
 /// re-plants anything between the unlink and the open, `create_new` fails with
 /// `AlreadyExists` rather than writing through it. O_EXCL also refuses to follow
 /// a symlink, so the separate symlink check is no longer needed.
+fn disk_matches(path: &Path, saved: &ropey::Rope) -> std::io::Result<bool> {
+    use std::io::Read;
+    let mut disk = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut buffer = Vec::new();
+    for chunk in saved.chunks() {
+        buffer.resize(chunk.len(), 0);
+        match disk.read_exact(&mut buffer) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(e) => return Err(e),
+        }
+        if buffer != chunk.as_bytes() {
+            return Ok(false);
+        }
+    }
+    Ok(disk.read(&mut [0])? == 0)
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     a == b
         || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
@@ -1235,7 +1253,7 @@ fn write_backup(path: &Path, backup_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Atomically write `bytes` to `path` using the standard temp-file + rename
+/// Atomically write `rope` to `path` using the standard temp-file + rename
 /// pattern. This protects the user's file from partial writes caused by
 /// crashes, power loss, or `kill -9` mid-write.
 ///
@@ -1251,9 +1269,7 @@ fn write_backup(path: &Path, backup_path: &Path) -> std::io::Result<()> {
 /// 3. Write bytes, then `sync_all()` to flush to disk before rename.
 /// 4. `fs::rename(temp, path)` — POSIX rename is atomic within a filesystem.
 /// 5. On any error between steps 1 and 4, best-effort remove the temp file.
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-
+fn atomic_write(path: &Path, rope: &ropey::Rope) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -1303,7 +1319,12 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             }
         }
 
-        file.write_all(bytes)?;
+        {
+            use std::io::Write;
+            let mut writer = std::io::BufWriter::new(&mut file);
+            rope.write_to(&mut writer)?;
+            writer.flush()?;
+        }
         file.sync_all()?;
         drop(file);
 

@@ -372,6 +372,13 @@ impl Editor {
                 self.rope.remove(pos - 1..pos);
                 self.mark_document_changed(self.viewport.cursor_pos.0);
                 self.viewport.cursor_pos.1 = new_col;
+                self.width_index_cache.set(Some((
+                    self.viewport.cursor_pos.0,
+                    pos - 1 - line_start,
+                    new_col,
+                )));
+                self.insertion_cursor =
+                    Some((self.dirty_generation, self.viewport.cursor_pos, pos - 1));
                 self.modified = true;
             }
         } else if self.viewport.cursor_pos.0 > 0 {
@@ -540,6 +547,24 @@ impl Editor {
         let line = line.min(self.rope.len_lines().saturating_sub(1));
         let rope_line = self.rope.line(line);
 
+        if let Some((cached_line, mut i, mut col)) = self.width_index_cache.get() {
+            if cached_line == line && i > char_offset {
+                let mut chars = rope_line.chars_at(i);
+                while i > char_offset {
+                    let ch = chars.prev().unwrap();
+                    if ch == '\t' {
+                        break;
+                    } // Tab widths require the preceding column.
+                    col -= char_display_width(ch, 0);
+                    i -= 1;
+                }
+                if i == char_offset {
+                    self.width_index_cache.set(Some((line, i, col)));
+                    return col;
+                }
+            }
+        }
+
         // Resume from the memo when it refers to this line and sits at or before
         // the requested offset; otherwise start from the beginning of the line.
         // `chars_at` seeks in O(log n), so resuming is genuinely cheaper than
@@ -591,6 +616,32 @@ impl Editor {
                 return line_start + cached_i;
             }
             _ => {}
+        }
+
+        if let Some((cached_line, mut i, mut display_col)) = self.col_index_cache.get() {
+            if cached_line == line && display_col > col {
+                let mut chars = rope_line.chars_at(i);
+                while display_col > col {
+                    let ch = chars.prev().unwrap();
+                    if ch == '\t' {
+                        break;
+                    }
+                    i -= 1;
+                    display_col -= char_display_width(ch, 0);
+                }
+                if display_col <= col {
+                    if display_col == col {
+                        while let Some(ch) = chars.prev() {
+                            if ch == '\t' || char_display_width(ch, 0) > 0 {
+                                break;
+                            }
+                            i -= 1;
+                        }
+                        self.col_index_cache.set(Some((line, i, display_col)));
+                    }
+                    return line_start + i;
+                }
+            }
         }
 
         let (mut char_idx, mut display_col) = match self.col_index_cache.get() {
@@ -714,6 +765,12 @@ impl Editor {
             self.viewport.wrapped_offset = 0;
         }
 
+        if self.viewport.wrapped_offset > 0 {
+            self.viewport.wrapped_offset = self
+                .viewport
+                .wrapped_offset
+                .min(self.wrapped_line_height(self.viewport.viewport_offset.0, content_width) - 1);
+        }
         let cursor_sub = (self.viewport.cursor_pos.1 / content_width)
             .min(self.wrapped_line_height(cursor_line, content_width) - 1);
         if self.viewport.viewport_offset.0 == cursor_line
@@ -721,23 +778,27 @@ impl Editor {
         {
             self.viewport.wrapped_offset = cursor_sub;
         }
-        let rows: usize = (self.viewport.viewport_offset.0..cursor_line)
-            .map(|line| self.wrapped_line_height(line, content_width))
-            .sum();
-        let cursor_row = rows + cursor_sub;
-        let advance = cursor_row.saturating_sub(self.viewport.wrapped_offset + editor_height - 1);
-        self.viewport.wrapped_offset += advance;
-        while self.viewport.viewport_offset.0 < cursor_line {
-            let height = self.wrapped_line_height(self.viewport.viewport_offset.0, content_width);
-            if self.viewport.wrapped_offset < height {
+        let mut cursor_row = cursor_sub;
+        for line in self.viewport.viewport_offset.0..cursor_line {
+            cursor_row += self.wrapped_line_height(line, content_width);
+            if cursor_row >= editor_height + self.viewport.wrapped_offset {
                 break;
             }
-            self.viewport.wrapped_offset -= height;
-            self.viewport.viewport_offset.0 += 1;
         }
-        if self.viewport.viewport_offset.0 < cursor_line && self.viewport.wrapped_offset > 0 {
-            self.viewport.viewport_offset.0 += 1;
-            self.viewport.wrapped_offset = 0;
+        if cursor_row < editor_height + self.viewport.wrapped_offset {
+            return;
+        }
+        self.viewport.viewport_offset.0 = cursor_line;
+        self.viewport.wrapped_offset = cursor_sub.saturating_sub(editor_height - 1);
+        let mut available = (editor_height - 1).saturating_sub(cursor_sub);
+        while self.viewport.viewport_offset.0 > 0 {
+            let previous = self.viewport.viewport_offset.0 - 1;
+            let height = self.wrapped_line_height(previous, content_width);
+            if height > available {
+                break;
+            }
+            available -= height;
+            self.viewport.viewport_offset.0 = previous;
         }
     }
 
@@ -916,8 +977,6 @@ impl Editor {
             return 0;
         }
 
-        self.save_undo_state();
-
         // Locate matches with the same engine find uses, so replace honors
         // regex and case-insensitive modes.
         self.search.search_buffer = search_term.to_string();
@@ -929,8 +988,18 @@ impl Editor {
         let first_line = spans.first().map(|&(line, _, _)| line).unwrap_or(0);
         let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
         let mut prev_end = 0;
+        let mut offset_line = first_line;
+        let mut line_start = self.rope.line_to_char(first_line);
+        let mut lines = self.rope.lines_at(first_line);
         for &(line, col, len) in &spans {
-            let start = self.rope.line_to_char(line) + col;
+            if line == offset_line + 1 {
+                line_start += lines.next().unwrap().len_chars();
+            } else if line != offset_line {
+                line_start = self.rope.line_to_char(line);
+                lines = self.rope.lines_at(line);
+            }
+            offset_line = line;
+            let start = line_start + col;
             if start >= prev_end {
                 ranges.push((start, start + len));
                 prev_end = start + len;
@@ -939,10 +1008,30 @@ impl Editor {
 
         let replacements = ranges.len();
         if replacements > 0 {
-            // Apply in reverse so earlier char indices stay valid.
-            for &(start, end) in ranges.iter().rev() {
-                self.rope.remove(start..end);
-                self.rope.insert(start, replace_term);
+            self.save_undo_state();
+            let first = ranges[0].0;
+            let last = ranges.last().unwrap().1;
+            // Rebuild dense bulk edits once; sparse edits keep sharing untouched text.
+            if replacements >= 32 && (last - first) / replacements <= 128 {
+                let mut builder = ropey::RopeBuilder::new();
+                let mut previous = first;
+                for &(start, end) in &ranges {
+                    for chunk in self.rope.slice(previous..start).chunks() {
+                        builder.append(chunk);
+                    }
+                    builder.append(replace_term);
+                    previous = end;
+                }
+                let replacement = builder.finish();
+                let suffix = self.rope.split_off(last);
+                self.rope.remove(first..);
+                self.rope.append(replacement);
+                self.rope.append(suffix);
+            } else {
+                for &(start, end) in ranges.iter().rev() {
+                    self.rope.remove(start..end);
+                    self.rope.insert(start, replace_term);
+                }
             }
             self.modified = true;
             // Invalidate caches before clamping — the clamp queries the
@@ -1143,85 +1232,71 @@ impl Editor {
 
     /// Move cursor to the start of the next word.
     pub fn move_word_right(&mut self) {
-        let line_idx = self.viewport.cursor_pos.0;
-        let rope_line = self.rope.line(line_idx);
-        let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
-        let display_col = self.viewport.cursor_pos.1;
-
-        // Walk chars while tracking display col; advance through
-        // non-whitespace then whitespace in a single pass.
-        let mut col = 0;
-        let mut dcol = 0;
-        while col < line_chars.len() && dcol < display_col {
-            dcol += char_display_width(line_chars[col], dcol);
-            col += 1;
+        let line = self.viewport.cursor_pos.0;
+        let target_col = self.viewport.cursor_pos.1;
+        let line_start = self.rope.line_to_char(line);
+        let index = self.line_col_to_char_idx(line, target_col) - line_start;
+        let mut col = self.char_idx_to_display_col(line, index);
+        let rope_line = self.rope.line(line);
+        let mut chars = rope_line
+            .chars_at(index)
+            .take_while(|&c| c != '\n')
+            .peekable();
+        // Match the existing behavior for clicks inside a tab or wide character.
+        if col < target_col {
+            if let Some(ch) = chars.next() {
+                col += char_display_width(ch, col);
+            }
         }
-
-        while col < line_chars.len() && !line_chars[col].is_whitespace() {
-            dcol += char_display_width(line_chars[col], dcol);
-            col += 1;
+        while let Some(&ch) = chars.peek() {
+            if ch.is_whitespace() {
+                break;
+            }
+            col += char_display_width(ch, col);
+            chars.next();
         }
-        while col < line_chars.len() && line_chars[col].is_whitespace() {
-            dcol += char_display_width(line_chars[col], dcol);
-            col += 1;
+        while let Some(&ch) = chars.peek() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            col += char_display_width(ch, col);
+            chars.next();
         }
-
-        if col >= line_chars.len() && line_idx < self.rope.len_lines().saturating_sub(1) {
-            self.viewport.cursor_pos.0 += 1;
-            self.viewport.cursor_pos.1 = 0;
+        if chars.peek().is_none() && line + 1 < self.rope.len_lines() {
+            self.viewport.cursor_pos = (line + 1, 0);
         } else {
-            self.viewport.cursor_pos.1 = dcol;
+            self.viewport.cursor_pos.1 = col;
         }
     }
 
     /// Move cursor to the start of the previous word.
     pub fn move_word_left(&mut self) {
-        let line_idx = self.viewport.cursor_pos.0;
-        let rope_line = self.rope.line(line_idx);
-        let display_col = self.viewport.cursor_pos.1;
-
-        if display_col == 0 {
-            if line_idx > 0 {
-                self.viewport.cursor_pos.0 -= 1;
-                self.viewport.cursor_pos.1 =
-                    self.line_display_width_cached(self.viewport.cursor_pos.0);
+        let line = self.viewport.cursor_pos.0;
+        let target_col = self.viewport.cursor_pos.1;
+        if target_col == 0 {
+            if line > 0 {
+                self.viewport.cursor_pos = (line - 1, self.line_display_width_cached(line - 1));
             }
             return;
         }
-
-        // Build parallel char + prefix-display-col arrays in a single pass,
-        // so the backward scan can look up the target display col directly.
-        let mut line_chars: Vec<char> = Vec::new();
-        let mut prefix_dcol: Vec<usize> = vec![0];
-        let mut running = 0usize;
-        for ch in rope_line.chars().filter(|&c| c != '\n') {
-            running += char_display_width(ch, running);
-            line_chars.push(ch);
-            prefix_dcol.push(running);
-        }
-
-        // Find char index at or just past display_col.
-        let mut col: usize = 0;
-        while col < line_chars.len() && prefix_dcol[col] < display_col {
-            col += 1;
-        }
-
-        while col > 0
-            && line_chars
-                .get(col.saturating_sub(1))
-                .is_some_and(|c| c.is_whitespace())
+        let rope_line = self.rope.line(line);
+        let mut index = self.line_col_to_char_idx(line, target_col) - self.rope.line_to_char(line);
+        if self.char_idx_to_display_col(line, index) < target_col
+            && index < rope_line.len_chars()
+            && rope_line.char(index) != '\n'
         {
-            col -= 1;
+            index += 1;
         }
-        while col > 0
-            && line_chars
-                .get(col.saturating_sub(1))
-                .is_some_and(|c| !c.is_whitespace())
-        {
-            col -= 1;
+        let mut chars = rope_line.chars_at(index).reversed().peekable();
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+            index -= 1;
         }
-
-        self.viewport.cursor_pos.1 = prefix_dcol[col];
+        while chars.peek().is_some_and(|c| !c.is_whitespace()) {
+            chars.next();
+            index -= 1;
+        }
+        self.viewport.cursor_pos.1 = self.char_idx_to_display_col(line, index);
     }
 
     /// Jump to start of file.
@@ -1256,8 +1331,8 @@ impl Editor {
 
         let mut depth = 1i32;
         if forward {
-            for i in (pos + 1)..self.rope.len_chars() {
-                let c = self.rope.char(i);
+            for (offset, c) in self.rope.chars_at(pos + 1).enumerate() {
+                let i = pos + 1 + offset;
                 if c == ch {
                     depth += 1;
                 }
@@ -1274,10 +1349,8 @@ impl Editor {
                 }
             }
         } else {
-            let mut i = pos;
-            while i > 0 {
-                i -= 1;
-                let c = self.rope.char(i);
+            for (offset, c) in self.rope.chars_at(pos).reversed().enumerate() {
+                let i = pos - 1 - offset;
                 if c == ch {
                     depth += 1;
                 }
@@ -1331,46 +1404,27 @@ impl Editor {
                 (self.word_complete_index + 1) % self.word_complete_candidates.len();
 
             // Insert the new candidate's suffix
-            let candidate = self.word_complete_candidates[self.word_complete_index].clone();
-            let suffix = &candidate[self.word_complete_prefix_len..];
             let pos =
                 self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+            let suffix = &self.word_complete_candidates[self.word_complete_index]
+                [self.word_complete_prefix_len..];
+            let width = UnicodeWidthStr::width(suffix);
             self.rope.insert(pos, suffix);
             self.mark_document_changed(self.viewport.cursor_pos.0);
-            self.viewport.cursor_pos.1 += UnicodeWidthStr::width(suffix);
+            self.viewport.cursor_pos.1 += width;
             self.modified = true;
             self.word_complete_cursor = Some(self.viewport.cursor_pos);
             return;
         }
 
-        // Fresh completion: scan for prefix and candidates
-        let line_idx = self.viewport.cursor_pos.0;
-        let display_col = self.viewport.cursor_pos.1;
-        let rope_line = self.rope.line(line_idx);
-        let line_chars: Vec<char> = rope_line.chars().filter(|&c| c != '\n').collect();
-
-        // Convert display column to char index
-        let mut char_idx = 0;
-        let mut current_display_col = 0;
-        for &ch in &line_chars {
-            if current_display_col >= display_col {
-                break;
-            }
-            char_idx += 1;
-            current_display_col += char_display_width(ch, current_display_col);
-        }
-
-        let before_cursor: String = line_chars[..char_idx].iter().collect();
-
-        // Find the word prefix (alphanumeric + underscore)
-        let prefix: String = before_cursor
-            .chars()
-            .rev()
+        let pos = self.cursor_char_idx();
+        let prefix_chars = self
+            .rope
+            .chars_at(pos)
+            .reversed()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
+            .count();
+        let prefix = self.rope.slice(pos - prefix_chars..pos).to_string();
 
         if prefix.is_empty() {
             return;
@@ -1388,17 +1442,14 @@ impl Editor {
         let flush = |buf: &mut String,
                      seen: &mut std::collections::HashSet<String>,
                      candidates: &mut Vec<String>| {
-            if buf.len() > prefix_len
-                && buf.starts_with(prefix_str)
-                && buf.as_str() != prefix_str
-                && !seen.contains(buf.as_str())
+            if buf.len() > prefix_len && buf.starts_with(prefix_str) && !seen.contains(buf.as_str())
             {
                 seen.insert(buf.clone());
                 candidates.push(buf.clone());
             }
             buf.clear();
         };
-        for ch in self.rope.chars() {
+        for ch in self.rope.chunks().flat_map(str::chars) {
             if ch.is_alphanumeric() || ch == '_' {
                 word_buf.push(ch);
             } else if !word_buf.is_empty() {

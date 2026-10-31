@@ -9,7 +9,6 @@ use std::rc::Rc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::editor::{char_display_width, Editor, InputMode};
-use crate::get_line_str;
 use crate::tabs::TabManager;
 
 /// Per-line cache of fully-assembled content spans (post-syntax, post-search,
@@ -25,7 +24,13 @@ struct RenderCache {
     buffer_id: Option<u64>,
     dirty_generation: u64,
     show_whitespace: bool,
-    lines: HashMap<usize, Rc<Vec<Span<'static>>>>,
+    lines: HashMap<usize, Rc<RenderedLine>>,
+}
+
+struct RenderedLine {
+    spans: Vec<Span<'static>>,
+    width: usize,
+    ascii: bool,
 }
 
 impl RenderCache {
@@ -340,25 +345,11 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     let active = tabs.active_tab;
     let num_tabs = tabs.tabs.len();
 
-    // Pre-compute tab title widths
-    let tab_titles: Vec<String> = tabs
-        .tabs
-        .iter()
-        .map(|tab| {
-            let modified = if tab.modified { "*" } else { "" };
-            // Tab names come from filenames, which may contain control chars.
-            // Stripping here (before the width math below) keeps this layout and
-            // the click hit-testing in tabs.rs in agreement.
-            format!(" {}{} ", strip_control_chars(&tab.display_name), modified)
-        })
-        .collect();
-    // Display width, not byte length -- multibyte tab names would otherwise
-    // break the overflow math and the click hit-testing in tabs.rs (which
-    // replays this layout and must agree with it).
-    let tab_widths: Vec<usize> = tab_titles
-        .iter()
-        .map(|t| UnicodeWidthStr::width(t.as_str()))
-        .collect();
+    let title_width = |tab: &Editor| {
+        UnicodeWidthStr::width(strip_control_chars(&tab.display_name).as_ref())
+            + 2
+            + usize::from(tab.modified)
+    };
 
     // Adjust scroll offset so the active tab is always visible.
     // 1) If active tab is before the scroll offset, scroll left.
@@ -369,7 +360,7 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     // 2) If active tab is past the right edge, scroll right until it fits.
     loop {
         let left_indicator_width = if tabs.tab_scroll_offset > 0 {
-            UnicodeWidthStr::width(format!(" <{} ", tabs.tab_scroll_offset).as_str())
+            4 + tabs.tab_scroll_offset.ilog10() as usize
         } else {
             0
         };
@@ -382,15 +373,17 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
             let remaining_after = num_tabs - i - 1;
             let right_reserve = if remaining_after > 0 { 4 } else { 0 };
 
-            if used + tab_widths[i] > available_width.saturating_sub(right_reserve)
+            let width = title_width(&tabs.tabs[i]);
+            if used + width > available_width.saturating_sub(right_reserve)
                 && i != tabs.tab_scroll_offset
             {
                 break;
             }
             if i == active {
                 active_fits = true;
+                break;
             }
-            used += tab_widths[i];
+            used += width;
         }
 
         if active_fits || tabs.tab_scroll_offset >= active {
@@ -423,8 +416,7 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
     }
 
     for i in tabs.tab_scroll_offset..num_tabs {
-        let title = &tab_titles[i];
-        let title_len = tab_widths[i];
+        let title_len = title_width(&tabs.tabs[i]);
 
         // Check if this tab fits; reserve space for right overflow indicator
         let remaining_after = num_tabs - i - 1;
@@ -444,13 +436,140 @@ fn draw_tab_bar(f: &mut Frame, tabs: &mut TabManager, area: Rect) {
         } else {
             Style::default().bg(Color::DarkGray).fg(Color::White)
         };
-        spans.push(Span::styled(title.clone(), style));
+        let tab = &tabs.tabs[i];
+        let title = format!(
+            " {}{} ",
+            strip_control_chars(&tab.display_name),
+            if tab.modified { "*" } else { "" }
+        );
+        spans.push(Span::styled(title, style));
         used_width += title_len;
     }
 
     let tab_line = Line::from(spans);
     let tab_widget = Paragraph::new(tab_line).style(Style::default().bg(Color::Black));
     f.render_widget(tab_widget, area);
+}
+
+fn sync_render_cache(editor: &mut Editor, show_whitespace: bool) {
+    RENDER_CACHE.with(|cache| {
+        cache.borrow_mut().sync(
+            editor.buffer_id,
+            editor.dirty_generation,
+            show_whitespace,
+            editor.dirty_from_line,
+        )
+    });
+    editor.dirty_from_line = usize::MAX;
+}
+
+fn rendered_line(
+    editor: &mut Editor,
+    line_idx: usize,
+    show_whitespace: bool,
+    selection: Option<(usize, usize)>,
+    search_len: usize,
+    chars: &mut Vec<char>,
+) -> Rc<RenderedLine> {
+    let can_cache = selection.is_none() && search_len == 0;
+    if can_cache {
+        if let Some(cached) = RENDER_CACHE.with(|c| c.borrow().lines.get(&line_idx).cloned()) {
+            return cached;
+        }
+    }
+    let text: std::borrow::Cow<'_, str> = editor.rope.line(line_idx).into();
+    let highlighted = editor.highlighter.highlight_line(line_idx, &text);
+    let mut spans = apply_search_highlighting(
+        &highlighted,
+        text.trim_end_matches('\n'),
+        line_idx,
+        search_len,
+        &editor.search.search_matches,
+        &editor.search.search_match_lengths,
+        editor.search.current_match_index,
+        line_match_slice(&editor.search.search_matches, line_idx),
+        chars,
+    );
+    if show_whitespace {
+        for span in &mut spans {
+            let text = render_whitespace(&span.content);
+            if text != span.content.as_ref() {
+                *span = Span::styled(text, span.style);
+            }
+        }
+    }
+    let spans = expand_tabs_in_spans(
+        apply_selection_highlighting(spans, line_idx, editor, selection),
+        show_whitespace,
+    );
+    let ascii = spans.iter().all(|s| s.content.is_ascii());
+    let width = spans
+        .iter()
+        .map(|s| {
+            if ascii {
+                s.content.len()
+            } else {
+                UnicodeWidthStr::width(s.content.as_ref())
+            }
+        })
+        .sum();
+    let line = Rc::new(RenderedLine {
+        spans,
+        width,
+        ascii,
+    });
+    if can_cache {
+        RENDER_CACHE.with(|c| {
+            c.borrow_mut().lines.insert(line_idx, Rc::clone(&line));
+        });
+    }
+    line
+}
+
+fn draw_gutter(f: &mut Frame, row: Rect, width: usize, line: Option<usize>) {
+    if width == 0 || row.width == 0 {
+        return;
+    }
+    let text = match line {
+        Some(line) => format!("{:width$} ", line + 1, width = width - 1),
+        None => " ".repeat(width),
+    };
+    f.buffer_mut().set_stringn(
+        row.x,
+        row.y,
+        text,
+        row.width as usize,
+        Style::default().fg(Color::DarkGray),
+    );
+}
+
+// Cached ASCII spans can be clipped by byte offset and drawn without copying text.
+fn draw_ascii_line(f: &mut Frame, row: Rect, line: &RenderedLine, mut offset: usize) -> bool {
+    if !line.ascii {
+        return false;
+    }
+    let mut x = row.x;
+    for span in &line.spans {
+        if x >= row.right() {
+            break;
+        }
+        if offset >= span.content.len() {
+            offset -= span.content.len();
+            continue;
+        }
+        x = f
+            .buffer_mut()
+            .set_stringn(
+                x,
+                row.y,
+                &span.content[offset..],
+                (row.right() - x) as usize,
+                span.style,
+            )
+            .0;
+        offset = 0;
+    }
+    true
 }
 
 /// Render editor content with horizontal scrolling (word_wrap OFF).
@@ -460,139 +579,62 @@ fn draw_editor_horizontal_scroll(
     editor_area: Rect,
     line_num_width: usize,
 ) {
-    let show_line_numbers = tabs.config.show_line_numbers;
     let show_whitespace = tabs.config.show_whitespace;
     let editor = tabs.active_editor_mut();
-
-    let mut lines = vec![];
     let visible_lines = editor_area.height as usize;
-    let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
-    let h_offset = editor.viewport.viewport_offset.1;
-    let search_term_char_len = editor.search.search_buffer.chars().count();
-    let selection_range = compute_selection_range(editor);
-    let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
-
-    let buffer_id = editor.buffer_id;
-    let dirty_gen = editor.dirty_generation;
-    let can_cache = selection_range.is_none() && search_term_char_len == 0;
-    let dirty_from = editor.dirty_from_line;
-    RENDER_CACHE.with(|c| {
-        c.borrow_mut()
-            .sync(buffer_id, dirty_gen, show_whitespace, dirty_from)
-    });
-    // Consumed: any edit after this point re-arms it. Reset before rendering so a
-    // concurrent edit between frames cannot be missed.
-    editor.dirty_from_line = usize::MAX;
-
-    for i in 0..visible_lines {
-        let line_idx = editor.viewport.viewport_offset.0 + i;
+    let gutter = line_num_width.min(editor_area.width as usize) as u16;
+    let content_width = editor_area.width - gutter;
+    let offset = editor.viewport.viewport_offset.1;
+    let selection = compute_selection_range(editor);
+    let search_len = editor.search.search_buffer.chars().count();
+    let mut chars = Vec::new();
+    sync_render_cache(editor, show_whitespace);
+    for row in 0..visible_lines {
+        let line_idx = editor.viewport.viewport_offset.0 + row;
+        let row = Rect::new(
+            editor_area.x,
+            editor_area.y + row as u16,
+            editor_area.width,
+            1,
+        );
+        let content_row = Rect::new(row.x + gutter, row.y, content_width, 1);
         if line_idx < editor.rope.len_lines() {
-            let mut styled_spans: Vec<Span> = vec![];
-
-            if show_line_numbers {
-                let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
-                styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
+            draw_gutter(f, row, line_num_width, Some(line_idx));
+            let line = rendered_line(
+                editor,
+                line_idx,
+                show_whitespace,
+                selection,
+                search_len,
+                &mut chars,
+            );
+            if !draw_ascii_line(f, content_row, &line, offset) {
+                f.render_widget(
+                    Paragraph::new(Line::from(slice_spans_horizontal(
+                        &line.spans,
+                        offset,
+                        content_width as usize,
+                    ))),
+                    content_row,
+                );
             }
-
-            let cached_content: Option<Rc<Vec<Span<'static>>>> = if can_cache {
-                RENDER_CACHE.with(|c| c.borrow().lines.get(&line_idx).cloned())
-            } else {
-                None
-            };
-
-            let sliced = if let Some(cached) = cached_content {
-                slice_spans_horizontal(cached.as_slice(), h_offset, content_width)
-            } else {
-                let line_text = get_line_str(&editor.rope, line_idx);
-
-                let highlighted_spans: Rc<Vec<(Style, String)>> =
-                    editor.highlighter.highlight_line(line_idx, &line_text);
-
-                let line_content = line_text.trim_end_matches('\n');
-
-                let line_match_range = line_match_slice(&editor.search.search_matches, line_idx);
-                let mut search_spans = apply_search_highlighting(
-                    &highlighted_spans,
-                    line_content,
-                    line_idx,
-                    search_term_char_len,
-                    &editor.search.search_matches,
-                    &editor.search.search_match_lengths,
-                    editor.search.current_match_index,
-                    line_match_range,
-                    &mut line_chars_buf,
-                );
-
-                if show_whitespace {
-                    for span in &mut search_spans {
-                        let rendered = render_whitespace(&span.content);
-                        if rendered != span.content.as_ref() {
-                            *span = Span::styled(rendered, span.style);
-                        }
-                    }
-                }
-
-                // Expand tabs last: search and selection highlighting work in
-                // rope char positions, which a tab-to-spaces expansion would
-                // shift.
-                let final_spans = expand_tabs_in_spans(
-                    apply_selection_highlighting(search_spans, line_idx, editor, selection_range),
-                    show_whitespace,
-                );
-
-                let sliced = slice_spans_horizontal(&final_spans, h_offset, content_width);
-
-                if can_cache {
-                    RENDER_CACHE.with(|c| {
-                        c.borrow_mut().lines.insert(line_idx, Rc::new(final_spans));
-                    });
-                }
-
-                sliced
-            };
-
-            styled_spans.extend(sliced);
-
-            lines.push(Line::from(styled_spans));
         } else {
-            let mut styled_spans: Vec<Span> = vec![];
-
-            if show_line_numbers {
-                let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
-                styled_spans.push(Span::styled(
-                    empty_line_num,
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-
-            styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
-
-            lines.push(Line::from(styled_spans));
+            draw_gutter(f, row, line_num_width, None);
+            f.render_widget(
+                Paragraph::new(Span::styled("~", Style::default().fg(Color::DarkGray))),
+                content_row,
+            );
         }
     }
-
-    if can_cache {
-        let start = editor.viewport.viewport_offset.0;
-        RENDER_CACHE.with(|c| c.borrow_mut().prune(start, start + visible_lines));
-    }
-
-    let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
-    f.render_widget(editor_widget, editor_area);
-
-    // Draw cursor -- account for horizontal offset
-    let cursor_screen_y = editor
-        .viewport
-        .cursor_pos
-        .0
-        .saturating_sub(editor.viewport.viewport_offset.0);
-    if editor.viewport.cursor_pos.0 >= editor.viewport.viewport_offset.0
-        && cursor_screen_y < visible_lines
-    {
-        let cursor_col_on_screen = editor.viewport.cursor_pos.1.saturating_sub(h_offset);
-        let cursor_x = cursor_col_on_screen as u16 + line_num_width as u16;
+    let start = editor.viewport.viewport_offset.0;
+    RENDER_CACHE.with(|c| c.borrow_mut().prune(start, start + visible_lines));
+    let cursor_row = editor.viewport.cursor_pos.0.saturating_sub(start);
+    if editor.viewport.cursor_pos.0 >= start && cursor_row < visible_lines {
+        let x = (editor.viewport.cursor_pos.1.saturating_sub(offset) as u16 + gutter)
+            .min(editor_area.width.saturating_sub(1));
         f.set_cursor_position(Position::new(
-            cursor_x,
-            cursor_screen_y as u16 + editor_area.y,
+            editor_area.x + x,
+            editor_area.y + cursor_row as u16,
         ));
     }
 }
@@ -604,64 +646,31 @@ fn draw_editor_word_wrap(
     editor_area: Rect,
     line_num_width: usize,
 ) {
-    let show_line_numbers = tabs.config.show_line_numbers;
     let show_whitespace = tabs.config.show_whitespace;
     let editor = tabs.active_editor_mut();
 
     let visible_lines = editor_area.height as usize;
     let content_width = (editor_area.width as usize).saturating_sub(line_num_width);
-    let search_term_char_len = editor.search.search_buffer.chars().count();
     let selection_range = compute_selection_range(editor);
+    let search_len = editor.search.search_buffer.chars().count();
 
-    let mut lines: Vec<Line> = vec![];
     let mut screen_row = 0;
     let mut cursor_screen_pos: Option<(usize, usize)> = None;
     let mut line_idx = editor.viewport.viewport_offset.0;
     let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
 
+    sync_render_cache(editor, show_whitespace);
     while screen_row < visible_lines && line_idx < editor.rope.len_lines() {
-        let line_text = get_line_str(&editor.rope, line_idx);
-
-        let highlighted_spans: Rc<Vec<(Style, String)>> =
-            editor.highlighter.highlight_line(line_idx, &line_text);
-
-        let line_content = line_text.trim_end_matches('\n');
-
-        let line_match_range = line_match_slice(&editor.search.search_matches, line_idx);
-        let mut search_spans = apply_search_highlighting(
-            &highlighted_spans,
-            line_content,
+        let content = rendered_line(
+            editor,
             line_idx,
-            search_term_char_len,
-            &editor.search.search_matches,
-            &editor.search.search_match_lengths,
-            editor.search.current_match_index,
-            line_match_range,
+            show_whitespace,
+            selection_range,
+            search_len,
             &mut line_chars_buf,
         );
-
-        if show_whitespace {
-            for span in &mut search_spans {
-                let rendered = render_whitespace(&span.content);
-                if rendered != span.content.as_ref() {
-                    *span = Span::styled(rendered, span.style);
-                }
-            }
-        }
-
-        // Expand tabs last: search and selection highlighting work in rope
-        // char positions, which a tab-to-spaces expansion would shift.
-        let final_spans = expand_tabs_in_spans(
-            apply_selection_highlighting(search_spans, line_idx, editor, selection_range),
-            show_whitespace,
-        );
-
-        // Wrap by display columns (wide chars count 2, tabs are expanded),
-        // matching the editor's `wrapped_line_height` math.
-        let line_width: usize = final_spans
-            .iter()
-            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-            .sum();
+        let final_spans = &content.spans;
+        let line_width = content.width;
         let rows_needed = if content_width == 0 || line_width == 0 {
             1
         } else {
@@ -697,30 +706,29 @@ fn draw_editor_word_wrap(
                 break;
             }
 
-            let mut styled_spans: Vec<Span> = vec![];
-
-            if show_line_numbers {
-                if sub_row == 0 {
-                    let line_num = format!("{:width$} ", line_idx + 1, width = line_num_width - 1);
-                    styled_spans.push(Span::styled(line_num, Style::default().fg(Color::DarkGray)));
-                } else {
-                    let empty_num = format!("{:width$} ", "", width = line_num_width - 1);
-                    styled_spans.push(Span::styled(
-                        empty_num,
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-            }
-
+            let row = Rect::new(
+                editor_area.x,
+                editor_area.y + screen_row as u16,
+                editor_area.width,
+                1,
+            );
+            let gutter = (line_num_width as u16).min(row.width);
+            let content_row = Rect::new(row.x + gutter, row.y, row.width - gutter, 1);
+            draw_gutter(
+                f,
+                row,
+                line_num_width,
+                if sub_row == 0 { Some(line_idx) } else { None },
+            );
             let start_col = sub_row * content_width;
-            let end_col = start_col + content_width;
-
-            if start_col < line_width {
-                let sub_chars = collect_span_chars_range(&final_spans, start_col, end_col);
-                styled_spans.extend(group_chars_into_spans(&sub_chars));
+            if !draw_ascii_line(f, content_row, &content, start_col) {
+                let chars =
+                    collect_span_chars_range(final_spans, start_col, start_col + content_width);
+                f.render_widget(
+                    Paragraph::new(Line::from(group_chars_into_spans(&chars))),
+                    content_row,
+                );
             }
-
-            lines.push(Line::from(styled_spans));
             screen_row += 1;
         }
 
@@ -729,23 +737,23 @@ fn draw_editor_word_wrap(
 
     // Fill remaining rows with tilde markers
     while screen_row < visible_lines {
-        let mut styled_spans: Vec<Span> = vec![];
-
-        if show_line_numbers {
-            let empty_line_num = format!("{:width$} ", "", width = line_num_width - 1);
-            styled_spans.push(Span::styled(
-                empty_line_num,
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-
-        styled_spans.push(Span::styled("~", Style::default().fg(Color::DarkGray)));
-        lines.push(Line::from(styled_spans));
+        let row = Rect::new(
+            editor_area.x,
+            editor_area.y + screen_row as u16,
+            editor_area.width,
+            1,
+        );
+        let gutter = (line_num_width as u16).min(row.width);
+        draw_gutter(f, row, line_num_width, None);
+        f.render_widget(
+            Paragraph::new(Span::styled("~", Style::default().fg(Color::DarkGray))),
+            Rect::new(row.x + gutter, row.y, row.width - gutter, 1),
+        );
         screen_row += 1;
     }
 
-    let editor_widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
-    f.render_widget(editor_widget, editor_area);
+    let start = editor.viewport.viewport_offset.0;
+    RENDER_CACHE.with(|c| c.borrow_mut().prune(start, line_idx));
 
     // Draw cursor
     if let Some((screen_y, cursor_col_in_row)) = cursor_screen_pos {
@@ -1260,14 +1268,7 @@ fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
     // Clear the area behind the overlay
     f.render_widget(Clear, overlay_area);
 
-    // Build the candidate list and filter
-    let candidates: Vec<(usize, String)> = tabs
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (i, t.display_name.clone()))
-        .collect();
-    let filtered = crate::fuzzy::fuzzy_filter(&tabs.fuzzy_query, &candidates);
+    let filtered = crate::fuzzy::fuzzy_filter_prepared(&tabs.fuzzy_query, &tabs.fuzzy_candidates);
 
     // Clamp selection
     let selected = if filtered.is_empty() {
@@ -1294,8 +1295,10 @@ fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
 
     // Results
     let visible_results = (height as usize).saturating_sub(4); // borders + input + separator
-    for (i, (tab_idx, name, _score)) in filtered.iter().take(visible_results).enumerate() {
-        let modified = if tabs.tabs[*tab_idx].modified {
+    for (i, (candidate, _score)) in filtered.iter().take(visible_results).enumerate() {
+        let tab_idx = candidate.id;
+        let name = &candidate.display;
+        let modified = if tabs.tabs[tab_idx].modified {
             " [+]"
         } else {
             ""
@@ -1330,6 +1333,52 @@ fn draw_fuzzy_finder(f: &mut Frame, tabs: &TabManager, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ascii_direct_drawing_matches_clipped_paragraph_cells() {
+        let spans = vec![
+            Span::styled("abc".to_string(), Style::default().fg(Color::Red)),
+            Span::styled("  def ghi".to_string(), Style::default().bg(Color::Blue)),
+        ];
+        let line = RenderedLine {
+            spans,
+            width: 12,
+            ascii: true,
+        };
+        for width in 0..16 {
+            for offset in 0..16 {
+                let mut reference = Terminal::new(TestBackend::new(16, 1)).unwrap();
+                reference
+                    .draw(|f| {
+                        f.render_widget(
+                            Paragraph::new(Line::from(slice_spans_horizontal(
+                                &line.spans,
+                                offset,
+                                width,
+                            ))),
+                            Rect::new(0, 0, width as u16, 1),
+                        )
+                    })
+                    .unwrap();
+                let mut actual = Terminal::new(TestBackend::new(16, 1)).unwrap();
+                actual
+                    .draw(|f| {
+                        assert!(draw_ascii_line(
+                            f,
+                            Rect::new(0, 0, width as u16, 1),
+                            &line,
+                            offset
+                        ));
+                    })
+                    .unwrap();
+                assert_eq!(
+                    actual.backend().buffer(),
+                    reference.backend().buffer(),
+                    "width {width}, offset {offset}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn truncate_to_width_ascii() {

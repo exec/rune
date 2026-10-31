@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use ratatui::{backend::TestBackend, Terminal};
+use ropey::Rope;
 use rune::editor::Editor;
 use rune::fuzzy::fuzzy_filter;
 use rune::search::SearchState;
@@ -33,6 +34,7 @@ fn bench_perform_replace(c: &mut Criterion) {
                 || editor_with(doc),
                 |mut ed| {
                     let n = ed.perform_replace(black_box("fox"), black_box("cat"));
+                    assert_eq!(n, lines);
                     black_box(n);
                 },
                 criterion::BatchSize::LargeInput,
@@ -96,6 +98,7 @@ fn bench_word_complete_first(c: &mut Criterion) {
             },
             |mut ed| {
                 ed.word_complete();
+                assert!(!ed.word_complete_candidates.is_empty());
                 black_box(&ed);
             },
             criterion::BatchSize::LargeInput,
@@ -119,6 +122,7 @@ fn bench_word_complete_cycle(c: &mut Criterion) {
                 ed.viewport.cursor_pos = (last, 4);
                 ed.reset_word_complete();
                 ed.word_complete();
+                assert!(!ed.word_complete_candidates.is_empty());
                 ed
             },
             |mut ed| {
@@ -451,8 +455,295 @@ fn bench_tabmanager_cold_start(c: &mut Criterion) {
     });
 }
 
+fn bench_efficiency_edges(c: &mut Criterion) {
+    let mut group = c.benchmark_group("efficiency_edges");
+    let long = "x".repeat(100_000);
+    for name in ["left_100_at_end", "backspace_100_at_end"] {
+        group.bench_function(name, |b| {
+            b.iter_batched(
+                || {
+                    let mut ed = editor_with(&long);
+                    ed.viewport.cursor_pos = (0, long.len());
+                    ed
+                },
+                |mut ed| {
+                    for _ in 0..100 {
+                        if name.starts_with("left") {
+                            ed.move_cursor_left();
+                        } else {
+                            ed.delete_char();
+                        }
+                    }
+                    black_box(ed);
+                },
+                criterion::BatchSize::LargeInput,
+            )
+        });
+    }
+    let rope = ropey::Rope::from_str(&long);
+    group.bench_function("search_capped_long_line", |b| {
+        b.iter(|| {
+            let mut search = SearchState::default();
+            search.search_buffer = "x".into();
+            black_box(search.match_spans(&rope, 0, 10));
+        })
+    });
+    let doc = make_doc(100_000, "short line");
+    group.bench_function("wrapped_jump_to_end", |b| {
+        b.iter_batched(
+            || editor_with(&doc),
+            |mut ed| {
+                ed.goto_end();
+                ed.update_viewport_for_size(40, 120, 0, true);
+                black_box(ed);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("wrapped_100_frames", |b| {
+        b.iter_batched(
+            || {
+                let mut tabs = setup_render_tabs(10_000);
+                tabs.config.word_wrap = true;
+                let terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                (tabs, terminal)
+            },
+            |(mut tabs, mut terminal)| {
+                for _ in 0..100 {
+                    tabs.active_editor_mut().move_cursor_right();
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                }
+                black_box(tabs);
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    group.bench_function("fuzzy_100_frames_200_tabs", |b| {
+        b.iter_batched(
+            || {
+                let mut tabs = TabManager::new_for_test();
+                for i in 0..200 {
+                    tabs.new_tab();
+                    tabs.active_editor_mut().display_name = format!("src/component_{i}/module.rs");
+                }
+                tabs.input_mode = rune::editor::InputMode::FuzzyFinder;
+                tabs.fuzzy_query = "cmp".into();
+                tabs.rebuild_fuzzy_candidates();
+                (tabs, Terminal::new(TestBackend::new(120, 40)).unwrap())
+            },
+            |(mut tabs, mut terminal)| {
+                for _ in 0..100 {
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    group.bench_function("resolve_names_10000_tabs", |b| {
+        b.iter_batched(
+            || {
+                let mut tabs = TabManager::new_for_test();
+                tabs.tabs = (0..10_000)
+                    .map(|i| {
+                        let mut editor = Editor::new_buffer();
+                        editor.file_path = Some(format!("src/{i}/module.rs").into());
+                        editor
+                    })
+                    .collect();
+                tabs
+            },
+            |mut tabs| {
+                tabs.resolve_display_names();
+                black_box(tabs);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("save.txt");
+    let content = "x".repeat(10_000_000);
+    std::fs::write(&path, &content).unwrap();
+    group.bench_function("save_10mb", |b| {
+        b.iter_batched(
+            || {
+                let mut tabs = TabManager::new_for_test();
+                tabs.active_editor_mut().load_file(path.clone()).unwrap();
+                tabs
+            },
+            |mut tabs| {
+                tabs.perform_save(path.clone()).unwrap();
+                black_box(tabs);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
+fn bench_second_efficiency_pass(c: &mut Criterion) {
+    let mut group = c.benchmark_group("efficiency_pass2");
+    group.bench_function("new_tab_5000_existing", |b| {
+        b.iter_batched(
+            || {
+                let mut tabs = TabManager::new_for_test();
+                tabs.tabs = (1..=5_000)
+                    .map(|i| {
+                        let mut e = Editor::new_buffer();
+                        e.display_name = if i == 1 {
+                            "[untitled]".into()
+                        } else {
+                            format!("[untitled-{i}]")
+                        };
+                        e
+                    })
+                    .collect();
+                tabs
+            },
+            |mut tabs| {
+                tabs.new_tab();
+                assert_eq!(tabs.active_editor().display_name, "[untitled-5001]");
+                black_box(tabs);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    let brackets = "(\n".to_string() + &make_doc(1_000, &"x".repeat(1_000)) + ")";
+    for forward in [true, false] {
+        group.bench_function(
+            if forward {
+                "bracket_forward_1mb"
+            } else {
+                "bracket_backward_1mb"
+            },
+            |b| {
+                b.iter_batched(
+                    || {
+                        let mut e = editor_with(&brackets);
+                        if !forward {
+                            e.viewport.cursor_pos = (e.rope.len_lines() - 1, 0);
+                        }
+                        e
+                    },
+                    |mut e| {
+                        e.match_bracket();
+                        assert_eq!(
+                            e.viewport.cursor_pos,
+                            if forward {
+                                (e.rope.len_lines() - 1, 0)
+                            } else {
+                                (0, 0)
+                            }
+                        );
+                        black_box(e);
+                    },
+                    criterion::BatchSize::LargeInput,
+                )
+            },
+        );
+    }
+    let words = "word ".repeat(20_000);
+    for forward in [true, false] {
+        group.bench_function(
+            if forward {
+                "word_right_100_long_line"
+            } else {
+                "word_left_100_long_line"
+            },
+            |b| {
+                b.iter_batched(
+                    || {
+                        let mut e = editor_with(&words);
+                        if !forward {
+                            e.viewport.cursor_pos = (0, words.len());
+                        }
+                        e
+                    },
+                    |mut e| {
+                        for _ in 0..100 {
+                            if forward {
+                                e.move_word_right();
+                            } else {
+                                e.move_word_left();
+                            }
+                        }
+                        assert_eq!(
+                            e.viewport.cursor_pos.1,
+                            if forward { 500 } else { words.len() - 500 }
+                        );
+                        black_box(e);
+                    },
+                    criterion::BatchSize::LargeInput,
+                )
+            },
+        );
+    }
+    group.bench_function("tab_bar_100_frames_10000_tabs", |b| {
+        b.iter_batched(
+            || {
+                let mut tabs = TabManager::new_for_test();
+                tabs.tabs = (0..10_000)
+                    .map(|i| {
+                        let mut e = Editor::new_buffer();
+                        e.display_name = format!("module_{i}.rs");
+                        e
+                    })
+                    .collect();
+                tabs.active_tab = 9_999;
+                let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                (tabs, terminal)
+            },
+            |(mut tabs, mut terminal)| {
+                for _ in 0..100 {
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                }
+                black_box(tabs);
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    let line = "prefix ".to_string() + &"x".repeat(200_000) + " needle suffix";
+    for search in [true, false] {
+        group.bench_function(
+            if search {
+                "search_highlight_20_frames_long_line"
+            } else {
+                "selection_highlight_20_frames_long_line"
+            },
+            |b| {
+                b.iter_batched(
+                    || {
+                        let mut tabs = TabManager::new_for_test();
+                        tabs.active_editor_mut().rope = Rope::from_str(&line);
+                        if search {
+                            assert!(tabs.active_editor_mut().perform_find("needle"));
+                        } else {
+                            let e = tabs.active_editor_mut();
+                            e.mark_anchor = Some((0, 1));
+                            e.viewport.cursor_pos = (0, line.len() - 1);
+                        }
+                        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                        terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                        (tabs, terminal)
+                    },
+                    |(mut tabs, mut terminal)| {
+                        for _ in 0..20 {
+                            terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                        }
+                        black_box(tabs);
+                    },
+                    criterion::BatchSize::SmallInput,
+                )
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_second_efficiency_pass,
+    bench_efficiency_edges,
     bench_perform_replace,
     bench_perform_replace_interactive,
     bench_toggle_hex_view,
