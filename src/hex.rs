@@ -1,23 +1,7 @@
 #[cfg(feature = "terminal")]
 use ratatui::prelude::*;
 
-pub const BYTES_PER_ROW: usize = 16;
-
-pub struct HexViewState {
-    pub raw_bytes: Vec<u8>,
-    pub cursor: usize,
-    pub scroll_offset: usize,
-}
-
-impl HexViewState {
-    pub fn new(raw_bytes: Vec<u8>) -> Self {
-        Self {
-            raw_bytes,
-            cursor: 0,
-            scroll_offset: 0,
-        }
-    }
-}
+pub use rune_core::hex::{HexViewState, BYTES_PER_ROW};
 
 #[cfg(feature = "terminal")]
 fn byte_to_ascii_char(b: u8) -> char {

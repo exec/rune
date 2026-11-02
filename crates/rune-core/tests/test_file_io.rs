@@ -1,4 +1,4 @@
-use rune::{
+use rune_core::{
     editor::Editor,
     file_io::{save, SaveError, SaveOptions},
 };

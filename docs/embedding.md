@@ -1,17 +1,27 @@
-# Using Rune from Etch
+# Using rune-core from Etch
 
-Rune's default `terminal` feature builds the existing terminal application.
-Etch can use the same crate with that feature disabled:
+Rune and Etch's GUI library both depend on rune-core. The shared engine lives in
+`crates/rune-core` in Rune's workspace.
+Etch depends directly on that crate, with a dependency alias preserving its
+existing `etch::rune` re-export:
 
 ```toml
 [dependencies]
-rune = { path = "../rune", default-features = false }
+rune = { package = "rune-core", git = "https://github.com/exec/rune", tag = "core-v0.1.0", version = "0.1.0" }
 ```
 
-This excludes Ratatui, Crossterm, CLI argument parsing, Rune's settings module,
-directory walking, and the network updater. No terminal initialization or
-configuration reads happen when constructing a document. No separate engine
-copy, process protocol, or FFI layer is required.
+A new consumer can name the dependency `rune-core` and import `rune_core::Document`.
+It has no terminal/GUI feature switches or dependencies on Ratatui, Crossterm,
+CLI parsing, settings, directory walking, or the updater. The engine's public
+`Document` type always uses neutral highlight roles. Frontends specialize the
+shared lexer with `syntax::HighlightTheme` to cache their native styles without
+runtime conversion or copying spans; Rune's adapter stays in Rune.
+
+For compatibility, `rune::{Document, Selection, EditError}` and the search/file-I/O
+modules re-export the same engine types. Existing `rune` consumers using
+`default-features = false` still work. Rune's default `terminal` feature builds
+the terminal application. No separate engine copy, process protocol, or FFI layer
+is required.
 
 ## Documents and positions
 
@@ -42,9 +52,10 @@ for text positions. Undo/redo mark the buffer modified, matching terminal behavi
 `text()` lends the actual rope read-only. Use rope slices, line/chunk iterators,
 or cheap rope snapshots; avoid converting the whole file to a String each frame.
 Only edit through the document API so undo, revisions, and invalidation stay
-consistent. The legacy `editor::Editor` remains available for terminal callers;
+consistent. The legacy `rune::editor::Editor` remains available for terminal callers;
 its viewport/cursor APIs use terminal display columns and should not drive GUI
-positions.
+positions. Those compatibility implementations remain in hidden core modules;
+the Document API is the supported boundary for new consumers.
 
 `id()` identifies the loaded buffer, `revision()` changes on text edits, and
 `take_changed_lines()` consumes coalesced dirty lines. Its exclusive end may be
@@ -121,15 +132,18 @@ document stays on its owning thread; construct it there rather than moving it
 between threads. Immutable rope snapshots can be sent to background readers.
 
 ```sh
+cargo test --locked -p rune-core
 cargo run --locked --no-default-features --example headless
-cargo test --locked --no-default-features --lib --tests --examples
+cargo test --locked --workspace --no-default-features --lib --tests --examples
 cargo bench --locked --no-default-features --bench document_perf
 ```
 
 The terminal feature remains on by default, preserving normal builds, installs,
-and existing key bindings. Default and headless consumers can coexist in a
-dependency graph: `Document` and `TokenHighlighter` keep the same position/token
-contracts even when Cargo unifies the terminal feature on.
+and existing key bindings. Rune and direct core consumers can coexist in a
+dependency graph: frontend features cannot enable terminal dependencies in
+`rune-core` or change its document/token types.
 
 See [the staged performance checks](editor-performance-core.md) for the measured
 cost of these boundaries.
+
+See [the extraction measurements](editor-performance-extraction.md) for the crate-boundary checks.

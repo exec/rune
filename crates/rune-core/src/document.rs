@@ -59,10 +59,12 @@ impl Document {
         }
     }
 
+    #[inline]
     pub fn text(&self) -> &Rope {
         &self.editor.rope
     }
 
+    #[inline]
     pub fn selection(&self) -> Selection {
         self.selection
     }
@@ -251,6 +253,7 @@ impl Document {
         file_io::save(&mut self.editor, path, options)
     }
 
+    #[inline]
     pub fn path(&self) -> Option<&Path> {
         self.editor.file_path.as_deref()
     }
@@ -259,18 +262,22 @@ impl Document {
         &self.editor.display_name
     }
 
+    #[inline]
     pub fn syntax_name(&self) -> Option<&str> {
         self.editor.syntax_name.as_deref()
     }
 
+    #[inline]
     pub fn is_modified(&self) -> bool {
         self.editor.modified
     }
 
+    #[inline]
     pub fn id(&self) -> u64 {
         self.editor.buffer_id
     }
 
+    #[inline]
     pub fn revision(&self) -> u64 {
         self.editor.dirty_generation
     }

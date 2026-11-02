@@ -455,7 +455,7 @@ fn sync_render_cache(editor: &mut Editor, show_whitespace: bool) {
             show_whitespace,
             editor.dirty_from_line,
             editor.dirty_to_line,
-            editor.highlighter.syntax_version,
+            editor.highlighter.syntax_version(),
         )
     });
     editor.dirty_from_line = usize::MAX;

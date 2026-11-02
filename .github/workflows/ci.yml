@@ -51,7 +51,18 @@ jobs:
       run: python3 -m unittest discover -s tools -p 'test_editor*.py' -v
 
     - name: Check headless library
-      run: cargo test --locked --no-default-features --lib --tests --examples
+      run: cargo test --locked --workspace --no-default-features --lib --tests --examples
+
+    - name: Check standalone engine boundary
+      run: |
+        cargo test --locked -p rune-core
+        cargo tree --locked -p rune-core --edges normal --prefix none > /tmp/rune-core-deps.txt
+        python3 - <<'PYTHON'
+        from pathlib import Path
+        names = {line.split()[0] for line in Path('/tmp/rune-core-deps.txt').read_text().splitlines()}
+        forbidden = {'rune', 'ratatui', 'crossterm', 'clap', 'gpui', 'ureq', 'toml', 'dirs', 'ignore'}
+        assert not names & forbidden, f'Frontend dependencies leaked into rune-core: {names & forbidden}'
+        PYTHON
 
   build:
     name: Build

@@ -34,6 +34,9 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 
 ## Installation
 
+[GitHub Releases](https://github.com/exec/rune/releases/latest) provides the
+authoritative release binaries. Homebrew and AUR synchronization is manual.
+
 ### Quick Install
 The fastest way to install rune. Auto-detects your platform and installs the latest release binary.
 ```bash
@@ -94,8 +97,9 @@ rune
 
 ## Embedding
 
-Rune can also be embedded without its terminal frontend. See
-[using Rune from Etch](docs/embedding.md) for the document API and feature flags.
+Rune and Etch share the independent [rune-core](crates/rune-core) editing engine.
+See [embedding the engine](docs/embedding.md) for its document API and the
+compatibility imports retained by Rune.
 
 ## Performance comparisons
 

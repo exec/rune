@@ -196,7 +196,7 @@ jobs:
           ```
           
           ### Homebrew (macOS/Linux)
-          The homebrew formula is automatically updated with each release:
+          Homebrew formulas are synchronized separately with a manual release workflow:
           ```bash
           brew tap exec/tap
           brew install rune
@@ -206,7 +206,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Package-channel synchronization is an explicit manual action; tag pushes publish on GitHub.
   homebrew:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/')
     name: Update Homebrew Tap
     needs: release
     runs-on: ubuntu-latest
@@ -228,7 +230,7 @@ jobs:
   update-aur:
     needs: release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/')
     
     steps:
     - name: Extract version
