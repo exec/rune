@@ -3,6 +3,78 @@ use regex::Regex;
 /// Maximum number of matches returned by a single search. Beyond this,
 /// accumulation stops and the caller is expected to notify the user.
 pub const MAX_SEARCH_MATCHES: usize = 10_000;
+const SEARCH_BLOCK_BYTES: usize = 64 * 1024;
+
+fn literal_match_spans(
+    rope: &ropey::Rope,
+    resume: usize,
+    limit: usize,
+    regex: &Regex,
+    max_match_bytes: usize,
+) -> (Vec<(usize, usize, usize)>, bool) {
+    let mut base = rope.char_to_byte(resume);
+    let slice = rope.byte_slice(base..);
+    let mut chunks = slice.chunks().peekable();
+    let target = SEARCH_BLOCK_BYTES + max_match_bytes;
+    let mut text = String::with_capacity(target);
+    let mut matches = Vec::new();
+    loop {
+        while text.len() < target {
+            let Some(chunk) = chunks.next() else { break };
+            text.push_str(chunk);
+        }
+        let eof = chunks.peek().is_none();
+        let mut boundary = if eof {
+            text.len()
+        } else {
+            text.len().saturating_sub(max_match_bytes - 1)
+        };
+        while !text.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let mut next_match = regex.find_at(&text, 0);
+        if let Some(first) = next_match.filter(|m| eof || m.start() < boundary) {
+            let mut character = rope.byte_to_char(base + first.start());
+            let mut previous_byte = first.start();
+            let mut line = rope.char_to_line(character);
+            let mut line_start = rope.line_to_char(line);
+            let mut lines = rope.lines_at(line);
+            let mut current_line = lines.next().unwrap();
+            let mut line_end_byte = rope.line_to_byte(line) + current_line.len_bytes();
+            while let Some(found) = next_match {
+                // Defer starts in the overlap until their full match is available.
+                if !eof && found.start() >= boundary {
+                    break;
+                }
+                if matches.len() == limit {
+                    return (matches, true);
+                }
+                // Jump to the first result, then walk only intervening lines in this block.
+                while base + found.start() >= line_end_byte {
+                    line_start += current_line.len_chars();
+                    line += 1;
+                    current_line = lines.next().unwrap();
+                    line_end_byte += current_line.len_bytes();
+                }
+                character += text[previous_byte..found.start()].chars().count();
+                previous_byte = found.start();
+                matches.push((
+                    line,
+                    character - line_start,
+                    text[found.start()..found.end()].chars().count(),
+                ));
+                // Literal searches include overlapping matches, unlike regex searches.
+                let byte = found.start() + text[found.start()..].chars().next().unwrap().len_utf8();
+                next_match = regex.find_at(&text, byte);
+            }
+        }
+        if eof {
+            return (matches, false);
+        }
+        text.drain(..boundary);
+        base += boundary;
+    }
+}
 
 /// Navigation mode within find functionality
 #[derive(Debug, Clone, PartialEq)]
@@ -97,25 +169,23 @@ impl SearchState {
         if self.search_buffer.is_empty() || resume > rope.len_chars() {
             return Vec::new();
         }
-        let flags = (self.use_regex, self.case_sensitive);
-        if self.cached_regex_pattern.as_deref() != Some(self.search_buffer.as_str())
-            || self.cached_regex_flags != flags
-        {
-            let source = if self.use_regex {
-                std::borrow::Cow::Borrowed(self.search_buffer.as_str())
-            } else {
-                std::borrow::Cow::Owned(regex::escape(&self.search_buffer))
-            };
-            self.cached_regex = regex::RegexBuilder::new(&source)
-                .case_insensitive(!self.case_sensitive)
-                .build()
-                .ok();
-            self.cached_regex_pattern = Some(self.search_buffer.clone());
-            self.cached_regex_flags = flags;
-        }
+        self.prepare_regex();
         let Some(re) = self.cached_regex.as_ref() else {
             return Vec::new();
         };
+        if !self.use_regex
+            && self.search_buffer.len() <= SEARCH_BLOCK_BYTES / 4
+            && !self.search_buffer.contains([
+                '\n', '\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}',
+            ])
+        {
+            // Unicode simple case folding matches one scalar per query scalar, at most four bytes.
+            let max_match_bytes = self.search_buffer.chars().count() * 4;
+            let (matches, truncated) =
+                literal_match_spans(rope, resume, limit, re, max_match_bytes);
+            self.search_matches_truncated = truncated;
+            return matches;
+        }
         let mut matches = Vec::new();
         let first_line = rope.char_to_line(resume);
         let mut line_start = rope.line_to_char(first_line);
@@ -166,6 +236,58 @@ impl SearchState {
             }
         }
         matches
+    }
+
+    /// Find one match without looking ahead or changing the UI's truncation flag.
+    // Preserve regex inlining in full-result scans (see search_literal benchmarks).
+    #[inline]
+    pub fn first_match_span(
+        &mut self,
+        rope: &ropey::Rope,
+        resume: usize,
+    ) -> Option<(usize, usize, usize)> {
+        if self.search_buffer.is_empty() || resume > rope.len_chars() {
+            return None;
+        }
+        self.prepare_regex();
+        let re = self.cached_regex.as_ref()?;
+        let first_line = rope.char_to_line(resume);
+        let mut line_start = rope.line_to_char(first_line);
+        for (offset, rope_line) in rope.lines_at(first_line).enumerate() {
+            let text: std::borrow::Cow<'_, str> = rope_line.into();
+            let text = text.trim_end_matches('\n');
+            let byte = rope_line
+                .char_to_byte(resume.saturating_sub(line_start))
+                .min(text.len());
+            line_start += rope_line.len_chars();
+            if let Some(m) = re.find_at(text, byte) {
+                return Some((
+                    first_line + offset,
+                    rope_line.byte_to_char(m.start()),
+                    text[m.start()..m.end()].chars().count(),
+                ));
+            }
+        }
+        None
+    }
+
+    fn prepare_regex(&mut self) {
+        let flags = (self.use_regex, self.case_sensitive);
+        if self.cached_regex_pattern.as_deref() != Some(self.search_buffer.as_str())
+            || self.cached_regex_flags != flags
+        {
+            let source = if self.use_regex {
+                std::borrow::Cow::Borrowed(self.search_buffer.as_str())
+            } else {
+                std::borrow::Cow::Owned(regex::escape(&self.search_buffer))
+            };
+            self.cached_regex = regex::RegexBuilder::new(&source)
+                .case_insensitive(!self.case_sensitive)
+                .build()
+                .ok();
+            self.cached_regex_pattern = Some(self.search_buffer.clone());
+            self.cached_regex_flags = flags;
+        }
     }
 
     /// Navigate to the next or previous match. `forward=true` for next, `false` for previous.
@@ -356,6 +478,16 @@ pub fn validate_match_at_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn literal_blocks_progress_with_an_overlap_larger_than_the_block_size() {
+        let text = "x".repeat(400_000) + "needle\nneedle";
+        let rope = ropey::Rope::from_str(&text);
+        let regex = Regex::new("needle").unwrap();
+        let (matches, truncated) = literal_match_spans(&rope, 0, usize::MAX, &regex, 80_000);
+        assert_eq!(matches, vec![(0, 400_000, 6), (1, 0, 6)]);
+        assert!(!truncated);
+    }
     use ropey::Rope;
 
     #[test]

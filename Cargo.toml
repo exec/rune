@@ -1,6 +1,6 @@
 [package]
 name = "rune"
-version = "1.6.0"
+version = "1.7.0"
 authors = ["exec"]
 description = "A modern CLI text editor that bridges the gap between nano's simplicity and advanced features"
 license = "MIT"
@@ -17,20 +17,32 @@ exclude = [
     "*.temp"
 ]
 
+[[bin]]
+name = "rune"
+path = "src/main.rs"
+required-features = ["terminal"]
+
+[features]
+default = ["terminal"]
+terminal = [
+    "dep:ratatui", "dep:crossterm", "dep:clap", "dep:serde",
+    "dep:toml", "dep:dirs", "dep:ignore", "dep:ureq",
+]
+
 [dependencies]
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 ropey = "1.6"
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+serde = { version = "1.0", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 unicode-width = "0.2"
-dirs = "5.0"
+dirs = { version = "5.0", optional = true }
 regex = "1.10"
-ignore = "0.4"
+ignore = { version = "0.4", optional = true }
 phf = { version = "0.11", features = ["macros"] }
-ureq = { version = "2", default-features = false, features = ["tls"] }
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -38,4 +50,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "editor_perf"
+harness = false
+required-features = ["terminal"]
+
+[[bench]]
+name = "document_perf"
 harness = false

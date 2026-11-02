@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 //! Regression guards for the P0 crash / data-loss findings of the v1.5.3 review.
 //!
 //! Every test here failed (hung, panicked, or corrupted the buffer) before the

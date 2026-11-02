@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{backend::TestBackend, Terminal};
 use ropey::Rope;

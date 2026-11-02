@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 //! Repro tests for code-review findings (see CODE_REVIEW.md). Each test
 //! asserts the CORRECT behavior and currently fails, so they are #[ignore]d
 //! to keep `cargo test` green. Run with: cargo test --test review_repro -- --ignored

@@ -1,29 +1,59 @@
+#[cfg(feature = "terminal")]
 use ratatui::style::{Color, Style};
+#[cfg(not(feature = "terminal"))]
+type Style = HighlightKind;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
 const MAX_CACHE_ENTRIES: usize = 1000;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TokenKind {
-    Keyword, // Magenta
-    Control, // Yellow
-    Literal, // Cyan
-    Type,    // Blue
+/// Renderer-independent roles. Adjacent text with the same role is coalesced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HighlightKind {
+    #[default]
+    Plain,
+    Keyword,
+    Control,
+    Literal,
+    Type,
+    String,
+    Comment,
 }
 
-impl TokenKind {
+type TokenKind = HighlightKind;
+
+/// Converts lexer roles without reparsing or copying cached text for a frontend.
+pub trait HighlightStyle: Copy + Default + PartialEq {
+    fn from_kind(kind: HighlightKind) -> Self;
+}
+
+impl HighlightStyle for HighlightKind {
     #[inline]
-    fn style(self) -> Style {
-        match self {
-            TokenKind::Keyword => Style::default().fg(Color::Magenta),
-            TokenKind::Control => Style::default().fg(Color::Yellow),
-            TokenKind::Literal => Style::default().fg(Color::Cyan),
-            TokenKind::Type => Style::default().fg(Color::Blue),
-        }
+    fn from_kind(kind: HighlightKind) -> Self {
+        kind
     }
 }
+
+#[cfg(feature = "terminal")]
+impl HighlightStyle for Style {
+    #[inline]
+    fn from_kind(kind: HighlightKind) -> Self {
+        let color = match kind {
+            HighlightKind::Plain => return Self::default(),
+            HighlightKind::Keyword => Color::Magenta,
+            HighlightKind::Control => Color::Yellow,
+            HighlightKind::Literal => Color::Cyan,
+            HighlightKind::Type => Color::Blue,
+            HighlightKind::String => Color::Green,
+            HighlightKind::Comment => Color::DarkGray,
+        };
+        Self::default().fg(color)
+    }
+}
+
+pub type SyntaxHighlighter = Highlighter<Style>;
+pub type TokenHighlighter = Highlighter<HighlightKind>;
 
 static RUST_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
     "fn" => TokenKind::Keyword, "let" => TokenKind::Keyword, "mut" => TokenKind::Keyword,
@@ -443,37 +473,29 @@ static MARKDOWN_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
     // This is used for basic recognition
 };
 
-static GENERIC_KEYWORDS: phf::Map<&'static str, TokenKind> = phf::phf_map! {
-    "if" => TokenKind::Control, "else" => TokenKind::Control, "for" => TokenKind::Control,
-    "while" => TokenKind::Control, "break" => TokenKind::Control, "continue" => TokenKind::Control,
-    "return" => TokenKind::Control,
-    "true" => TokenKind::Literal, "false" => TokenKind::Literal, "null" => TokenKind::Literal,
-    "None" => TokenKind::Literal, "undefined" => TokenKind::Literal, "nil" => TokenKind::Literal,
-};
-
 #[derive(Clone)]
-pub struct HighlightedLine {
-    pub spans: Rc<Vec<(Style, String)>>,
+pub struct HighlightedLine<S = Style> {
+    pub spans: Rc<Vec<(S, String)>>,
     pub version: u64,      // For cache invalidation
     pub access_order: u64, // For LRU eviction
 }
 
-pub struct SyntaxHighlighter {
+pub struct Highlighter<S: HighlightStyle> {
     // Cache for highlighted lines
-    line_cache: HashMap<usize, HighlightedLine>,
-    // Current file version for cache invalidation
-    file_version: u64,
+    line_cache: HashMap<usize, HighlightedLine<S>>,
+    // Syntax generation for cache invalidation
+    pub(crate) syntax_version: u64,
     // Counter for LRU tracking
     access_counter: u64,
     // Current syntax for language-specific highlighting
     current_syntax: Option<String>,
 }
 
-impl SyntaxHighlighter {
+impl<S: HighlightStyle> Highlighter<S> {
     pub fn new() -> Self {
         Self {
             line_cache: HashMap::new(),
-            file_version: 0,
+            syntax_version: 0,
             access_counter: 0,
             current_syntax: None,
         }
@@ -527,10 +549,13 @@ impl SyntaxHighlighter {
     }
 
     pub fn set_syntax(&mut self, syntax_name: Option<&str>) {
+        if self.current_syntax.as_deref() == syntax_name {
+            return;
+        }
         self.current_syntax = syntax_name.map(|s| s.to_string());
         // Clear cache when syntax changes
         self.line_cache.clear();
-        self.file_version += 1;
+        self.syntax_version += 1;
     }
 
     pub fn invalidate_cache_from_line(&mut self, start_line: usize) {
@@ -538,10 +563,22 @@ impl SyntaxHighlighter {
         // edit stay textually valid (highlighting is per-line, with no
         // cross-line state), and any line shifted by an insert/delete is at
         // or after start_line and thus evicted — so the retained entries
-        // remain correct. Do NOT bump `file_version` here: that would mark
+        // remain correct. Do NOT bump `syntax_version` here: that would mark
         // the retained entries stale and clear the whole cache on every
         // edit.
-        self.line_cache.retain(|&line_num, _| line_num < start_line);
+        self.invalidate_cache_range(start_line, usize::MAX);
+    }
+
+    /// Only stable line numbers outside this range may retain their cached highlighting.
+    pub fn invalidate_cache_range(&mut self, start: usize, end: usize) {
+        if end.saturating_sub(start) <= self.line_cache.len() {
+            for line in start..end {
+                self.line_cache.remove(&line);
+            }
+        } else {
+            self.line_cache
+                .retain(|&line, _| line < start || line >= end);
+        }
     }
 
     /// Evict least recently used entries when cache exceeds MAX_CACHE_ENTRIES
@@ -555,17 +592,17 @@ impl SyntaxHighlighter {
             .iter()
             .map(|(&line, cached)| (line, cached.access_order))
             .collect();
-        entries.sort_by_key(|&(_, order)| order);
         let to_remove = self.line_cache.len() - target;
+        entries.select_nth_unstable_by_key(to_remove, |&(_, order)| order);
         for &(line, _) in entries.iter().take(to_remove) {
             self.line_cache.remove(&line);
         }
     }
 
-    pub fn highlight_line(&mut self, line_num: usize, line_text: &str) -> Rc<Vec<(Style, String)>> {
+    pub fn highlight_line(&mut self, line_num: usize, line_text: &str) -> Rc<Vec<(S, String)>> {
         // Check cache first — return Rc clone (cheap) instead of deep clone
         if let Some(cached) = self.line_cache.get_mut(&line_num) {
-            if cached.version == self.file_version {
+            if cached.version == self.syntax_version {
                 self.access_counter += 1;
                 cached.access_order = self.access_counter;
                 return Rc::clone(&cached.spans);
@@ -582,7 +619,7 @@ impl SyntaxHighlighter {
             line_num,
             HighlightedLine {
                 spans: Rc::clone(&spans),
-                version: self.file_version,
+                version: self.syntax_version,
                 access_order: self.access_counter,
             },
         );
@@ -593,36 +630,40 @@ impl SyntaxHighlighter {
         spans
     }
 
-    fn highlight_simple(&self, line: &str) -> Vec<(Style, String)> {
-        let keyword_map = self.current_keyword_map();
-        let mut result: Vec<(Style, String)> = Vec::new();
+    fn highlight_simple(&self, line: &str) -> Vec<(S, String)> {
+        let Some(keyword_map) = self.current_keyword_map() else {
+            return if line.is_empty() {
+                Vec::new()
+            } else {
+                vec![(S::default(), line.to_owned())]
+            };
+        };
+        let mut result: Vec<(S, String)> = Vec::new();
         let mut buf = String::new();
-        let mut buf_style = Style::default();
+        let mut buf_style = S::default();
 
         // Flush accumulated buffer into result, starting fresh with new style.
         // Adjacent same-style writes merge into one span automatically.
-        let flush = |result: &mut Vec<(Style, String)>,
-                     buf: &mut String,
-                     buf_style: &mut Style,
-                     new_style: Style| {
-            if !buf.is_empty() {
-                if let Some(last) = result.last_mut() {
-                    if last.0 == *buf_style {
-                        last.1.push_str(buf);
-                        buf.clear();
-                        *buf_style = new_style;
-                        return;
+        let flush =
+            |result: &mut Vec<(S, String)>, buf: &mut String, buf_style: &mut S, new_style: S| {
+                if !buf.is_empty() {
+                    if let Some(last) = result.last_mut() {
+                        if last.0 == *buf_style {
+                            last.1.push_str(buf);
+                            buf.clear();
+                            *buf_style = new_style;
+                            return;
+                        }
                     }
+                    result.push((*buf_style, std::mem::take(buf)));
                 }
-                result.push((*buf_style, std::mem::take(buf)));
-            }
-            *buf_style = new_style;
-        };
+                *buf_style = new_style;
+            };
 
-        let default_style = Style::default();
-        let string_style = Style::default().fg(Color::Green);
-        let comment_style = Style::default().fg(Color::DarkGray);
-        let number_style = Style::default().fg(Color::Cyan);
+        let default_style = S::default();
+        let string_style = S::from_kind(HighlightKind::String);
+        let comment_style = S::from_kind(HighlightKind::Comment);
+        let number_style = S::from_kind(HighlightKind::Literal);
 
         let mut chars = line.chars();
 
@@ -646,33 +687,41 @@ impl SyntaxHighlighter {
             }
 
             match ch {
-                '"' => {
+                quote @ ('"' | '\'') => {
                     if buf_style != string_style {
                         flush(&mut result, &mut buf, &mut buf_style, string_style);
                     }
-                    buf.push('"');
-                    let mut escaped = false;
-                    for next_ch in chars.by_ref() {
-                        buf.push(next_ch);
-                        if next_ch == '"' && !escaped {
-                            break;
+                    buf.push(quote);
+                    let tail = chars.as_str();
+                    let end = match tail.find(quote) {
+                        None => tail.len(),
+                        Some(byte)
+                            if tail[..byte]
+                                .bytes()
+                                .rev()
+                                .take_while(|&b| b == b'\\')
+                                .count()
+                                % 2
+                                == 0 =>
+                        {
+                            byte + 1
                         }
-                        escaped = next_ch == '\\' && !escaped;
-                    }
-                }
-                '\'' => {
-                    if buf_style != string_style {
-                        flush(&mut result, &mut buf, &mut buf_style, string_style);
-                    }
-                    buf.push('\'');
-                    let mut escaped = false;
-                    for next_ch in chars.by_ref() {
-                        buf.push(next_ch);
-                        if next_ch == '\'' && !escaped {
-                            break;
+                        Some(byte) => {
+                            // UTF-8 continuation bytes cannot contain ASCII quotes or backslashes.
+                            let mut escaped = false;
+                            let mut end = tail.len();
+                            for (offset, &ch) in tail.as_bytes()[byte + 1..].iter().enumerate() {
+                                if ch == quote as u8 && !escaped {
+                                    end = byte + offset + 2;
+                                    break;
+                                }
+                                escaped = ch == b'\\' && !escaped;
+                            }
+                            end
                         }
-                        escaped = next_ch == '\\' && !escaped;
-                    }
+                    };
+                    buf.push_str(&tail[..end]);
+                    chars = tail[end..].chars();
                 }
                 '/' if chars.clone().next() == Some('/') => {
                     chars.next();
@@ -680,9 +729,7 @@ impl SyntaxHighlighter {
                         flush(&mut result, &mut buf, &mut buf_style, comment_style);
                     }
                     buf.push_str("//");
-                    for c in chars.by_ref() {
-                        buf.push(c);
-                    }
+                    buf.push_str(chars.as_str());
                     break;
                 }
                 '/' if chars.clone().next() == Some('*') => {
@@ -691,14 +738,10 @@ impl SyntaxHighlighter {
                         flush(&mut result, &mut buf, &mut buf_style, comment_style);
                     }
                     buf.push_str("/*");
-                    while let Some(next_ch) = chars.next() {
-                        buf.push(next_ch);
-                        if next_ch == '*' && chars.clone().next() == Some('/') {
-                            chars.next();
-                            buf.push('/');
-                            break;
-                        }
-                    }
+                    let tail = chars.as_str();
+                    let end = tail.find("*/").map_or(tail.len(), |byte| byte + 2);
+                    buf.push_str(&tail[..end]);
+                    chars = tail[end..].chars();
                     flush(&mut result, &mut buf, &mut buf_style, default_style);
                 }
                 '#' => {
@@ -706,9 +749,7 @@ impl SyntaxHighlighter {
                         flush(&mut result, &mut buf, &mut buf_style, comment_style);
                     }
                     buf.push('#');
-                    for c in chars.by_ref() {
-                        buf.push(c);
-                    }
+                    buf.push_str(chars.as_str());
                     break;
                 }
                 '-' if chars.clone().next() == Some('-') => {
@@ -717,9 +758,7 @@ impl SyntaxHighlighter {
                         flush(&mut result, &mut buf, &mut buf_style, comment_style);
                     }
                     buf.push_str("--");
-                    for c in chars.by_ref() {
-                        buf.push(c);
-                    }
+                    buf.push_str(chars.as_str());
                     break;
                 }
                 c if c.is_ascii_digit() => {
@@ -763,8 +802,8 @@ impl SyntaxHighlighter {
     }
 
     #[inline]
-    fn current_keyword_map(&self) -> &'static phf::Map<&'static str, TokenKind> {
-        match self.current_syntax.as_deref() {
+    fn current_keyword_map(&self) -> Option<&'static phf::Map<&'static str, TokenKind>> {
+        Some(match self.current_syntax.as_deref() {
             Some("Rust") => &RUST_KEYWORDS,
             Some("Python") => &PYTHON_KEYWORDS,
             Some("JavaScript") | Some("TypeScript") => &JS_KEYWORDS,
@@ -789,26 +828,26 @@ impl SyntaxHighlighter {
             Some("Zig") => &ZIG_KEYWORDS,
             Some("TOML") => &TOML_KEYWORDS,
             Some("Markdown") => &MARKDOWN_KEYWORDS,
-            _ => &GENERIC_KEYWORDS,
-        }
+            _ => return None,
+        })
     }
 
     #[inline]
-    fn lookup_keyword(map: &phf::Map<&'static str, TokenKind>, word: &str) -> Style {
+    fn lookup_keyword(map: &phf::Map<&'static str, TokenKind>, word: &str) -> S {
         match map.get(word) {
-            Some(kind) => kind.style(),
-            None => Style::default(),
+            Some(kind) => S::from_kind(*kind),
+            None => S::default(),
         }
     }
 }
 
-impl Default for SyntaxHighlighter {
+impl<S: HighlightStyle> Default for Highlighter<S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "terminal"))]
 mod tests {
     use super::*;
     use std::path::Path;
@@ -845,7 +884,7 @@ mod tests {
     fn test_get_rust_keyword_style() {
         let mut h = SyntaxHighlighter::new();
         h.set_syntax(Some("Rust"));
-        let map = h.current_keyword_map();
+        let map = h.current_keyword_map().unwrap();
         assert_eq!(
             SyntaxHighlighter::lookup_keyword(map, "fn").fg,
             Some(Color::Magenta)
@@ -877,5 +916,131 @@ mod tests {
         let mut h = SyntaxHighlighter::new();
         let spans = h.highlight_line(0, "");
         assert!(spans.is_empty());
+    }
+    #[test]
+    fn bulk_line_comments_preserve_unicode_and_line_endings() {
+        for marker in ["//", "#", "--"] {
+            for tail in [
+                "",
+                " comment 界e\u{301}",
+                " \"quoted\" /* nested */\r\n",
+                "\u{1b}[31m",
+            ] {
+                let mut highlighter = SyntaxHighlighter::new();
+                highlighter.set_syntax(Some("Rust"));
+                let text = format!("{marker}{tail}");
+                let spans = highlighter.highlight_line(0, &text);
+                assert_eq!(*spans, vec![(Style::default().fg(Color::DarkGray), text)]);
+            }
+        }
+    }
+    #[test]
+    fn quoted_slices_match_the_original_escape_state_machine() {
+        for quote in ['"', '\''] {
+            for tail in [
+                format!("a\\{quote}").repeat(1000),
+                "simple 界e\u{301}".to_string(),
+                "\\".into(),
+                "\\\\".into(),
+                format!("odd \\{quote}b"),
+                format!("even \\\\{quote}b"),
+                format!("odd \\\\\\{quote}b"),
+                "\0\t\n".into(),
+            ] {
+                for closed in [false, true] {
+                    let prefix = "let value = ";
+                    let line = format!(
+                        "{prefix}{quote}{tail}{}",
+                        if closed {
+                            format!("{quote}; suffix")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    let rest = &line[prefix.len() + 1..];
+                    let mut escaped = false;
+                    let mut end = rest.len();
+                    for (byte, ch) in rest.char_indices() {
+                        if ch == quote && !escaped {
+                            end = byte + ch.len_utf8();
+                            break;
+                        }
+                        escaped = ch == '\\' && !escaped;
+                    }
+                    let expected = format!("{quote}{}", &rest[..end]);
+                    let mut h = SyntaxHighlighter::new();
+                    h.set_syntax(Some("Rust"));
+                    let spans = h.highlight_line(0, &line);
+                    let first = spans
+                        .iter()
+                        .find(|(style, _)| style.fg == Some(Color::Green))
+                        .unwrap();
+                    assert_eq!(first.1, expected, "{line:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn block_comment_slices_preserve_termination_and_following_text() {
+        for (text, comment, rest) in [
+            ("/* */ suffix", "/* */", " suffix"),
+            ("/* 界e\u{301} **/ suffix", "/* 界e\u{301} **/", " suffix"),
+            ("/*unterminated", "/*unterminated", ""),
+            ("/*/*nested*/ suffix", "/*/*nested*/", " suffix"),
+        ] {
+            let mut h = SyntaxHighlighter::new();
+            h.set_syntax(Some("Rust"));
+            let spans = h.highlight_line(0, text);
+            let mut expected = vec![(Style::default().fg(Color::DarkGray), comment.to_owned())];
+            if !rest.is_empty() {
+                expected.push((Style::default(), rest.to_owned()));
+            }
+            assert_eq!(*spans, expected);
+        }
+    }
+
+    #[test]
+    fn partial_lru_selection_evicts_exactly_the_oldest_entries() {
+        let mut h = SyntaxHighlighter::new();
+        for line in 0..MAX_CACHE_ENTRIES {
+            h.highlight_line(line, "");
+        }
+        let warm = h.highlight_line(0, "");
+        h.highlight_line(MAX_CACHE_ENTRIES, "");
+        assert_eq!(h.line_cache.len(), MAX_CACHE_ENTRIES * 3 / 4);
+        assert!(Rc::ptr_eq(&warm, &h.line_cache[&0].spans));
+        let removed = MAX_CACHE_ENTRIES + 1 - MAX_CACHE_ENTRIES * 3 / 4;
+        for line in 1..=removed {
+            assert!(!h.line_cache.contains_key(&line));
+        }
+        for line in removed + 1..=MAX_CACHE_ENTRIES {
+            assert!(h.line_cache.contains_key(&line));
+        }
+    }
+    #[test]
+    fn bounded_invalidation_keeps_unaffected_highlighting() {
+        let mut h = SyntaxHighlighter::new();
+        let old: Vec<_> = (0..3).map(|line| h.highlight_line(line, "text")).collect();
+        h.invalidate_cache_range(1, 2);
+        assert!(Rc::ptr_eq(&old[0], &h.highlight_line(0, "text")));
+        assert!(!Rc::ptr_eq(&old[1], &h.highlight_line(1, "changed")));
+        assert!(Rc::ptr_eq(&old[2], &h.highlight_line(2, "text")));
+        h.invalidate_cache_from_line(1);
+        assert!(Rc::ptr_eq(&old[0], &h.highlight_line(0, "text")));
+        assert!(!Rc::ptr_eq(&old[2], &h.highlight_line(2, "new")));
+    }
+    #[test]
+    fn unchanged_syntax_keeps_cached_highlighting_and_generation() {
+        let mut h = SyntaxHighlighter::new();
+        h.set_syntax(Some("Rust"));
+        let old = h.highlight_line(0, "fn value");
+        let version = h.syntax_version;
+        h.set_syntax(Some("Rust"));
+        assert_eq!(h.syntax_version, version);
+        assert!(Rc::ptr_eq(&old, &h.highlight_line(0, "fn value")));
+        h.set_syntax(Some("Python"));
+        assert_ne!(h.syntax_version, version);
+        assert!(!Rc::ptr_eq(&old, &h.highlight_line(0, "fn value")));
     }
 }

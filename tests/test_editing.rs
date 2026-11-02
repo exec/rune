@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 mod helpers;
 use crossterm::event::KeyCode;
 use helpers::*;

@@ -1,8 +1,5 @@
-use ratatui::{
-    prelude::*,
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
-};
+#[cfg(feature = "terminal")]
+use ratatui::prelude::*;
 
 pub const BYTES_PER_ROW: usize = 16;
 
@@ -22,6 +19,7 @@ impl HexViewState {
     }
 }
 
+#[cfg(feature = "terminal")]
 fn byte_to_ascii_char(b: u8) -> char {
     if b.is_ascii_graphic() || b == b' ' {
         b as char
@@ -30,6 +28,7 @@ fn byte_to_ascii_char(b: u8) -> char {
     }
 }
 
+#[cfg(feature = "terminal")]
 pub fn draw_hex_view(f: &mut Frame, area: Rect, state: &mut HexViewState) {
     let visible_rows = area.height as usize;
     if visible_rows == 0 {
@@ -47,91 +46,78 @@ pub fn draw_hex_view(f: &mut Frame, area: Rect, state: &mut HexViewState) {
 
     let cursor_col = state.cursor % BYTES_PER_ROW;
 
-    let mut lines = Vec::with_capacity(visible_rows);
+    let dim = Style::default().fg(Color::DarkGray);
+    let hex_style = Style::default().fg(Color::White);
+    let ascii_style = Style::default().fg(Color::Green);
+    let selected = Style::default().bg(Color::Cyan).fg(Color::Black);
+    let plain = Style::default();
+    let digits = b"0123456789ABCDEF";
 
     for row_idx in 0..visible_rows {
         let row = state.scroll_offset + row_idx;
         let row_start = row * BYTES_PER_ROW;
-
+        let y = area.y + row_idx as u16;
+        let mut col = 0usize;
+        // Every emitted glyph is one cell wide; avoid allocating strings and spans.
+        let mut put = |ch, style| {
+            if col < area.width as usize {
+                f.buffer_mut()[(area.x + col as u16, y)]
+                    .set_char(ch)
+                    .set_style(style);
+            }
+            col += 1;
+        };
         if row_start >= state.raw_bytes.len() {
-            lines.push(Line::from(Span::styled(
-                "~",
-                Style::default().fg(Color::DarkGray),
-            )));
+            put('~', dim);
             continue;
         }
-
         let row_end = (row_start + BYTES_PER_ROW).min(state.raw_bytes.len());
-        let row_bytes = &state.raw_bytes[row_start..row_end];
+        let bytes = &state.raw_bytes[row_start..row_end];
         let is_cursor_row = row == cursor_row;
 
-        let mut spans: Vec<Span> = Vec::new();
+        let offset_digits = (usize::BITS - row_start.leading_zeros()).div_ceil(4).max(8);
+        for shift in (0..offset_digits).rev() {
+            put(digits[(row_start >> (shift * 4)) & 0xf] as char, dim);
+        }
+        put(' ', dim);
+        put('│', dim);
+        put(' ', dim);
 
-        // Offset column
-        spans.push(Span::styled(
-            format!("{:08X} ", row_start),
-            Style::default().fg(Color::DarkGray),
-        ));
-        spans.push(Span::styled(
-            "\u{2502} ",
-            Style::default().fg(Color::DarkGray),
-        ));
-
-        // Hex column
-        for (i, &byte) in row_bytes.iter().enumerate() {
-            let hex_str = format!("{:02X}", byte);
-            let style = if is_cursor_row && i == cursor_col {
-                Style::default().bg(Color::Cyan).fg(Color::Black)
+        for i in 0..BYTES_PER_ROW {
+            if let Some(&byte) = bytes.get(i) {
+                let style = if is_cursor_row && i == cursor_col {
+                    selected
+                } else {
+                    hex_style
+                };
+                put(digits[(byte >> 4) as usize] as char, style);
+                put(digits[(byte & 0xf) as usize] as char, style);
             } else {
-                Style::default().fg(Color::White)
-            };
-            spans.push(Span::styled(hex_str, style));
-
+                put(' ', plain);
+                put(' ', plain);
+            }
             if i == 7 {
-                spans.push(Span::raw("  "));
+                put(' ', plain);
+                put(' ', plain);
             } else if i < BYTES_PER_ROW - 1 {
-                spans.push(Span::raw(" "));
+                put(' ', plain);
             }
         }
+        put(' ', dim);
+        put('│', dim);
 
-        // Pad remaining hex columns if row is short
-        let missing = BYTES_PER_ROW - row_bytes.len();
-        for i in 0..missing {
-            spans.push(Span::raw("  "));
-            let col = row_bytes.len() + i;
-            if col == 7 {
-                spans.push(Span::raw("  "));
-            } else if col < BYTES_PER_ROW - 1 {
-                spans.push(Span::raw(" "));
-            }
-        }
-
-        // Separator
-        spans.push(Span::styled(
-            " \u{2502}",
-            Style::default().fg(Color::DarkGray),
-        ));
-
-        // ASCII column
-        for (i, &byte) in row_bytes.iter().enumerate() {
-            let ch = byte_to_ascii_char(byte);
+        for (i, &byte) in bytes.iter().enumerate() {
             let style = if is_cursor_row && i == cursor_col {
-                Style::default().bg(Color::Cyan).fg(Color::Black)
+                selected
             } else if byte.is_ascii_graphic() || byte == b' ' {
-                Style::default().fg(Color::Green)
+                ascii_style
             } else {
-                Style::default().fg(Color::DarkGray)
+                dim
             };
-            spans.push(Span::styled(String::from(ch), style));
-
+            put(byte_to_ascii_char(byte), style);
             if i == 7 {
-                spans.push(Span::raw(" "));
+                put(' ', plain);
             }
         }
-
-        lines.push(Line::from(spans));
     }
-
-    let widget = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
-    f.render_widget(widget, area);
 }

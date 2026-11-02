@@ -1,5 +1,6 @@
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::time::{Duration, Instant};
 
 use crate::editor::InputMode;
 use crate::search::{FindNavigationMode, ReplacePhase};
@@ -36,6 +37,66 @@ fn truncate_to_char_boundary(s: &mut String, max_bytes: usize) {
 /// True when the active tab must not be mutated: `--view` mode or a `[Help]` tab.
 fn is_read_only(tabs: &TabManager) -> bool {
     tabs.read_only || tabs.active_editor().display_name == "[Help]"
+}
+
+/// Paste literal text without interpreting clipboard contents as editor commands.
+pub fn handle_paste(tabs: &mut TabManager, text: &str) -> Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    if matches!(
+        tabs.input_mode,
+        InputMode::Normal | InputMode::VerbatimInput
+    ) {
+        if !is_read_only(tabs) {
+            tabs.reset_cut_tracking();
+            let editor = tabs.active_editor_mut();
+            editor.reset_word_complete();
+            editor.viewport.manual_scroll = false;
+            editor.insert_text(text);
+            tabs.input_mode = InputMode::Normal;
+            tabs.needs_redraw = true;
+        }
+        return Ok(());
+    }
+
+    // Prompts are single-line text; pasted controls must never submit or confirm them.
+    let digits = tabs.input_mode == InputMode::GoToLine;
+    let buffer = match tabs.input_mode {
+        InputMode::Find => &mut tabs.active_editor_mut().search.search_buffer,
+        InputMode::Replace => {
+            let search = &mut tabs.active_editor_mut().search;
+            match search.replace_phase {
+                ReplacePhase::FindPattern => &mut search.search_buffer,
+                ReplacePhase::ReplaceWith => &mut search.replace_buffer,
+            }
+        }
+        InputMode::GoToLine => &mut tabs.active_editor_mut().search.goto_line_buffer,
+        InputMode::FuzzyFinder => &mut tabs.fuzzy_query,
+        InputMode::EnteringFilename
+        | InputMode::EnteringSaveAs
+        | InputMode::OpenFileCurrentTab
+        | InputMode::OpenFileNewTab
+        | InputMode::ExecuteCommand => &mut tabs.input_buffer,
+        _ => return Ok(()),
+    };
+    let text: String = text
+        .chars()
+        .filter(|c| {
+            if digits {
+                c.is_ascii_digit()
+            } else {
+                !c.is_control()
+            }
+        })
+        .collect();
+    let Some((last, ch)) = text.char_indices().next_back() else {
+        return Ok(());
+    };
+    buffer.push_str(&text[..last]);
+    // Reuse the final character's normal refresh, including just one Find scan.
+    handle_key_event(tabs, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))?;
+    Ok(())
 }
 
 /// Drain `reader` to EOF on a background thread, keeping at most `cap` bytes.
@@ -84,8 +145,94 @@ fn format_find_status(tabs: &TabManager) -> String {
     )
 }
 
+/// Handle a pressed key and a bounded burst of already-queued ordinary keys.
+/// Return other events untouched so the current screen is drawn before handling them.
+/// `next` must return immediately when the queue is empty.
+pub fn handle_key_batch(
+    tabs: &mut TabManager,
+    first: KeyEvent,
+    terminal_size: (u16, u16),
+    mut next: impl FnMut() -> std::io::Result<Option<Event>>,
+) -> Result<(bool, Option<Event>)> {
+    let started = Instant::now();
+    let batchable = tabs.input_mode == InputMode::Normal && is_batchable_key(&first);
+    if handle_key_event(tabs, first)? {
+        return Ok((true, None));
+    }
+    if batchable {
+        for _ in 1..256 {
+            if started.elapsed() >= Duration::from_millis(8) {
+                break;
+            }
+            match next()? {
+                Some(Event::Key(key)) if is_batchable_key(&key) => {
+                    // Skipping a draw must not skip its cursor clamping and scroll updates.
+                    tabs.update_viewport(terminal_size.0, terminal_size.1);
+                    if handle_key_event(tabs, key)? {
+                        return Ok((true, None));
+                    }
+                }
+                event => return Ok((false, event)),
+            }
+        }
+    }
+    Ok((false, None))
+}
+
+fn is_batchable_key(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && match key.code {
+            KeyCode::Char(_) => is_text_input(key),
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Tab
+            | KeyCode::Enter => key.modifiers == KeyModifiers::NONE,
+            _ => false,
+        }
+}
+
 pub fn handle_key_event(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
     tabs.active_editor_mut().viewport.manual_scroll = false;
+    let switch_tab = match (key.modifiers, key.code) {
+        (KeyModifiers::ALT, KeyCode::Left | KeyCode::Char(','))
+        | (KeyModifiers::CONTROL, KeyCode::PageUp) => Some(false),
+        (KeyModifiers::ALT, KeyCode::Right | KeyCode::Char('.'))
+        | (KeyModifiers::CONTROL, KeyCode::PageDown) => Some(true),
+        _ => None,
+    };
+    if let Some(forward) = switch_tab {
+        if matches!(
+            tabs.input_mode,
+            InputMode::Normal
+                | InputMode::Find
+                | InputMode::FindOptionsMenu
+                | InputMode::Replace
+                | InputMode::ReplaceConfirm
+                | InputMode::GoToLine
+                | InputMode::HexView
+                | InputMode::ConfirmOpen
+                | InputMode::ConfirmOverwrite
+                | InputMode::EnteringFilename
+                | InputMode::EnteringSaveAs
+        ) {
+            tabs.reset_cut_tracking();
+            tabs.active_editor_mut().reset_word_complete();
+            if forward {
+                tabs.next_tab();
+            } else {
+                tabs.prev_tab();
+            }
+            return Ok(false);
+        }
+    }
     match tabs.input_mode {
         InputMode::ConfirmQuit => handle_confirm_quit(tabs, key),
         InputMode::ConfirmOverwrite => match key.code {
@@ -893,18 +1040,6 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
             tabs.new_tab();
             tabs.set_temporary_status_message("New tab".to_string());
         }
-        (KeyModifiers::ALT, KeyCode::Left) => {
-            tabs.prev_tab();
-        }
-        (KeyModifiers::ALT, KeyCode::Right) => {
-            tabs.next_tab();
-        }
-        (KeyModifiers::ALT, KeyCode::Char(',')) => {
-            tabs.prev_tab();
-        }
-        (KeyModifiers::ALT, KeyCode::Char('.')) => {
-            tabs.next_tab();
-        }
         (KeyModifiers::ALT, KeyCode::Char('w')) => {
             if tabs.active_editor().modified {
                 tabs.input_mode = InputMode::ConfirmCloseTab;
@@ -1010,12 +1145,6 @@ fn handle_normal(tabs: &mut TabManager, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::NONE, KeyCode::Right) => {
             tabs.active_editor_mut().move_cursor_right();
             tabs.needs_redraw = true;
-        }
-        (KeyModifiers::CONTROL, KeyCode::PageUp) => {
-            tabs.prev_tab();
-        }
-        (KeyModifiers::CONTROL, KeyCode::PageDown) => {
-            tabs.next_tab();
         }
         (_, KeyCode::PageUp) => {
             tabs.active_editor_mut().page_up();

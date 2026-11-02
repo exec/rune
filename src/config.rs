@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Configuration settings for the editor
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -45,14 +45,17 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 
 pub fn load_config() -> Config {
     if let Some(path) = config_path() {
-        if let Ok(config_str) = fs::read_to_string(path) {
-            if let Ok(mut config) = toml::from_str::<Config>(&config_str) {
-                config.tab_width = config.tab_width.max(1);
-                return config;
-            }
+        if let Ok(config) = load_config_file(&path) {
+            return config;
         }
     }
     Config::default()
+}
+
+pub fn load_config_file(path: &Path) -> Result<Config> {
+    let mut config: Config = toml::from_str(&fs::read_to_string(path)?)?;
+    config.tab_width = config.tab_width.max(1);
+    Ok(config)
 }
 
 pub fn save_config(config: &Config) -> Result<()> {

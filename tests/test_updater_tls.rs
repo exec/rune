@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 //! Explicit network checks for TLS dependency updates; excluded from offline CI.
 #[test]
 #[ignore = "requires access to the GitHub release API"]

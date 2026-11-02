@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 //! Regression guards for the security findings of the v1.5.3 review:
 //! backup-on-save writing through a hostile `<path>~`, and terminal escape
 //! sequences from file content reaching the terminal verbatim.

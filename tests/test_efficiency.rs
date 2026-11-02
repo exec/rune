@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 use ropey::Rope;
 use rune::editor::{line_display_width, Editor};
 use rune::tabs::TabManager;

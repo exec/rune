@@ -47,6 +47,12 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
+    - name: Check editor benchmark
+      run: python3 -m unittest discover -s tools -p 'test_editor*.py' -v
+
+    - name: Check headless library
+      run: cargo test --locked --no-default-features --lib --tests --examples
+
   build:
     name: Build
     runs-on: ubuntu-latest

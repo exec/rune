@@ -6,8 +6,42 @@ All notable changes to rune are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-02
+
+### Added
+
+- A headless document API with character-indexed selections and edits, shared undo/save protections, neutral highlight roles, and optional terminal dependencies for graphical frontends such as Etch.
+- A source-only Editor Bench tool that fetches checksum-pinned nano/Vim sources, builds private competitors, verifies timed tasks, and scores latency against fixed weighted budgets.
+- Handle terminal bracketed pastes as literal text blocks, with one-step undo and paste support in text prompts.
+- A real-terminal comparison harness for Rune, GNU nano, and Vim, with verified editing tasks, raw timing/resource measurements, and optional stack profiles.
+- Select an explicit settings file with `--config PATH` for isolated configurations.
+
 ### Performance
 
+- Scan ordinary literal searches in bounded text blocks instead of invoking the matcher separately for every line, reducing live-search pauses in large logs.
+- Insert terminal pastes in one bulk edit instead of dispatching each character and repeatedly redrawing the screen.
+- Draw cached printable ASCII directly into screen cells without Unicode grapheme parsing during redraws.
+- Process up to 256 queued ordinary keys within the existing 8 ms budget, avoiding extra intermediate redraws during fast input.
+- Load text through a bounded read buffer instead of retaining a full-file string alongside the rope, reducing large-file opening memory.
+- Use shorter column-only cursor commands for gaps on a known terminal row, reducing ASCII and Unicode output traffic.
+- Track printed Unicode glyph widths when emitting terminal cells, avoiding redundant cursor-position commands while retaining explicit positioning for uncertain emoji widths.
+- Handle queued ordinary editing and navigation keys in bounded bursts, preserving per-key viewport updates while avoiding intermediate redraws.
+- Retain unchanged rendered and highlighted lines during typing, deletion, and Tab insertion; coalesce pending invalidations into bounded line ranges and skip redundant syntax resets.
+- Draw hex views directly into terminal cells without allocating per-byte strings, span lists, or formatted offset strings.
+- Batch dense indentation edits to short selected lines in one pass.
+- Use bulk string copies for quoted text and block comments, and select syntax-cache eviction victims without sorting every entry.
+- Copy clipboard text directly from rope chunks, borrow single clipboard entries during paste, and avoid rescanning ASCII inline pastes to position the cursor.
+- Stop interactive replacement lookup at the first match without scanning for a second, and select the next Find result with binary search.
+- Reject impossible fuzzy matches using cached character summaries, score short prefix matches from cached bytes, and skip ranking work for empty queries.
+- Advance right-arrow movement from cached cursor positions without measuring the entire line after edits.
+- Stop fuzzy candidate scans once the full query has matched, and copy line-comment tails as contiguous text.
+- Stop vertical cursor clamping once the requested column is reached, and cache lines unaffected by active search or selection.
+- Ignore passive mouse movement and button-release events instead of requesting unchanged redraws.
+- Scan wrapped Unicode lines once per visible window instead of once per screen row.
+- Inspect only comment prefixes when uncommenting and skip line-width scans when the cursor is already at column zero.
+- Stream bracket matching and word navigation directly from the rope instead of seeking or copying every character.
+- Find free untitled tab names with one name index and build tab labels only for the visible portion of the tab bar.
+- Slice highlighting spans instead of rebuilding characters, and retain both selection endpoints to avoid repeated long-line scans.
 - Reuse cursor conversion positions in both directions and retain exact positions during repeated backspace.
 - Limit wrapped viewport navigation to the visible screen instead of scanning the intervening document.
 - Borrow contiguous search lines, traverse rope lines sequentially, and reuse compiled search patterns across mode-aware queries.
@@ -16,6 +50,15 @@ All notable changes to rune are documented here. The format follows
 - Borrow syntax identifiers and word-completion prefixes instead of allocating temporary copies; use prepared fuzzy candidates while rendering.
 - Rebuild dense bulk replacements in one pass while retaining the existing sparse-edit path.
 - Resolve duplicate tab filenames in one counting pass instead of comparing every pair of tabs.
+
+### Fixed
+
+- Allow tab shortcuts while searching, replacing, entering a filename, or viewing hex; document Terminal.app's Option-as-Meta setup.
+- Render `.txt`, unrecognized file types, and untitled buffers without generic syntax colors; retain search and selection highlights.
+- Refresh cached rendered colors when the syntax language changes, including after Save As.
+- Invalidate cursor position caches before placing the cursor after cutting a selection.
+- Align the cursor with inserted text after typing inside a tab or wide character.
+- Invalidate cached line widths before clamping the cursor after uncommenting or unindenting.
 
 ## [1.6.0] - 2026-10-21
 

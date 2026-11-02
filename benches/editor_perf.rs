@@ -269,27 +269,44 @@ fn make_rust_doc(lines: usize) -> String {
 
 fn bench_load_file(c: &mut Criterion) {
     let mut group = c.benchmark_group("load_file");
-    for &mb in &[1usize, 10, 50] {
-        let body = "x".repeat(mb * 1_000_000);
+    for (name, body) in [
+        ("1mb_ascii", "x".repeat(1_000_000)),
+        ("10mb_ascii", "x".repeat(10_000_000)),
+        ("50mb_ascii", "x".repeat(50_000_000)),
+        (
+            "records_100k",
+            make_doc(
+                100_000,
+                "record 00000000  alpha beta gamma delta epsilon 0123456789",
+            ),
+        ),
+        (
+            "unicode_crlf",
+            "let message = \"界e\u{301}🙂\"; // comment\r\n".repeat(200_000),
+        ),
+        (
+            "small_ascii",
+            make_doc(
+                1_000,
+                "record 00000000  alpha beta gamma delta epsilon 0123456789",
+            ),
+        ),
+    ] {
         let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
         tmp.write_all(body.as_bytes()).expect("write");
         let path = tmp.path().to_path_buf();
         let _guard = tmp; // keep file alive across iterations
-        group.throughput(Throughput::Bytes((mb * 1_000_000) as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}mb_ascii", mb)),
-            &path,
-            |b, path| {
-                b.iter_batched(
-                    Editor::new_for_test,
-                    |mut ed| {
-                        ed.load_file(black_box(path.clone())).expect("load");
-                        black_box(&ed);
-                    },
-                    criterion::BatchSize::LargeInput,
-                );
-            },
-        );
+        group.throughput(Throughput::Bytes(body.len() as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(name), &path, |b, path| {
+            b.iter_batched(
+                Editor::new_for_test,
+                |mut ed| {
+                    ed.load_file(black_box(path.clone())).expect("load");
+                    black_box(&ed);
+                },
+                criterion::BatchSize::LargeInput,
+            );
+        });
     }
     group.finish();
 }
@@ -740,8 +757,694 @@ fn bench_second_efficiency_pass(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_rare_efficiency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rare_efficiency");
+    let unicode = "界e\u{301} xyz ".repeat(40_000);
+    group.bench_function("unicode_wrap_end_20_frames", |b| {
+        b.iter_batched(
+            || {
+                let mut tabs = TabManager::new_for_test();
+                tabs.config.word_wrap = true;
+                let e = tabs.active_editor_mut();
+                e.rope = Rope::from_str(&unicode);
+                e.viewport.cursor_pos = (0, rune::editor::line_display_width(&e.rope, 0));
+                let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                (tabs, terminal)
+            },
+            |(mut tabs, mut terminal)| {
+                for _ in 0..20 {
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                }
+                black_box(tabs);
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    let commented = "\u{3000}  // ".to_owned() + &"x".repeat(10_000_000);
+    group.bench_function("uncomment_10mb_line", |b| {
+        b.iter_batched(
+            || editor_with(&commented),
+            |mut e| {
+                e.toggle_comment();
+                assert_eq!(e.rope.len_bytes(), commented.len() - 3);
+                assert!(e.rope.slice(..4).to_string().starts_with("\u{3000}  x"));
+                black_box(e);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
+fn bench_common_efficiency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("common_efficiency");
+    let long_lines = ("x".repeat(10_000) + "\n").repeat(501);
+    group.bench_function("down_500_at_column_4", |b| {
+        b.iter_batched(
+            || {
+                let mut e = editor_with(&long_lines);
+                e.viewport.cursor_pos = (0, 4);
+                e
+            },
+            |mut e| {
+                for _ in 0..500 {
+                    e.move_cursor_down();
+                }
+                assert_eq!(e.viewport.cursor_pos, (500, 4));
+                black_box(e);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    let document = "needle\n".to_owned() + &("ordinary ".repeat(250) + "\n").repeat(60);
+    for search in [true, false] {
+        group.bench_function(
+            if search {
+                "search_100_frames_one_matching_line"
+            } else {
+                "selection_100_frames_one_selected_line"
+            },
+            |b| {
+                b.iter_batched(
+                    || {
+                        let mut tabs = TabManager::new_for_test();
+                        let e = tabs.active_editor_mut();
+                        e.rope = Rope::from_str(&document);
+                        if search {
+                            assert!(e.perform_find("needle"));
+                        } else {
+                            e.mark_anchor = Some((0, 0));
+                            e.viewport.cursor_pos = (0, 3);
+                        }
+                        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                        terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                        (tabs, terminal)
+                    },
+                    |(mut tabs, mut terminal)| {
+                        for _ in 0..100 {
+                            terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                        }
+                        black_box(tabs);
+                    },
+                    criterion::BatchSize::SmallInput,
+                )
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_remaining_efficiency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("remaining_efficiency");
+    let text = "a".repeat(200_000);
+    group.bench_function("type_then_right_100_long_line", |b| {
+        b.iter_batched(
+            || {
+                let mut e = editor_with(&text);
+                e.viewport.cursor_pos = (0, 4);
+                e
+            },
+            |mut e| {
+                for _ in 0..100 {
+                    e.insert_char('x');
+                    e.move_cursor_right();
+                }
+                assert_eq!(e.viewport.cursor_pos, (0, 204));
+                assert_eq!(e.rope.len_chars(), 200_100);
+                black_box(e);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    let candidates: Vec<_> = (0..2000)
+        .map(|i| {
+            rune::fuzzy::FuzzyCandidate::new(
+                i,
+                format!("module_{i}_{}", "directory_segment/".repeat(60)),
+            )
+        })
+        .collect();
+    group.bench_function("fuzzy_short_query_2000_long_names", |b| {
+        b.iter(|| {
+            let matches =
+                rune::fuzzy::fuzzy_filter_prepared(black_box("mod"), black_box(&candidates));
+            assert_eq!(matches.len(), 2000);
+            black_box(matches);
+        })
+    });
+    let comment = "// ".to_owned() + &"long comment text ".repeat(180_000);
+    group.bench_function("highlight_3mb_line_comment", |b| {
+        b.iter_batched(
+            || {
+                let mut h = SyntaxHighlighter::new();
+                h.set_syntax(Some("Rust"));
+                h
+            },
+            |mut h| {
+                let spans = h.highlight_line(0, black_box(&comment));
+                assert_eq!(
+                    spans.iter().map(|(_, s)| s.len()).sum::<usize>(),
+                    comment.len()
+                );
+                black_box(spans);
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    group.finish();
+}
+
+fn bench_fuzzy_pruning(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fuzzy_pruning");
+    for long in [false, true] {
+        let names: Vec<_> = (0..2000)
+            .map(|i| {
+                format!(
+                    "module_{i}_{}tail.rs",
+                    if long {
+                        "directory_segment/".repeat(60)
+                    } else {
+                        "src/".into()
+                    }
+                )
+            })
+            .collect();
+        let prepared: Vec<_> = names
+            .iter()
+            .enumerate()
+            .map(|(i, s)| rune::fuzzy::FuzzyCandidate::new(i, s.clone()))
+            .collect();
+        for (label, query) in [
+            ("early", "mod"),
+            ("late", "tail"),
+            ("absent", "z"),
+            ("wrong_order", "tailmod"),
+            ("unicode_absent", "界"),
+        ] {
+            group.bench_function(
+                format!("{}_{}", if long { "long" } else { "short" }, label),
+                |b| {
+                    b.iter(|| {
+                        let matches = rune::fuzzy::fuzzy_filter_prepared(
+                            black_box(query),
+                            black_box(&prepared),
+                        );
+                        assert_eq!(
+                            matches.len(),
+                            if ["mod", "tail"].contains(&query) {
+                                2000
+                            } else {
+                                0
+                            }
+                        );
+                        black_box(matches);
+                    })
+                },
+            );
+        }
+        group.bench_function(
+            if long {
+                "prepare_long"
+            } else {
+                "prepare_short"
+            },
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        names
+                            .iter()
+                            .enumerate()
+                            .map(|(i, s)| rune::fuzzy::FuzzyCandidate::new(i, s.clone()))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_search_interactions(c: &mut Criterion) {
+    let mut group = c.benchmark_group("search_interactions");
+    let sparse = "needle\n".to_owned() + &("x".repeat(1000) + "\n").repeat(10_000);
+    group.bench_function("interactive_first_then_10mb_without_matches", |b| {
+        b.iter_batched(
+            || {
+                let mut e = editor_with(&sparse);
+                assert!(e.perform_find("needle"));
+                e
+            },
+            |mut e| {
+                assert_eq!(e.perform_replace_interactive("needle", "result"), 1);
+                assert_eq!(e.rope.line(0).to_string(), "result\n");
+                black_box(e);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    let dense = make_doc(20_000, "needle in this line");
+    group.bench_function("find_10k_results_from_document_end", |b| {
+        b.iter_batched(
+            || {
+                let mut e = editor_with(&dense);
+                e.search.search_buffer = "needle".into();
+                e.search.find_all_matches(&e.rope);
+                e.viewport.cursor_pos = (19_999, 0);
+                e
+            },
+            |mut e| {
+                assert!(e.perform_find("needle"));
+                assert_eq!(e.search.current_match_index, Some(0));
+                assert_eq!(e.viewport.cursor_pos, (0, 0));
+                black_box(e);
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
+fn bench_clipboard_efficiency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("clipboard_efficiency");
+    let text = "x".repeat(10_000_000) + "\n";
+    for cut in [false, true] {
+        group.bench_function(
+            if cut {
+                "cut_10mb_line"
+            } else {
+                "copy_10mb_line"
+            },
+            |b| {
+                b.iter_batched(
+                    || {
+                        let mut tabs = TabManager::new_for_test();
+                        tabs.active_editor_mut().rope = Rope::from_str(&text);
+                        tabs
+                    },
+                    |mut tabs| {
+                        if cut {
+                            tabs.cut();
+                            assert_eq!(tabs.active_editor().rope.len_chars(), 0);
+                        } else {
+                            tabs.copy();
+                        }
+                        assert_eq!(tabs.clipboard.len(), 1);
+                        assert_eq!(tabs.clipboard[0].len(), text.len());
+                        black_box(tabs);
+                    },
+                    criterion::BatchSize::LargeInput,
+                )
+            },
+        );
+    }
+    let payload = "x".repeat(10_000_000);
+    for inline in [false, true] {
+        group.bench_function(
+            if inline {
+                "paste_inline_10mb_ascii"
+            } else {
+                "paste_above_10mb_ascii"
+            },
+            |b| {
+                b.iter_batched(
+                    || {
+                        let mut tabs = TabManager::new_for_test();
+                        tabs.active_editor_mut().rope = Rope::from_str("original\n");
+                        tabs.active_editor_mut().viewport.cursor_pos = (0, 3);
+                        tabs.clipboard = vec![payload.clone()];
+                        tabs
+                    },
+                    |mut tabs| {
+                        if inline {
+                            tabs.paste_inline();
+                            assert_eq!(
+                                tabs.active_editor().viewport.cursor_pos,
+                                (0, payload.len() + 3)
+                            );
+                        } else {
+                            tabs.paste();
+                            assert_eq!(tabs.active_editor().viewport.cursor_pos, (0, 0));
+                        }
+                        assert_eq!(tabs.active_editor().rope.len_chars(), payload.len() + 9);
+                        assert_eq!(tabs.clipboard[0].len(), payload.len());
+                        black_box(tabs);
+                    },
+                    criterion::BatchSize::LargeInput,
+                )
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_syntax_efficiency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("syntax_efficiency");
+    for (name, text) in [
+        (
+            "quoted_3mb",
+            format!("\"{}\" let after = true;", "quoted text ".repeat(250_000)),
+        ),
+        (
+            "block_comment_3mb",
+            format!("/*{}*/ let after = true;", "comment text ".repeat(250_000)),
+        ),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter_batched(
+                || {
+                    let mut h = SyntaxHighlighter::new();
+                    h.set_syntax(Some("Rust"));
+                    h
+                },
+                |mut h| {
+                    let spans = h.highlight_line(0, &text);
+                    assert_eq!(
+                        spans.iter().map(|(_, s)| s.len()).sum::<usize>(),
+                        text.len()
+                    );
+                    black_box(spans);
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.bench_function("scroll_20000_short_lines", |b| {
+        b.iter_batched(
+            || {
+                let mut h = SyntaxHighlighter::new();
+                h.set_syntax(Some("Rust"));
+                h
+            },
+            |mut h| {
+                for line in 0..20000 {
+                    black_box(h.highlight_line(line, "// comment"));
+                }
+                black_box(h);
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    group.finish();
+}
+
+fn bench_bulk_indentation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bulk_indentation");
+    for remove in [false, true] {
+        let text = make_doc(
+            100_000,
+            if remove {
+                "    short line"
+            } else {
+                "short line"
+            },
+        );
+        group.bench_function(
+            if remove {
+                "unindent_100k_lines"
+            } else {
+                "indent_100k_lines"
+            },
+            |b| {
+                b.iter_batched(
+                    || {
+                        let mut tabs = TabManager::new_for_test();
+                        let e = tabs.active_editor_mut();
+                        e.rope = Rope::from_str(&text);
+                        e.mark_anchor = Some((0, 0));
+                        e.viewport.cursor_pos = (99_999, 0);
+                        tabs.config.tab_width = 4;
+                        tabs
+                    },
+                    |mut tabs| {
+                        if remove {
+                            tabs.unindent_lines();
+                        } else {
+                            tabs.indent_lines();
+                        }
+                        assert_eq!(
+                            tabs.active_editor().rope.len_bytes(),
+                            if remove { 1_100_000 } else { 1_500_000 }
+                        );
+                        black_box(tabs);
+                    },
+                    criterion::BatchSize::LargeInput,
+                )
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_hex_rendering(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hex_rendering");
+    for (name, width, moving) in [
+        ("steady_100_frames", 100, false),
+        ("cursor_100_frames", 100, true),
+        ("narrow_100_frames", 20, true),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter_batched(
+                || {
+                    let state = rune::hex::HexViewState::new((0..16384).map(|i| i as u8).collect());
+                    let terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+                    (state, terminal)
+                },
+                |(mut state, mut terminal)| {
+                    for frame in 0..100 {
+                        if moving {
+                            state.cursor = frame;
+                        }
+                        terminal
+                            .draw(|f| rune::hex::draw_hex_view(f, f.area(), &mut state))
+                            .unwrap();
+                    }
+                    assert_eq!(state.raw_bytes.len(), 16384);
+                    black_box(state);
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+fn bench_typing_cache(c: &mut Criterion) {
+    let mut group = c.benchmark_group("typing_cache");
+    for name in [
+        "insert_100_frames",
+        "backspace_100_frames",
+        "delete_100_frames",
+        "tab_100_frames",
+        "unicode_wrap_100_frames",
+        "newline_100_frames",
+    ] {
+        group.bench_function(name, |b| {
+            b.iter_batched(
+                || {
+                    let mut tabs = TabManager::new_for_test();
+                    tabs.config.word_wrap = name == "unicode_wrap_100_frames";
+                    let text = if tabs.config.word_wrap {
+                        ("界e\u{301} ".repeat(25) + "\n").repeat(500)
+                    } else {
+                        ("fn item() { let value = true; } ".repeat(6) + "\n").repeat(500)
+                    };
+                    let e = tabs.active_editor_mut();
+                    e.rope = Rope::from_str(&text);
+                    e.syntax_name = Some("Rust".into());
+                    e.highlighter.set_syntax(Some("Rust"));
+                    if name == "backspace_100_frames" {
+                        e.viewport.cursor_pos = (0, 100);
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                    (tabs, terminal)
+                },
+                |(mut tabs, mut terminal)| {
+                    for _ in 0..100 {
+                        match name {
+                            "backspace_100_frames" => tabs.active_editor_mut().delete_char(),
+                            "delete_100_frames" => tabs.active_editor_mut().delete_char_forward(),
+                            "tab_100_frames" => tabs.handle_tab_insertion(),
+                            "newline_100_frames" => tabs.active_editor_mut().insert_newline(false),
+                            _ => tabs.active_editor_mut().insert_char('x'),
+                        }
+                        terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                    }
+                    black_box(tabs);
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+fn bench_input_bursts(c: &mut Criterion) {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut group = c.benchmark_group("input_bursts");
+    for name in [
+        "typing_256",
+        "plain_typing_256",
+        "navigation_256",
+        "unicode_wrap_256",
+        "isolated_key",
+    ] {
+        group.bench_function(name, |b| {
+            b.iter_batched(
+                || {
+                    let mut tabs = TabManager::new_for_test();
+                    tabs.config.word_wrap = name == "unicode_wrap_256";
+                    let text = if tabs.config.word_wrap {
+                        ("界e\u{301} ".repeat(25) + "\n").repeat(500)
+                    } else if name == "plain_typing_256" {
+                        make_doc(
+                            1_000,
+                            "record 00000000  alpha beta gamma delta epsilon 0123456789",
+                        )
+                    } else {
+                        ("fn item() { let value = true; } ".repeat(6) + "\n").repeat(500)
+                    };
+                    let e = tabs.active_editor_mut();
+                    e.rope = Rope::from_str(&text);
+                    if name != "plain_typing_256" {
+                        e.highlighter.set_syntax(Some("Rust"));
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                    terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                    (tabs, terminal)
+                },
+                |(mut tabs, mut terminal)| {
+                    let code = if name == "navigation_256" {
+                        KeyCode::Down
+                    } else {
+                        KeyCode::Char('x')
+                    };
+                    let key = KeyEvent::new(code, KeyModifiers::NONE);
+                    let mut events = std::iter::repeat_n(
+                        Event::Key(key),
+                        if name == "isolated_key" { 1 } else { 256 },
+                    );
+                    let mut pending = None;
+                    while let Some(event) = pending.take().or_else(|| events.next()) {
+                        if let Event::Key(key) = event {
+                            let (quit, next) =
+                                rune::input::handle_key_batch(&mut tabs, key, (120, 40), || {
+                                    Ok(events.next())
+                                })
+                                .unwrap();
+                            assert!(!quit);
+                            pending = next;
+                        }
+                        terminal.draw(|f| draw_ui(f, &mut tabs)).unwrap();
+                    }
+                    black_box(tabs);
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+fn bench_terminal_output(c: &mut Criterion) {
+    use ratatui::{backend::Backend, buffer::Buffer, layout::Rect};
+    let mut group = c.benchmark_group("terminal_output");
+    for (name, text) in [
+        ("ascii_100_draws", "abcdef ".repeat(16)),
+        ("unicode_100_draws", "界e\u{301} ".repeat(28)),
+        ("contiguous_ascii_100_draws", "a".repeat(112)),
+    ] {
+        let buffer = Buffer::with_lines(std::iter::repeat_n(text, 37));
+        let empty = Buffer::empty(Rect::new(0, 0, buffer.area.width, buffer.area.height));
+        let updates = empty.diff(&buffer);
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let mut bytes = Vec::new();
+                let mut backend = rune::backend::TerminalBackend::new(&mut bytes);
+                for _ in 0..100 {
+                    backend.draw(updates.clone().into_iter()).unwrap();
+                }
+                black_box(bytes);
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_live_search_latency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("live_search_latency");
+    for lines in [100_000, 1_000_000] {
+        let text = make_doc(
+            lines,
+            "record 00000000  alpha beta gamma delta epsilon 0123456789",
+        ) + "quartz target at EOF\n";
+        let rope = Rope::from_str(&text);
+        group.bench_function(format!("type_6_chars_{lines}_lines"), |b| {
+            b.iter(|| {
+                let mut search = SearchState::default();
+                for query in ["q", "qu", "qua", "quar", "quart", "quartz"] {
+                    search.search_buffer = query.into();
+                    let result = search.find_all_match_spans(black_box(&rope));
+                    assert_eq!(result, [(lines, 0, query.len())]);
+                    black_box(result);
+                }
+            });
+        });
+    }
+    for (name, text, query, regex, count) in [
+        (
+            "dense_literal",
+            make_doc(50_000, "alpha beta gamma"),
+            "a",
+            false,
+            10_000,
+        ),
+        (
+            "regex_control",
+            make_doc(50_000, "alpha beta gamma"),
+            "a[a-z]+",
+            true,
+            10_000,
+        ),
+        (
+            "unicode_literal",
+            "界Kelvin Σσς word\r\n".repeat(50_000),
+            "kelvin",
+            false,
+            10_000,
+        ),
+    ] {
+        let rope = Rope::from_str(&text);
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let mut search = SearchState::default();
+                search.search_buffer = query.into();
+                search.use_regex = regex;
+                let result = search.find_all_match_spans(black_box(&rope));
+                assert_eq!(result.len(), count);
+                black_box(result);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_live_search_latency,
+    bench_terminal_output,
+    bench_input_bursts,
+    bench_typing_cache,
+    bench_hex_rendering,
+    bench_bulk_indentation,
+    bench_syntax_efficiency,
+    bench_clipboard_efficiency,
+    bench_search_interactions,
+    bench_fuzzy_pruning,
+    bench_remaining_efficiency,
+    bench_common_efficiency,
+    bench_rare_efficiency,
     bench_second_efficiency_pass,
     bench_efficiency_edges,
     bench_perform_replace,

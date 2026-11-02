@@ -9,7 +9,9 @@ use ratatui::prelude::*;
 use std::fs::File;
 use std::io::{self, stdout, Read as _};
 use std::path::PathBuf;
+use std::time::Duration;
 
+use rune::backend::TerminalBackend;
 use rune::constants;
 use rune::input;
 use rune::tabs;
@@ -21,6 +23,10 @@ use rune::updater;
 struct Cli {
     /// Files or directories to open
     files: Vec<PathBuf>,
+
+    /// Read settings from this file instead of the usual configuration
+    #[arg(long)]
+    config: Option<PathBuf>,
 
     /// Recursively open files in directories
     #[arg(short, long)]
@@ -122,11 +128,18 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn new(mouse: bool) -> Result<Self> {
         enable_raw_mode()?;
+        let guard = Self;
         execute!(stdout(), EnterAlternateScreen)?;
+        // shortcut: delayed ESC headers inherit Crossterm parsing; revisit with upstream support.
+        match execute!(stdout(), crossterm::event::EnableBracketedPaste) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {}
+            Err(error) => return Err(error.into()),
+        }
         if mouse {
             execute!(stdout(), crossterm::event::EnableMouseCapture)?;
         }
-        Ok(Self)
+        Ok(guard)
     }
 }
 
@@ -136,6 +149,7 @@ impl Drop for TerminalGuard {
         // (which did it unconditionally) and covers the case where the user
         // toggled mouse mode on/off at runtime via the options menu. It's a
         // harmless no-op if capture isn't currently active.
+        let _ = execute!(stdout(), crossterm::event::DisableBracketedPaste);
         let _ = execute!(stdout(), crossterm::event::DisableMouseCapture);
         let _ = execute!(stdout(), LeaveAlternateScreen);
         let _ = disable_raw_mode();
@@ -148,6 +162,7 @@ fn main() -> Result<()> {
     // hook prints the panic message.
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(stdout(), crossterm::event::DisableBracketedPaste);
         let _ = execute!(stdout(), crossterm::event::DisableMouseCapture);
         let _ = execute!(stdout(), LeaveAlternateScreen);
         let _ = disable_raw_mode();
@@ -158,7 +173,10 @@ fn main() -> Result<()> {
     let position = extract_position(&mut args);
     let cli = Cli::parse_from(args);
 
-    let mut tab_manager = tabs::TabManager::new();
+    let mut tab_manager = match cli.config {
+        Some(path) => tabs::TabManager::new_with_config_file(path)?,
+        None => tabs::TabManager::new(),
+    };
 
     // Apply CLI flag overrides
     if cli.view {
@@ -188,7 +206,7 @@ fn main() -> Result<()> {
     // unwind, replacing the old manual cleanup block.
     let _terminal_guard = TerminalGuard::new(tab_manager.config.mouse_enabled)?;
 
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    let mut terminal = Terminal::new(TerminalBackend::new(stdout()))?;
     terminal.clear()?;
 
     let files = expand_paths(&cli.files, cli.recursive);
@@ -240,9 +258,10 @@ fn main() -> Result<()> {
 }
 
 fn run_editor(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<TerminalBackend<io::Stdout>>,
     tabs: &mut tabs::TabManager,
 ) -> Result<()> {
+    let mut pending_event = None;
     loop {
         if tabs.needs_redraw {
             #[cfg(target_os = "macos")]
@@ -276,13 +295,28 @@ fn run_editor(
             tabs.set_temporary_status_message(msg);
         }
 
-        if event::poll(constants::EVENT_POLL_INTERVAL)? {
-            match event::read()? {
-                Event::Key(key)
-                    if key.kind == KeyEventKind::Press && input::handle_key_event(tabs, key)? =>
-                {
-                    break;
+        if pending_event.is_some() || event::poll(constants::EVENT_POLL_INTERVAL)? {
+            let next_event = match pending_event.take() {
+                Some(event) => event,
+                None => event::read()?,
+            };
+            match next_event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    let area = terminal.get_frame().area();
+                    let (quit, next) =
+                        input::handle_key_batch(tabs, key, (area.width, area.height), || {
+                            if event::poll(Duration::ZERO)? {
+                                event::read().map(Some)
+                            } else {
+                                Ok(None)
+                            }
+                        })?;
+                    if quit {
+                        break;
+                    }
+                    pending_event = next;
                 }
+                Event::Paste(text) => input::handle_paste(tabs, &text)?,
                 Event::Mouse(mouse) if tabs.config.mouse_enabled => {
                     let size = terminal.size()?;
                     tabs.handle_mouse_event(mouse, size.height as usize);

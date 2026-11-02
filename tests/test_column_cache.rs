@@ -280,3 +280,27 @@ fn memo_does_not_leak_across_lines() {
         }
     }
 }
+
+/// Redraws alternate between a fixed anchor and a moving selection endpoint.
+#[test]
+fn alternating_selection_endpoints_survive_edits() {
+    let mut ed = Editor::new_buffer();
+    ed.rope = Rope::from_str(&format!("{}\n", "a\t日e\u{301}z".repeat(1000)));
+    let width = ref_char_idx_to_display_col(&ed.rope, 0, usize::MAX);
+    for end in (width - 30)..=width {
+        for col in [1, end, 1, end] {
+            assert_eq!(
+                ed.line_col_to_char_idx(0, col),
+                ref_line_col_to_char_idx(&ed.rope, 0, col)
+            );
+        }
+    }
+    ed.viewport.cursor_pos = (0, 0);
+    ed.insert_char('日');
+    for col in [1, width, 1, width + 2] {
+        assert_eq!(
+            ed.line_col_to_char_idx(0, col),
+            ref_line_col_to_char_idx(&ed.rope, 0, col)
+        );
+    }
+}

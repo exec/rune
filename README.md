@@ -92,6 +92,20 @@ rune -r .
 rune
 ```
 
+## Embedding
+
+Rune can also be embedded without its terminal frontend. See
+[using Rune from Etch](docs/embedding.md) for the document API and feature flags.
+
+## Performance comparisons
+
+Run `python3 tools/editor_bench.py` to fetch pinned nano/Vim sources, build all
+three editors, verify their edits, and produce an opinionated weighted score.
+See [Editor Bench v1](tools/EDITOR_BENCH.md) for requirements, weights, and timing contracts.
+
+See [the editor comparison harness](docs/editor-performance.md) for reproducible
+PTY benchmarks and stack profiles against GNU nano and Vim.
+
 ## Keybindings
 
 ### Essential Commands
@@ -116,7 +130,20 @@ rune
 - **End** - Go to end of line
 - **Mouse** - Click to position, drag to select, scroll to navigate
 
+### Tabs
+
+- **Ctrl+T** - New tab
+- **Alt+,** / **Alt+.** - Previous / next tab (also Alt+Left/Right or Ctrl+Page Up/Down)
+- **Ctrl+P** - Choose a tab with the fuzzy finder
+- **Alt+W** - Close tab
+
+In macOS Terminal.app, enable **Settings → Profiles → Keyboard → Use Option as Meta key**, then use **Option+,** / **Option+.**. See [Apple's keyboard settings guide](https://support.apple.com/en-mide/guide/terminal/trmlkbrd/mac).
+Tab shortcuts also leave Find, Replace, Go To Line, and Hex view when switching to another tab.
+
 ### Editing
+
+On terminals with bracketed paste support, your terminal's Paste command inserts a literal block, preserving tabs and indentation, with one-step undo.
+
 - **Enter** - Insert new line
 - **Backspace** - Delete character before cursor
 - **Regular typing** - Insert text at cursor
@@ -149,7 +176,12 @@ rune
 
 ## Configuration
 
-Press **Ctrl+O** to open the options menu for live configuration. Settings are automatically saved to `~/.config/rune/config.toml`.
+Use `rune --config /path/to/settings.toml` to select another configuration file.
+Missing or invalid explicit files fail before the editor starts.
+
+Press **Ctrl+O** to open the options menu for live configuration. Settings are saved
+to the selected file. The default is `~/Library/Application Support/rune/config.toml`
+on macOS or `~/.config/rune/config.toml` on Linux (under `XDG_CONFIG_HOME` when set).
 
 ### Available Options
 - **M** - Toggle mouse mode on/off (allows terminal text selection when disabled)
@@ -168,6 +200,8 @@ word_wrap = false        # Enable/disable word wrap
 - Works from any mode (editing, visual selection, filename input)
 
 ## Syntax Highlighting
+
+Unrecognized file types, including `.txt`, and untitled buffers use plain text without generic syntax coloring. Search and selection highlights still apply.
 
 **Smart, lazy highlighting** with intelligent caching for optimal performance:
 

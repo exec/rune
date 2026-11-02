@@ -3,6 +3,7 @@ use ropey::Rope;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fs;
+use std::io::{self, BufReader, Read};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -12,10 +13,73 @@ use crate::hex::HexViewState;
 use crate::search::SearchState;
 use crate::syntax::SyntaxHighlighter;
 
+pub(crate) fn line_comment_prefix(syntax: Option<&str>) -> Option<&'static str> {
+    match syntax {
+        Some("Rust") | Some("C") | Some("C++") | Some("Go") | Some("JavaScript")
+        | Some("TypeScript") | Some("Java") | Some("Swift") | Some("Kotlin") | Some("Zig") => {
+            Some("// ")
+        }
+        Some("Python")
+        | Some("Ruby")
+        | Some("Shell Script (Bash)")
+        | Some("Perl")
+        | Some("R")
+        | Some("YAML")
+        | Some("TOML") => Some("# "),
+        Some("Lua") | Some("SQL") => Some("-- "),
+        Some("HTML") | Some("XML") | Some("CSS") => None,
+        _ => Some("// "),
+    }
+}
+
+pub(crate) fn line_comment_at(line: ropey::RopeSlice<'_>, prefix: &str) -> Option<(usize, usize)> {
+    let mut chars = line.chars().enumerate().peekable();
+    while chars.peek().is_some_and(|(_, ch)| ch.is_whitespace()) {
+        chars.next();
+    }
+    let start = chars.peek()?.0;
+    let marker = prefix.trim_end();
+    for expected in marker.chars() {
+        if chars.next()?.1 != expected {
+            return None;
+        }
+    }
+    let len = marker.chars().count() + usize::from(chars.peek().is_some_and(|&(_, ch)| ch == ' '));
+    Some((start, len))
+}
+
+pub(crate) fn unindent_len(line: ropey::RopeSlice<'_>, width: usize) -> usize {
+    let mut count = 0;
+    for ch in line.chars() {
+        if ch == ' ' && count < width {
+            count += 1;
+        } else if ch == '\t' && count == 0 {
+            return 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+// Ropey's reader propagates Interrupted; preserve read_to_string's retry behavior.
+struct RetryInterrupted<R>(R);
+
+impl<R: Read> Read for RetryInterrupted<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.0.read(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => return result,
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct UndoState {
+pub struct UndoState<P = (usize, usize)> {
     pub rope: Rope,
-    pub cursor_pos: (usize, usize),
+    pub cursor_pos: P,
 }
 
 /// Viewport and cursor state
@@ -29,13 +93,13 @@ pub struct ViewportState {
 
 /// Undo/redo management
 #[derive(Default)]
-pub struct UndoManager {
-    pub undo_stack: VecDeque<UndoState>,
-    pub redo_stack: VecDeque<UndoState>,
+pub struct UndoManager<P = (usize, usize)> {
+    pub undo_stack: VecDeque<UndoState<P>>,
+    pub redo_stack: VecDeque<UndoState<P>>,
 }
 
-impl UndoManager {
-    pub fn save_state(&mut self, rope: &Rope, cursor_pos: (usize, usize)) {
+impl<P: Clone> UndoManager<P> {
+    pub fn save_state(&mut self, rope: &Rope, cursor_pos: P) {
         let state = UndoState {
             rope: rope.clone(),
             cursor_pos,
@@ -49,7 +113,7 @@ impl UndoManager {
     }
 
     /// Apply undo or redo. `is_undo=true` pops from undo_stack, pushes to redo_stack.
-    fn apply(&mut self, is_undo: bool, rope: &mut Rope, cursor_pos: &mut (usize, usize)) -> bool {
+    fn apply(&mut self, is_undo: bool, rope: &mut Rope, cursor_pos: &mut P) -> bool {
         let (from, to) = if is_undo {
             (&mut self.undo_stack, &mut self.redo_stack)
         } else {
@@ -59,7 +123,7 @@ impl UndoManager {
         if let Some(state) = from.pop_back() {
             let current = UndoState {
                 rope: rope.clone(),
-                cursor_pos: *cursor_pos,
+                cursor_pos: cursor_pos.clone(),
             };
             to.push_back(current);
             *rope = state.rope;
@@ -70,11 +134,11 @@ impl UndoManager {
         }
     }
 
-    pub fn undo(&mut self, rope: &mut Rope, cursor_pos: &mut (usize, usize)) -> bool {
+    pub fn undo(&mut self, rope: &mut Rope, cursor_pos: &mut P) -> bool {
         self.apply(true, rope, cursor_pos)
     }
 
-    pub fn redo(&mut self, rope: &mut Rope, cursor_pos: &mut (usize, usize)) -> bool {
+    pub fn redo(&mut self, rope: &mut Rope, cursor_pos: &mut P) -> bool {
         self.apply(false, rope, cursor_pos)
     }
 }
@@ -143,6 +207,8 @@ pub struct Editor {
     /// defined to yield the first. Only values that preserve the invariant may be
     /// stored here; `char_idx_to_display_col` therefore uses its own slot below.
     col_index_cache: Cell<Option<(usize, usize, usize)>>,
+    // Keep both selection endpoints warm when redraws alternate between them.
+    previous_col_index_cache: Cell<Option<(usize, usize, usize)>>,
     /// Memo for `char_idx_to_display_col`, same shape but no first-index
     /// requirement: char index -> width is unambiguous in that direction.
     ///
@@ -162,6 +228,9 @@ pub struct Editor {
     /// Accumulates the minimum across edits, so it stays correct when several
     /// happen between frames.
     pub dirty_from_line: usize,
+    /// Exclusive end of pending dirty lines, or 0 with no pending edits.
+    /// `usize::MAX` means line numbering may shift through the rest of the buffer.
+    pub dirty_to_line: usize,
     /// Globally unique, never-reused identifier for this buffer. Used by the
     /// render layer to key per-buffer caches without relying on memory
     /// addresses (which can be reused after a tab is closed).
@@ -256,9 +325,11 @@ impl Editor {
             word_complete_prefix_len: 0,
             line_width_cache: Cell::new(None),
             col_index_cache: Cell::new(None),
+            previous_col_index_cache: Cell::new(None),
             width_index_cache: Cell::new(None),
             dirty_generation: 0,
             dirty_from_line: usize::MAX,
+            dirty_to_line: 0,
             buffer_id: NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
@@ -269,25 +340,28 @@ impl Editor {
     }
 
     pub fn load_file(&mut self, path: PathBuf) -> Result<()> {
-        // `fs::read_to_string` + `Rope::from_str` is actually faster than
-        // `Rope::from_reader` on warm SSD across the 1MB–50MB range tested
-        // (measured via `load_file` benchmarks). A streaming path would be
-        // worth reconsidering for cold-disk / network-mount scenarios.
-        let content = fs::read_to_string(&path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidData {
-                anyhow::anyhow!("{}: binary or non-UTF-8 file", path.display())
-            } else {
-                anyhow::Error::from(e)
-            }
-        })?;
-        *self = Self::new_buffer();
-        self.rope = Rope::from_str(&content);
-        self.saved_content = Some(self.rope.clone());
-        self.newline = if content.contains("\r\n") {
+        // Coalesce Ropey's small reads without retaining a full-file temporary.
+        let rope = fs::File::open(&path)
+            .and_then(|file| {
+                Rope::from_reader(BufReader::with_capacity(64 * 1024, RetryInterrupted(file)))
+            })
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::InvalidData {
+                    anyhow::anyhow!("{}: binary or non-UTF-8 file", path.display())
+                } else {
+                    anyhow::Error::from(e)
+                }
+            })?;
+        // Ropey keeps CRLF pairs within one chunk, including across read boundaries.
+        let newline = if rope.chunks().any(|chunk| chunk.contains("\r\n")) {
             "\r\n"
         } else {
             "\n"
         };
+        *self = Self::new_buffer();
+        self.rope = rope;
+        self.saved_content = Some(self.rope.clone());
+        self.newline = newline;
 
         let first_line = self.rope.line(0).as_str().map(|s| s.trim_end_matches('\n'));
         self.syntax_name = self.highlighter.detect_syntax(Some(&path), first_line);
@@ -318,8 +392,23 @@ impl Editor {
         let line = self.viewport.cursor_pos.0;
         let line_start = self.rope.line_to_char(line);
         let pos = self.cursor_char_idx();
+        let exact_cursor = self
+            .insertion_cursor
+            .is_some_and(|(generation, cursor, index)| {
+                generation == self.dirty_generation
+                    && cursor == self.viewport.cursor_pos
+                    && index == pos
+            });
+        if !exact_cursor
+            && self.col_index_cache.get()
+                != Some((line, pos - line_start, self.viewport.cursor_pos.1))
+        {
+            // A click inside a tab or wide glyph inserts at that glyph's start.
+            self.viewport.cursor_pos.1 = self.char_idx_to_display_col(line, pos - line_start);
+        }
+        let old_line_count = self.rope.len_lines();
         self.rope.insert_char(pos, c);
-        self.mark_document_changed(line);
+        self.mark_local_edit(line, pos, old_line_count);
         // Advance cursor directly. Avoids `move_cursor_right`'s cache query
         // on the hot typing path; the cache would be cold anyway because
         // `mark_document_changed` just cleared it.
@@ -338,15 +427,47 @@ impl Editor {
             // prefix width unchanged, so `pos + 1` would not be the *first* index
             // at that column and would violate the memo's invariant.
             if w > 0 {
-                self.col_index_cache.set(Some((
+                self.remember_column_index((
                     line,
                     pos + 1 - line_start,
                     self.viewport.cursor_pos.1,
-                )));
+                ));
             }
         }
         self.insertion_cursor = Some((self.dirty_generation, self.viewport.cursor_pos, pos + 1));
         self.modified = true;
+    }
+
+    /// Insert one literal text block as a single undoable edit.
+    pub fn insert_text(&mut self, text: &str) {
+        self.save_undo_state();
+        self.mark_anchor = None;
+        let insert_line = self.viewport.cursor_pos.0;
+        let pos = self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
+        let end_col =
+            (text.is_ascii() && text.bytes().all(|b| b >= b' ' && b != 0x7f)).then(|| {
+                let line_start = self.rope.line_to_char(insert_line);
+                self.char_idx_to_display_col(insert_line, pos - line_start) + text.len()
+            });
+        self.rope.insert(pos, text);
+        self.modified = true;
+        let end_pos = pos
+            + if end_col.is_some() {
+                text.len()
+            } else {
+                text.chars().count()
+            };
+        self.mark_document_changed(insert_line);
+        let line = self.rope.char_to_line(end_pos);
+        // Inserting between CR and LF can split a line even when the paste is ASCII.
+        let display_col = match end_col {
+            Some(col) if line == insert_line => col,
+            _ => {
+                let line_start = self.rope.line_to_char(line);
+                self.char_idx_to_display_col(line, end_pos - line_start)
+            }
+        };
+        self.viewport.cursor_pos = (line, display_col);
     }
 
     pub fn delete_char(&mut self) {
@@ -369,8 +490,9 @@ impl Editor {
                 // column from the char index before mutating the rope.
                 let new_col =
                     self.char_idx_to_display_col(self.viewport.cursor_pos.0, pos - 1 - line_start);
+                let old_line_count = self.rope.len_lines();
                 self.rope.remove(pos - 1..pos);
-                self.mark_document_changed(self.viewport.cursor_pos.0);
+                self.mark_local_edit(self.viewport.cursor_pos.0, pos - 1, old_line_count);
                 self.viewport.cursor_pos.1 = new_col;
                 self.width_index_cache.set(Some((
                     self.viewport.cursor_pos.0,
@@ -396,8 +518,9 @@ impl Editor {
                 } else {
                     pos - 1
                 };
+                let old_line_count = self.rope.len_lines();
                 self.rope.remove(start..pos);
-                self.mark_document_changed(self.viewport.cursor_pos.0 - 1);
+                self.mark_local_edit(self.viewport.cursor_pos.0 - 1, start, old_line_count);
                 self.viewport.cursor_pos.0 -= 1;
                 self.viewport.cursor_pos.1 = junction_col;
                 self.modified = true;
@@ -410,29 +533,30 @@ impl Editor {
         self.save_undo_state();
         let pos = self.cursor_char_idx();
 
-        // Collect leading whitespace from current line if auto_indent is enabled
-        let indent = if auto_indent {
-            let line = self.rope.line(self.viewport.cursor_pos.0);
-            let mut ws = String::new();
-            for ch in line.chars() {
-                if ch == ' ' || ch == '\t' {
-                    ws.push(ch);
-                } else {
-                    break;
-                }
-            }
-            ws
-        } else {
-            String::new()
-        };
-
-        let insert_str = format!("{}{indent}", self.newline);
+        let insert_str = self.newline_with_indent(pos, auto_indent);
+        let indent = &insert_str[self.newline.len()..];
         self.rope.insert(pos, &insert_str);
         self.mark_document_changed(self.viewport.cursor_pos.0);
         self.viewport.cursor_pos.0 += 1;
         // The indent starts at column 0; it may contain hard tabs.
-        self.viewport.cursor_pos.1 = str_display_width(&indent, 0);
+        self.viewport.cursor_pos.1 = str_display_width(indent, 0);
         self.modified = true;
+    }
+
+    pub(crate) fn newline_with_indent(&self, pos: usize, auto_indent: bool) -> String {
+        let mut text = self.newline.to_owned();
+        if auto_indent {
+            let start = self.rope.line_to_char(self.rope.char_to_line(pos));
+            for ch in self
+                .rope
+                .slice(start..pos)
+                .chars()
+                .take_while(|ch| matches!(ch, ' ' | '\t'))
+            {
+                text.push(ch);
+            }
+        }
+        text
     }
 
     pub fn delete_char_forward(&mut self) {
@@ -451,8 +575,9 @@ impl Editor {
             } else {
                 pos + 1
             };
+            let old_line_count = self.rope.len_lines();
             self.rope.remove(pos..end);
-            self.mark_document_changed(self.viewport.cursor_pos.0);
+            self.mark_local_edit(self.viewport.cursor_pos.0, pos, old_line_count);
             self.modified = true;
         }
     }
@@ -493,29 +618,34 @@ impl Editor {
     }
 
     pub fn move_cursor_right(&mut self) {
-        let line = self.viewport.cursor_pos.0;
-        let line_len = self.line_display_width_cached(line);
-        if self.viewport.cursor_pos.1 < line_len {
-            // Step over a whole character (wide chars span 2 display
-            // columns): convert the display column to a char index, advance
-            // the index past any zero-width chars, and convert back.
-            let line_start = self.rope.line_to_char(line);
-            let mut char_idx =
-                self.line_col_to_char_idx(line, self.viewport.cursor_pos.1) - line_start;
-            let mut new_col = self.viewport.cursor_pos.1;
-            // Bounded by the line's char count: `char_idx_to_display_col`
-            // saturates once `char_idx` passes the end of the line, so without
-            // this bound any disagreement between the two width functions would
-            // spin forever waiting for a column that never arrives.
-            let line_char_len = self.rope.line(line).len_chars();
-            while new_col <= self.viewport.cursor_pos.1 && char_idx <= line_char_len {
-                char_idx += 1;
-                new_col = self.char_idx_to_display_col(line, char_idx);
+        let (line, target) = self.viewport.cursor_pos;
+        let (offset, mut col) = match self.col_index_cache.get() {
+            Some((cached_line, index, cached_col))
+                if cached_line == line && cached_col == target =>
+            {
+                (index, cached_col)
             }
-            self.viewport.cursor_pos.1 = new_col.max(self.viewport.cursor_pos.1);
-        } else if self.viewport.cursor_pos.0 < self.rope.len_lines().saturating_sub(1) {
-            self.viewport.cursor_pos.0 += 1;
-            self.viewport.cursor_pos.1 = 0;
+            _ => {
+                let line_start = self.rope.line_to_char(line);
+                let offset = self.line_col_to_char_idx(line, target) - line_start;
+                (offset, self.char_idx_to_display_col(line, offset))
+            }
+        };
+        for (step, ch) in self.rope.line(line).chars_at(offset).enumerate() {
+            if ch == '\n' {
+                break;
+            }
+            col += char_display_width(ch, col);
+            if col > target {
+                let index = offset + step + 1;
+                self.viewport.cursor_pos.1 = col;
+                self.width_index_cache.set(Some((line, index, col)));
+                self.remember_column_index((line, index, col));
+                return;
+            }
+        }
+        if line < self.rope.len_lines().saturating_sub(1) {
+            self.viewport.cursor_pos = (line + 1, 0);
         }
     }
 
@@ -534,8 +664,39 @@ impl Editor {
 
     pub fn clamp_cursor_to_line(&mut self) {
         self.viewport.cursor_pos.0 = self.viewport.cursor_pos.0.min(self.rope.len_lines() - 1);
-        let line_len = self.line_display_width_cached(self.viewport.cursor_pos.0);
-        self.viewport.cursor_pos.1 = self.viewport.cursor_pos.1.min(line_len);
+        let target = self.viewport.cursor_pos.1;
+        if target == 0 {
+            return;
+        }
+        let line = self.viewport.cursor_pos.0;
+        if let Some((cached_line, width)) = self.line_width_cache.get() {
+            if cached_line == line {
+                self.viewport.cursor_pos.1 = target.min(width);
+                return;
+            }
+        }
+        let rope_line = self.rope.line(line);
+        if let Some(text) = rope_line.as_str() {
+            let text = text.trim_end_matches('\n');
+            let prefix = &text.as_bytes()[..target.min(text.len())];
+            if prefix.iter().all(|&b| b.is_ascii_graphic() || b == b' ') {
+                if target >= text.len() {
+                    self.line_width_cache.set(Some((line, text.len())));
+                    self.viewport.cursor_pos.1 = text.len();
+                }
+                return;
+            }
+        }
+        // Clamping only needs to know whether the line reaches the cursor column.
+        let mut width = 0;
+        for ch in rope_line.chars().filter(|&ch| ch != '\n') {
+            width += char_display_width(ch, width);
+            if width >= target {
+                return;
+            }
+        }
+        self.line_width_cache.set(Some((line, width)));
+        self.viewport.cursor_pos.1 = width;
     }
 
     /// Convert a char offset (number of chars from line start) to a display column,
@@ -548,7 +709,7 @@ impl Editor {
         let rope_line = self.rope.line(line);
 
         if let Some((cached_line, mut i, mut col)) = self.width_index_cache.get() {
-            if cached_line == line && i > char_offset {
+            if cached_line == line && i > char_offset && i - char_offset < char_offset {
                 let mut chars = rope_line.chars_at(i);
                 while i > char_offset {
                     let ch = chars.prev().unwrap();
@@ -599,27 +760,26 @@ impl Editor {
         let line_start = self.rope.line_to_char(line);
         let rope_line = self.rope.line(line);
 
-        // An exact hit returns immediately: the memo's invariant guarantees the
-        // stored index is the *first* at that column, which is what this function
-        // is defined to return. This is the case that matters most -- typing at the
-        // end of a long line re-resolves the same column on every keystroke.
-        //
-        // A memo strictly before the target is a safe place to resume from. One
-        // sitting *past* it is not, and neither is one at exactly the target that
-        // failed the invariant, which is why `char_idx_to_display_col` keeps its own
-        // slot: zero-width characters (combining marks, a stray `\r`) put several
-        // indices at the same column, and only the first is the right answer.
-        match self.col_index_cache.get() {
-            Some((cached_line, cached_i, cached_col))
-                if cached_line == line && cached_col == col =>
-            {
+        let cached = [
+            self.col_index_cache.get(),
+            self.previous_col_index_cache.get(),
+        ];
+        let nearest = cached
+            .iter()
+            .flatten()
+            .filter(|&&(cached_line, _, _)| cached_line == line)
+            .min_by_key(|&&(_, _, cached_col)| cached_col.abs_diff(col))
+            .copied();
+        if let Some((_, cached_i, cached_col)) = nearest {
+            if cached_col == col {
+                self.remember_column_index((line, cached_i, cached_col));
                 return line_start + cached_i;
             }
-            _ => {}
         }
 
-        if let Some((cached_line, mut i, mut display_col)) = self.col_index_cache.get() {
-            if cached_line == line && display_col > col {
+        if let Some((_, mut i, mut display_col)) = nearest {
+            // Near the line start, walking forward costs less than undoing a long prefix.
+            if display_col > col && display_col - col < col {
                 let mut chars = rope_line.chars_at(i);
                 while display_col > col {
                     let ch = chars.prev().unwrap();
@@ -637,21 +797,20 @@ impl Editor {
                             }
                             i -= 1;
                         }
-                        self.col_index_cache.set(Some((line, i, display_col)));
+                        self.remember_column_index((line, i, display_col));
                     }
                     return line_start + i;
                 }
             }
         }
 
-        let (mut char_idx, mut display_col) = match self.col_index_cache.get() {
-            Some((cached_line, cached_i, cached_col))
-                if cached_line == line && cached_col < col =>
-            {
-                (cached_i, cached_col)
-            }
-            _ => (0, 0),
-        };
+        let (mut char_idx, mut display_col) = cached
+            .iter()
+            .flatten()
+            .filter(|&&(cached_line, _, cached_col)| cached_line == line && cached_col < col)
+            .max_by_key(|&&(_, _, cached_col)| cached_col)
+            .map(|&(_, i, col)| (i, col))
+            .unwrap_or((0, 0));
 
         // Tracks whether the walk actually landed on `col`. If it stopped early --
         // end of line, or `col` falling inside a wide char's span -- then trailing
@@ -679,10 +838,17 @@ impl Editor {
         }
 
         if reached_target {
-            self.col_index_cache
-                .set(Some((line, char_idx, display_col)));
+            self.remember_column_index((line, char_idx, display_col));
         }
         line_start + char_idx
+    }
+
+    fn remember_column_index(&self, entry: (usize, usize, usize)) {
+        if self.col_index_cache.get() != Some(entry) {
+            self.previous_col_index_cache
+                .set(self.col_index_cache.get());
+            self.col_index_cache.set(Some(entry));
+        }
     }
 
     /// Update viewport scroll offset to keep cursor visible within the given editor area height.
@@ -815,6 +981,7 @@ impl Editor {
         }
     }
 
+    #[cfg(feature = "terminal")]
     pub fn handle_mouse_event(
         &mut self,
         event: crossterm::event::MouseEvent,
@@ -911,15 +1078,17 @@ impl Editor {
             let cursor_char_idx =
                 self.line_col_to_char_idx(self.viewport.cursor_pos.0, self.viewport.cursor_pos.1);
 
-            self.search.current_match_index = self
-                .search
-                .search_matches
-                .iter()
-                .position(|(line, col)| {
-                    let match_char_idx = self.rope.line_to_char(*line) + col;
-                    match_char_idx >= cursor_char_idx
-                })
-                .or(Some(0));
+            let matches = &self.search.search_matches;
+            let before_cursor = |&(line, col): &(usize, usize)| {
+                self.rope.line_to_char(line) + col < cursor_char_idx
+            };
+            // Common first-result and wraparound cases need no binary search.
+            let index = if !before_cursor(&matches[0]) || before_cursor(matches.last().unwrap()) {
+                0
+            } else {
+                matches.partition_point(before_cursor)
+            };
+            self.search.current_match_index = Some(index);
 
             if let Some(index) = self.search.current_match_index {
                 if let Some(&(line, col)) = self.search.search_matches.get(index) {
@@ -1056,9 +1225,8 @@ impl Editor {
         self.search.search_buffer = search_term.to_string();
         let resume = self.search.replace_resume_char;
         self.search
-            .match_spans(&self.rope, resume, 1)
-            .into_iter()
-            .find_map(|(line, col, len)| {
+            .first_match_span(&self.rope, resume)
+            .and_then(|(line, col, len)| {
                 let start = self.rope.line_to_char(line) + col;
                 (start >= resume).then_some((line, col, start, len))
             })
@@ -1156,78 +1324,93 @@ impl Editor {
         }
     }
 
+    /// Change line prefixes; the caller handles undo, cursor, and cache state.
+    pub(crate) fn edit_line_prefixes(
+        &mut self,
+        start: usize,
+        end: usize,
+        prefix: &str,
+        mut edit: impl FnMut(usize, ropey::RopeSlice<'_>) -> (usize, usize),
+    ) {
+        if start > end || start >= self.rope.len_lines() {
+            return;
+        }
+        let end = end.min(self.rope.len_lines() - 1);
+        let count = end - start + 1;
+        if count >= 32 {
+            let first = self.rope.line_to_char(start);
+            let last = if end + 1 < self.rope.len_lines() {
+                self.rope.line_to_char(end + 1)
+            } else {
+                self.rope.len_chars()
+            };
+            // Like dense replacement, rebuild short lines once rather than editing the tree per line.
+            if (last - first) / count <= 128 {
+                let mut builder = ropey::RopeBuilder::new();
+                for (index, line) in self.rope.lines_at(start).take(count).enumerate() {
+                    let (offset, len) = edit(start + index, line);
+                    if offset != 0 {
+                        for chunk in line.slice(..offset).chunks() {
+                            builder.append(chunk);
+                        }
+                    }
+                    builder.append(prefix);
+                    for chunk in line.slice(offset + len..).chunks() {
+                        builder.append(chunk);
+                    }
+                }
+                let replacement = builder.finish();
+                let suffix = self.rope.split_off(last);
+                self.rope.remove(first..);
+                self.rope.append(replacement);
+                self.rope.append(suffix);
+                return;
+            }
+        }
+        for line in (start..=end).rev() {
+            let first = self.rope.line_to_char(line);
+            let (offset, len) = edit(line, self.rope.line(line));
+            let position = first + offset;
+            if len > 0 {
+                self.rope.remove(position..position + len);
+            }
+            if !prefix.is_empty() {
+                self.rope.insert(position, prefix);
+            }
+        }
+    }
+
     /// Toggle line comment on selected lines (or current line).
     pub fn toggle_comment(&mut self) {
-        let comment_str = match self.syntax_name.as_deref() {
-            Some("Rust") | Some("C") | Some("C++") | Some("Go") | Some("JavaScript")
-            | Some("TypeScript") | Some("Java") | Some("Swift") | Some("Kotlin") | Some("Zig") => {
-                "// "
-            }
-            Some("Python")
-            | Some("Ruby")
-            | Some("Shell Script (Bash)")
-            | Some("Perl")
-            | Some("R")
-            | Some("YAML")
-            | Some("TOML") => "# ",
-            Some("Lua") | Some("SQL") => "-- ",
-            Some("HTML") | Some("XML") | Some("CSS") => return,
-            _ => "// ",
+        let Some(comment_str) = line_comment_prefix(self.syntax_name.as_deref()) else {
+            return;
         };
 
         let (start_line, end_line) = self.get_affected_lines();
         self.save_undo_state();
 
-        // Check if all lines are already commented
         let all_commented = (start_line..=end_line).all(|line_idx| {
-            if line_idx < self.rope.len_lines() {
-                let rope_line = self.rope.line(line_idx);
-                let line_text: String = rope_line.chars().collect();
-                let trimmed = line_text.trim_start();
-                trimmed.starts_with(comment_str.trim_end())
-            } else {
-                true
-            }
+            line_idx >= self.rope.len_lines()
+                || line_comment_at(self.rope.line(line_idx), comment_str).is_some()
         });
 
-        if all_commented {
-            for line_idx in (start_line..=end_line).rev() {
-                if line_idx < self.rope.len_lines() {
-                    let line_start = self.rope.line_to_char(line_idx);
-                    let rope_line = self.rope.line(line_idx);
-                    let line_text: String = rope_line.chars().collect();
-                    if let Some(byte_pos) = line_text.find(comment_str.trim_end()) {
-                        // `find` yields a byte offset but `Rope::remove` takes
-                        // char indices. Indentation containing multi-byte
-                        // whitespace (U+3000, NBSP) is trimmed by `trim_start`
-                        // above, so such a line reaches here with a byte offset
-                        // 2-3x larger than the char offset -- which used to eat
-                        // trailing code, or panic on an out-of-bounds range.
-                        let char_pos = line_text[..byte_pos].chars().count();
-                        let remove_len = if line_text[byte_pos..].starts_with(comment_str) {
-                            comment_str.chars().count()
-                        } else {
-                            comment_str.trim_end().chars().count()
-                        };
-                        let start = line_start + char_pos;
-                        let end = (start + remove_len).min(self.rope.len_chars());
-                        self.rope.remove(start..end);
-                    }
+        self.edit_line_prefixes(
+            start_line,
+            end_line,
+            if all_commented { "" } else { comment_str },
+            |_, line| {
+                if all_commented {
+                    line_comment_at(line, comment_str).unwrap_or((0, 0))
+                } else {
+                    (0, 0)
                 }
-            }
-        } else {
-            for line_idx in (start_line..=end_line).rev() {
-                if line_idx < self.rope.len_lines() {
-                    let line_start = self.rope.line_to_char(line_idx);
-                    self.rope.insert(line_start, comment_str);
-                }
-            }
-        }
+            },
+        );
 
         self.mark_anchor = None;
         self.modified = true;
-        self.clamp_cursor_to_line();
         self.mark_document_changed(start_line);
+        self.clamp_cursor_to_line();
     }
 
     /// Move cursor to the start of the next word.
@@ -1485,6 +1668,7 @@ impl Editor {
         // Both position memos must be cleared with the width cache: any edit can
         // shift every char index after the edit point.
         self.col_index_cache.set(None);
+        self.previous_col_index_cache.set(None);
         self.width_index_cache.set(None);
     }
 
@@ -1503,11 +1687,33 @@ impl Editor {
         w
     }
 
-    /// Invalidate highlighting and text caches from a given line onwards
+    /// Invalidate highlighting and text caches from a given line onwards.
     pub fn mark_document_changed(&mut self, from_line: usize) {
+        self.mark_changed_range(from_line, usize::MAX);
+    }
+
+    /// Track an insertion/deletion at one position, preserving unshifted line caches.
+    pub(crate) fn mark_local_edit(
+        &mut self,
+        from_line: usize,
+        position: usize,
+        old_line_count: usize,
+    ) {
+        let after_line = self.rope.char_to_line(position.min(self.rope.len_chars()));
+        let first = from_line.min(after_line);
+        if self.rope.len_lines() == old_line_count {
+            // CRLF boundary changes can touch a neighboring line without changing the count.
+            self.mark_changed_range(first, from_line.max(after_line).saturating_add(1));
+        } else {
+            self.mark_document_changed(first);
+        }
+    }
+
+    pub(crate) fn mark_changed_range(&mut self, first: usize, end: usize) {
         self.dirty_generation = self.dirty_generation.wrapping_add(1);
-        self.dirty_from_line = self.dirty_from_line.min(from_line);
-        self.highlighter.invalidate_cache_from_line(from_line);
+        self.dirty_from_line = self.dirty_from_line.min(first);
+        self.dirty_to_line = self.dirty_to_line.max(end);
+        self.highlighter.invalidate_cache_range(first, end);
         self.invalidate_cache();
     }
 }
@@ -1515,6 +1721,61 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_reader_retries_interrupts_and_handles_short_utf8_reads() {
+        struct ShortReads {
+            data: io::Cursor<Vec<u8>>,
+            count: usize,
+            limit: usize,
+        }
+        impl Read for ShortReads {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.count += 1;
+                if self.count % 3 == 1 {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let length = bytes.len().min(self.limit);
+                self.data.read(&mut bytes[..length])
+            }
+        }
+        let text = "界🙂e\u{301}\r\nnext\n".repeat(300);
+        for limit in [1, 2, 3, 7, 2049] {
+            let reader = ShortReads {
+                data: io::Cursor::new(text.as_bytes().to_vec()),
+                count: 0,
+                limit,
+            };
+            let rope = Rope::from_reader(BufReader::with_capacity(
+                64 * 1024,
+                RetryInterrupted(reader),
+            ))
+            .unwrap();
+            assert_eq!(rope.to_string(), text);
+            assert_eq!(rope.len_lines(), Rope::from_str(&text).len_lines());
+        }
+    }
+
+    #[test]
+    fn streaming_reader_propagates_hard_io_errors_after_a_prefix() {
+        struct FailingRead(bool);
+        impl Read for FailingRead {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                self.0 = true;
+                bytes[..5].copy_from_slice(b"valid");
+                Ok(5)
+            }
+        }
+        let error = Rope::from_reader(BufReader::with_capacity(
+            64 * 1024,
+            RetryInterrupted(FailingRead(false)),
+        ))
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
 
     #[test]
     fn test_delete_forward() {

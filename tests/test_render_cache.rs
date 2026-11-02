@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 //! Differential tests for the per-line render cache in `ui.rs`.
 //!
 //! The cache now evicts only lines at or after the edit point instead of clearing

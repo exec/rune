@@ -19,13 +19,23 @@ pub fn get_line_str(rope: &ropey::Rope, line: usize) -> String {
     }
 }
 
+#[cfg(feature = "terminal")]
+pub mod backend;
+#[cfg(feature = "terminal")]
 pub mod config;
+pub mod document;
+pub use document::{Document, EditError, Selection};
 pub mod editor;
+pub mod file_io;
 pub mod fuzzy;
 pub mod hex;
+#[cfg(feature = "terminal")]
 pub mod input;
 pub mod search;
 pub mod syntax;
+#[cfg(feature = "terminal")]
 pub mod tabs;
+#[cfg(feature = "terminal")]
 pub mod ui;
+#[cfg(feature = "terminal")]
 pub mod updater;

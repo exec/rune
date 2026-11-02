@@ -22,6 +22,7 @@ Thumbs.db
 *.tmp
 *.temp
 *.log
+/tools/__pycache__/
 test
 test.rs
 homebrew-setup/

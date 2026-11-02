@@ -13,17 +13,18 @@ use crate::tabs::TabManager;
 
 /// Per-line cache of fully-assembled content spans (post-syntax, post-search,
 /// pre-selection, pre-horizontal-slice). Only populated when search and
-/// selection are both inactive — the common cursor-navigation case.
+/// selection do not affect that line — the common cursor-navigation case.
 ///
 /// Entries are always valid for the current frame if present: see `sync`, which
-/// drops everything on a buffer or whitespace change and only the lines at or
-/// after the edit point on a document change, and `prune`, which bounds growth
+/// drops everything on a buffer, syntax, or whitespace change and invalidates the edited
+/// range (including shifted lines) on a document change, and `prune`, which bounds growth
 /// from scrolling. `tests/test_render_cache.rs` checks incrementally-edited
 /// renders against from-scratch ones to keep that guarantee honest.
 struct RenderCache {
     buffer_id: Option<u64>,
     dirty_generation: u64,
     show_whitespace: bool,
+    syntax_version: u64,
     lines: HashMap<usize, Rc<RenderedLine>>,
 }
 
@@ -39,28 +40,31 @@ impl RenderCache {
             buffer_id: None,
             dirty_generation: 0,
             show_whitespace: false,
+            syntax_version: 0,
             lines: HashMap::new(),
         }
     }
 
     /// Bring the cache in line with the current buffer state.
     ///
-    /// A different buffer or whitespace setting invalidates everything. A bumped
-    /// `dirty_generation` only invalidates lines at or after `dirty_from_line`:
-    /// editing line N cannot change how lines above it render, and the syntax
-    /// layer next door already invalidates precisely this way. Clearing wholesale
-    /// meant a one-char edit re-composed every visible line's spans -- roughly 40
-    /// line pipelines per keystroke on an 80x40 terminal instead of one.
+    /// A different buffer, syntax, or whitespace setting invalidates everything. Edits
+    /// invalidate a half-open line range, extending to the end when numbering shifts.
     fn sync(
         &mut self,
         buffer_id: u64,
         dirty_generation: u64,
         show_whitespace: bool,
         dirty_from_line: usize,
+        dirty_to_line: usize,
+        syntax_version: u64,
     ) {
-        if self.buffer_id != Some(buffer_id) || self.show_whitespace != show_whitespace {
+        if self.buffer_id != Some(buffer_id)
+            || self.show_whitespace != show_whitespace
+            || self.syntax_version != syntax_version
+        {
             self.buffer_id = Some(buffer_id);
             self.show_whitespace = show_whitespace;
+            self.syntax_version = syntax_version;
             self.dirty_generation = dirty_generation;
             self.lines.clear();
             return;
@@ -68,10 +72,15 @@ impl RenderCache {
 
         if self.dirty_generation != dirty_generation {
             self.dirty_generation = dirty_generation;
-            if dirty_from_line == 0 {
+            if dirty_from_line == 0 && dirty_to_line == usize::MAX {
                 self.lines.clear();
+            } else if dirty_to_line.saturating_sub(dirty_from_line) <= self.lines.len() {
+                for line in dirty_from_line..dirty_to_line {
+                    self.lines.remove(&line);
+                }
             } else {
-                self.lines.retain(|&line, _| line < dirty_from_line);
+                self.lines
+                    .retain(|&line, _| line < dirty_from_line || line >= dirty_to_line);
             }
         }
     }
@@ -106,7 +115,6 @@ thread_local! {
 
 pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
     let area = f.area();
-    tabs.editor_width = area.width as usize;
 
     let (help_left, help_right) = match tabs.input_mode {
         InputMode::ConfirmOpen | InputMode::ConfirmOverwrite => ("Y: Confirm  N/Esc: Cancel".into(), String::new()),
@@ -206,23 +214,11 @@ pub fn draw_ui(f: &mut Frame, tabs: &mut TabManager) {
     // Draw tab bar
     draw_tab_bar(f, tabs, tab_bar_area);
 
-    let show_line_numbers = tabs.config.show_line_numbers;
     let word_wrap = tabs.config.word_wrap;
     let input_mode = tabs.input_mode.clone();
 
-    let line_num_width = if show_line_numbers {
-        tabs.active_editor().rope.len_lines().to_string().len() + 1
-    } else {
-        0
-    };
-
     // Update viewport using the actual rendered editor area dimensions
-    tabs.active_editor_mut().update_viewport_for_size(
-        editor_area.height as usize,
-        editor_area.width as usize,
-        line_num_width,
-        word_wrap,
-    );
+    let line_num_width = tabs.update_viewport(area.width, area.height);
 
     if input_mode == InputMode::HexView {
         if let Some(state) = &mut tabs.active_editor_mut().hex_state {
@@ -458,9 +454,12 @@ fn sync_render_cache(editor: &mut Editor, show_whitespace: bool) {
             editor.dirty_generation,
             show_whitespace,
             editor.dirty_from_line,
+            editor.dirty_to_line,
+            editor.highlighter.syntax_version,
         )
     });
     editor.dirty_from_line = usize::MAX;
+    editor.dirty_to_line = 0;
 }
 
 fn rendered_line(
@@ -469,9 +468,17 @@ fn rendered_line(
     show_whitespace: bool,
     selection: Option<(usize, usize)>,
     search_len: usize,
-    chars: &mut Vec<char>,
 ) -> Rc<RenderedLine> {
-    let can_cache = selection.is_none() && search_len == 0;
+    let selection = selection.filter(|&(start, end)| {
+        if start == end {
+            return false;
+        }
+        let line_start = editor.rope.line_to_char(line_idx);
+        let line_end = line_start + editor.rope.line(line_idx).len_chars();
+        start < line_end && end > line_start
+    });
+    let match_range = line_match_slice(&editor.search.search_matches, line_idx);
+    let can_cache = selection.is_none() && (search_len == 0 || match_range.0 == match_range.1);
     if can_cache {
         if let Some(cached) = RENDER_CACHE.with(|c| c.borrow().lines.get(&line_idx).cloned()) {
             return cached;
@@ -487,8 +494,7 @@ fn rendered_line(
         &editor.search.search_matches,
         &editor.search.search_match_lengths,
         editor.search.current_match_index,
-        line_match_slice(&editor.search.search_matches, line_idx),
-        chars,
+        match_range,
     );
     if show_whitespace {
         for span in &mut spans {
@@ -502,7 +508,9 @@ fn rendered_line(
         apply_selection_highlighting(spans, line_idx, editor, selection),
         show_whitespace,
     );
-    let ascii = spans.iter().all(|s| s.content.is_ascii());
+    let ascii = spans
+        .iter()
+        .all(|s| s.content.bytes().all(|b| (b' '..=b'~').contains(&b)));
     let width = spans
         .iter()
         .map(|s| {
@@ -543,7 +551,7 @@ fn draw_gutter(f: &mut Frame, row: Rect, width: usize, line: Option<usize>) {
     );
 }
 
-// Cached ASCII spans can be clipped by byte offset and drawn without copying text.
+// Tab expansion has already removed controls; each ASCII byte is one printable cell.
 fn draw_ascii_line(f: &mut Frame, row: Rect, line: &RenderedLine, mut offset: usize) -> bool {
     if !line.ascii {
         return false;
@@ -557,16 +565,14 @@ fn draw_ascii_line(f: &mut Frame, row: Rect, line: &RenderedLine, mut offset: us
             offset -= span.content.len();
             continue;
         }
-        x = f
-            .buffer_mut()
-            .set_stringn(
-                x,
-                row.y,
-                &span.content[offset..],
-                (row.right() - x) as usize,
-                span.style,
-            )
-            .0;
+        let text = &span.content.as_bytes()[offset..];
+        let length = text.len().min((row.right() - x) as usize);
+        let buffer = f.buffer_mut();
+        let start = buffer.index_of(x, row.y);
+        for (cell, &byte) in buffer.content[start..start + length].iter_mut().zip(text) {
+            cell.set_char(char::from(byte)).set_style(span.style);
+        }
+        x += length as u16;
         offset = 0;
     }
     true
@@ -587,7 +593,6 @@ fn draw_editor_horizontal_scroll(
     let offset = editor.viewport.viewport_offset.1;
     let selection = compute_selection_range(editor);
     let search_len = editor.search.search_buffer.chars().count();
-    let mut chars = Vec::new();
     sync_render_cache(editor, show_whitespace);
     for row in 0..visible_lines {
         let line_idx = editor.viewport.viewport_offset.0 + row;
@@ -600,14 +605,7 @@ fn draw_editor_horizontal_scroll(
         let content_row = Rect::new(row.x + gutter, row.y, content_width, 1);
         if line_idx < editor.rope.len_lines() {
             draw_gutter(f, row, line_num_width, Some(line_idx));
-            let line = rendered_line(
-                editor,
-                line_idx,
-                show_whitespace,
-                selection,
-                search_len,
-                &mut chars,
-            );
+            let line = rendered_line(editor, line_idx, show_whitespace, selection, search_len);
             if !draw_ascii_line(f, content_row, &line, offset) {
                 f.render_widget(
                     Paragraph::new(Line::from(slice_spans_horizontal(
@@ -657,7 +655,6 @@ fn draw_editor_word_wrap(
     let mut screen_row = 0;
     let mut cursor_screen_pos: Option<(usize, usize)> = None;
     let mut line_idx = editor.viewport.viewport_offset.0;
-    let mut line_chars_buf: Vec<char> = Vec::with_capacity(256);
 
     sync_render_cache(editor, show_whitespace);
     while screen_row < visible_lines && line_idx < editor.rope.len_lines() {
@@ -667,7 +664,6 @@ fn draw_editor_word_wrap(
             show_whitespace,
             selection_range,
             search_len,
-            &mut line_chars_buf,
         );
         let final_spans = &content.spans;
         let line_width = content.width;
@@ -701,6 +697,16 @@ fn draw_editor_word_wrap(
             cursor_screen_pos =
                 cursor_screen_pos.and_then(|(y, x)| y.checked_sub(first_row).map(|y| (y, x)));
         }
+        // Scan a long Unicode prefix once per frame, rather than once per screen row.
+        let visible_start = first_row * content_width;
+        let visible_rows = (rows_needed - first_row).min(visible_lines - screen_row);
+        let visible_spans = (!content.ascii && visible_rows > 1).then(|| {
+            group_chars_into_spans(&collect_span_chars_range(
+                final_spans,
+                visible_start,
+                visible_start + visible_rows * content_width,
+            ))
+        });
         for sub_row in first_row..rows_needed {
             if screen_row >= visible_lines {
                 break;
@@ -722,8 +728,11 @@ fn draw_editor_word_wrap(
             );
             let start_col = sub_row * content_width;
             if !draw_ascii_line(f, content_row, &content, start_col) {
-                let chars =
-                    collect_span_chars_range(final_spans, start_col, start_col + content_width);
+                let (spans, start) = match &visible_spans {
+                    Some(spans) => (spans.as_slice(), start_col - visible_start),
+                    None => (final_spans.as_slice(), start_col),
+                };
+                let chars = collect_span_chars_range(spans, start, start + content_width);
                 f.render_widget(
                     Paragraph::new(Line::from(group_chars_into_spans(&chars))),
                     content_row,
@@ -972,6 +981,8 @@ pub fn help_lines() -> Vec<&'static str> {
         "",
         "Note: M- prefix means Alt/Meta key.",
         "      ^ prefix means Ctrl key.",
+        "macOS Terminal: enable Use Option as Meta key",
+        "in Settings > Profiles > Keyboard; use Option+, / .",
     ]
 }
 
@@ -985,7 +996,6 @@ fn apply_search_highlighting(
     search_match_lengths: &[usize],
     current_match_index: Option<usize>,
     line_match_range: (usize, usize),
-    line_chars_buf: &mut Vec<char>,
 ) -> Vec<Span<'static>> {
     let (range_start, range_end) = line_match_range;
     if search_term_char_len == 0 || range_start >= range_end {
@@ -1026,11 +1036,42 @@ fn apply_search_highlighting(
         highlight_ranges.push((match_char_pos, prev_end, style));
     }
 
+    if line_content.is_ascii() && syntax_spans.iter().all(|(_, text)| text.is_ascii()) {
+        let mut result: Vec<Span<'static>> = Vec::new();
+        let mut append = |text: &str, style: Style| {
+            if let Some(last) = result.last_mut().filter(|last| last.style == style) {
+                last.content.to_mut().push_str(text);
+            } else {
+                result.push(Span::styled(text.to_owned(), style));
+            }
+        };
+        let mut byte = 0;
+        let mut range = 0;
+        let styles = syntax_spans
+            .iter()
+            .map(|(style, text)| (*style, text.bytes().filter(|&b| b != b'\n').count()))
+            .chain(std::iter::once((Style::default(), line_content.len())));
+        for (syntax_style, len) in styles {
+            let end = (byte + len).min(line_content.len());
+            while byte < end {
+                while range < highlight_ranges.len() && highlight_ranges[range].1 <= byte {
+                    range += 1;
+                }
+                let (stop, style) = match highlight_ranges.get(range) {
+                    Some(&(start, stop, style)) if byte >= start => (stop.min(end), style),
+                    Some(&(start, _, _)) => (start.min(end), syntax_style),
+                    None => (end, syntax_style),
+                };
+                append(&line_content[byte..stop], style);
+                byte = stop;
+            }
+        }
+        return result;
+    }
+
     // Single forward pass: walk the line's chars and the syntax spans in
     // lockstep (one style per char), overriding with the highlight style
     // inside match ranges, and group consecutive same-style chars into spans.
-    line_chars_buf.clear();
-    line_chars_buf.extend(line_content.chars());
     let per_char_syntax = syntax_spans
         .iter()
         .flat_map(|(style, text)| text.chars().filter(|&c| c != '\n').map(move |_| *style))
@@ -1040,7 +1081,7 @@ fn apply_search_highlighting(
     let mut current_text = String::new();
     let mut current_style = Style::default();
     let mut range_i = 0;
-    for (char_pos, (&ch, syntax_style)) in line_chars_buf.iter().zip(per_char_syntax).enumerate() {
+    for (char_pos, (ch, syntax_style)) in line_content.chars().zip(per_char_syntax).enumerate() {
         while range_i < highlight_ranges.len() && highlight_ranges[range_i].1 <= char_pos {
             range_i += 1;
         }
@@ -1089,6 +1130,11 @@ fn expand_tabs_in_spans(spans: Vec<Span<'static>>, show_whitespace: bool) -> Vec
     let mut col = 0usize;
     let mut result = Vec::with_capacity(spans.len());
     for span in spans {
+        if span.content.is_ascii() && span.content.bytes().all(|b| b >= b' ' && b != 0x7f) {
+            col += span.content.len();
+            result.push(span);
+            continue;
+        }
         // Fast path only when there is nothing to rewrite. Control characters
         // must take the slow path even though they are not tabs: ratatui's
         // `Paragraph` does *not* filter them (unlike `Buffer::set_stringn`), it
@@ -1164,8 +1210,8 @@ fn apply_selection_highlighting(
     selection_range: Option<(usize, usize)>,
 ) -> Vec<Span<'static>> {
     let (sel_start, sel_end) = match selection_range {
-        Some(range) => range,
-        None => return spans,
+        Some((start, end)) if start != end => (start, end),
+        _ => return spans,
     };
 
     let line_start_char = editor.rope.line_to_char(line_idx);
@@ -1186,38 +1232,52 @@ fn apply_selection_highlighting(
     let mut result = Vec::new();
     let mut char_pos = 0;
     for span in spans {
-        let span_len = span.content.chars().count();
+        let ascii = span.content.is_ascii();
+        let span_len = if ascii {
+            span.content.len()
+        } else {
+            span.content.chars().count()
+        };
         let span_end = char_pos + span_len;
 
         if span_end <= sel_start_in_line || char_pos >= sel_end_in_line {
             result.push(span);
         } else if char_pos >= sel_start_in_line && span_end <= sel_end_in_line {
             result.push(Span::styled(
-                span.content.to_string(),
+                span.content,
                 span.style.bg(Color::White).fg(Color::Black),
             ));
         } else {
-            let chars: Vec<char> = span.content.chars().collect();
-            let mut i = 0;
-            while i < chars.len() {
-                let abs_pos = char_pos + i;
-                let in_sel = abs_pos >= sel_start_in_line && abs_pos < sel_end_in_line;
-                let start_i = i;
-                while i < chars.len() {
-                    let p = char_pos + i;
-                    let p_in_sel = p >= sel_start_in_line && p < sel_end_in_line;
-                    if p_in_sel != in_sel {
-                        break;
-                    }
-                    i += 1;
+            let start = sel_start_in_line.saturating_sub(char_pos).min(span_len);
+            let end = sel_end_in_line.saturating_sub(char_pos).min(span_len);
+            let text = span.content.as_ref();
+            let start_byte = if ascii {
+                start
+            } else {
+                text.char_indices()
+                    .nth(start)
+                    .map_or(text.len(), |(b, _)| b)
+            };
+            let end_byte = if ascii {
+                end
+            } else {
+                start_byte
+                    + text[start_byte..]
+                        .char_indices()
+                        .nth(end - start)
+                        .map_or(text.len() - start_byte, |(b, _)| b)
+            };
+            for (text, style) in [
+                (&text[..start_byte], span.style),
+                (
+                    &text[start_byte..end_byte],
+                    span.style.bg(Color::White).fg(Color::Black),
+                ),
+                (&text[end_byte..], span.style),
+            ] {
+                if !text.is_empty() {
+                    result.push(Span::styled(text.to_owned(), style));
                 }
-                let text: String = chars[start_i..i].iter().collect();
-                let style = if in_sel {
-                    span.style.bg(Color::White).fg(Color::Black)
-                } else {
-                    span.style
-                };
-                result.push(Span::styled(text, style));
             }
         }
         char_pos = span_end;
@@ -1335,47 +1395,175 @@ mod tests {
     use super::*;
 
     #[test]
+    fn search_span_slicing_matches_character_style_reference() {
+        let red = Style::default().fg(Color::Red);
+        let blue = Style::default().fg(Color::Blue);
+        for text in [
+            "abcdefghi",
+            "あa界bc",
+            "e\u{301}x\t字",
+            "ab\u{1b}[31mcd",
+            "",
+        ] {
+            let half = text.char_indices().nth(2).map_or(text.len(), |(b, _)| b);
+            let syntax = vec![
+                (red, text[..half].to_string()),
+                (blue, text[half..].to_string()),
+            ];
+            let count = text.chars().count();
+            let matches = vec![(0, 0), (0, 1), (0, 2), (0, 5)];
+            let lengths = vec![0, 3, 3, 2];
+            for current in [None, Some(0), Some(1), Some(2), Some(3)] {
+                let actual = apply_search_highlighting(
+                    &syntax,
+                    text,
+                    0,
+                    2,
+                    &matches,
+                    &lengths,
+                    current,
+                    (0, matches.len()),
+                );
+                let actual: Vec<_> = actual
+                    .iter()
+                    .flat_map(|span| span.content.chars().map(move |ch| (ch, span.style)))
+                    .collect();
+                let mut previous_end = 0;
+                let mut ranges = Vec::new();
+                for (i, &(_, start)) in matches.iter().enumerate() {
+                    if start >= previous_end {
+                        previous_end = start + lengths[i];
+                        ranges.push((start, previous_end));
+                    }
+                }
+                let source_styles = syntax
+                    .iter()
+                    .flat_map(|(style, text)| {
+                        text.chars().filter(|&c| c != '\n').map(move |_| *style)
+                    })
+                    .chain(std::iter::repeat(Style::default()));
+                let expected: Vec<_> = text
+                    .chars()
+                    .zip(source_styles)
+                    .enumerate()
+                    .map(|(i, (ch, style))| {
+                        let style = ranges.iter().find(|&&(a, b)| a <= i && i < b).map_or(
+                            style,
+                            |&(start, _)| {
+                                if current.is_some_and(|index| matches[index].1 == start) {
+                                    Style::default().fg(Color::White).bg(Color::Red)
+                                } else {
+                                    Style::default().fg(Color::Black).bg(Color::Yellow)
+                                }
+                            },
+                        );
+                        (ch, style)
+                    })
+                    .collect();
+                assert_eq!(
+                    actual, expected,
+                    "{text:?}, {count} chars, current {current:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selection_slicing_matches_character_reference_and_reuses_whole_spans() {
+        for text in ["abcdefgh", "あa界bc", "e\u{301}x\t字"] {
+            let mut editor = Editor::new_buffer();
+            editor.rope = Rope::from_str(text);
+            let count = text.chars().count();
+            let style = Style::default().fg(Color::Green);
+            for start in 0..=count {
+                for end in start..=count {
+                    let spans = vec![Span::styled(text.to_owned(), style)];
+                    let original = spans[0].content.as_ptr();
+                    let actual =
+                        apply_selection_highlighting(spans, 0, &editor, Some((start, end)));
+                    if start == 0 && end == count {
+                        assert_eq!(actual[0].content.as_ptr(), original);
+                    }
+                    let actual: Vec<_> = actual
+                        .iter()
+                        .flat_map(|s| s.content.chars().map(move |ch| (ch, s.style)))
+                        .collect();
+                    let expected: Vec<_> = text
+                        .chars()
+                        .enumerate()
+                        .map(|(i, ch)| {
+                            (
+                                ch,
+                                if start <= i && i < end {
+                                    style.bg(Color::White).fg(Color::Black)
+                                } else {
+                                    style
+                                },
+                            )
+                        })
+                        .collect();
+                    assert_eq!(actual, expected, "{text:?}, {start}..{end}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ascii_direct_drawing_matches_clipped_paragraph_cells() {
         let spans = vec![
-            Span::styled("abc".to_string(), Style::default().fg(Color::Red)),
+            Span::styled(String::new(), Style::default().bg(Color::Green)),
+            Span::styled(
+                "abc".to_string(),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  def ghi".to_string(), Style::default().bg(Color::Blue)),
+            Span::styled(
+                (b' '..=b'~').map(char::from).collect::<String>(),
+                Style::default().remove_modifier(Modifier::ITALIC),
+            ),
         ];
+        let width = spans.iter().map(|s| s.content.len()).sum();
         let line = RenderedLine {
             spans,
-            width: 12,
+            width,
             ascii: true,
         };
-        for width in 0..16 {
-            for offset in 0..16 {
-                let mut reference = Terminal::new(TestBackend::new(16, 1)).unwrap();
-                reference
-                    .draw(|f| {
-                        f.render_widget(
-                            Paragraph::new(Line::from(slice_spans_horizontal(
-                                &line.spans,
-                                offset,
-                                width,
-                            ))),
-                            Rect::new(0, 0, width as u16, 1),
-                        )
-                    })
-                    .unwrap();
-                let mut actual = Terminal::new(TestBackend::new(16, 1)).unwrap();
-                actual
-                    .draw(|f| {
-                        assert!(draw_ascii_line(
-                            f,
-                            Rect::new(0, 0, width as u16, 1),
-                            &line,
-                            offset
-                        ));
-                    })
-                    .unwrap();
-                assert_eq!(
-                    actual.backend().buffer(),
-                    reference.backend().buffer(),
-                    "width {width}, offset {offset}"
-                );
+        for (x, y) in [(0, 0), (2, 1)] {
+            for width in 0..16 {
+                for offset in 0..=line.width + 1 {
+                    let row = Rect::new(x, y, width as u16, 1);
+                    let base_style = Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC);
+                    let mut reference = Terminal::new(TestBackend::new(18, 3)).unwrap();
+                    reference
+                        .draw(|f| {
+                            let area = f.area();
+                            f.buffer_mut().set_style(area, base_style);
+                            f.render_widget(
+                                Paragraph::new(Line::from(slice_spans_horizontal(
+                                    &line.spans,
+                                    offset,
+                                    width,
+                                ))),
+                                row,
+                            )
+                        })
+                        .unwrap();
+                    let mut actual = Terminal::new(TestBackend::new(18, 3)).unwrap();
+                    actual
+                        .draw(|f| {
+                            let area = f.area();
+                            f.buffer_mut().set_style(area, base_style);
+                            assert!(draw_ascii_line(f, row, &line, offset));
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        actual.backend().buffer(),
+                        reference.backend().buffer(),
+                        "origin ({x}, {y}), width {width}, offset {offset}"
+                    );
+                }
             }
         }
     }
@@ -1467,18 +1655,7 @@ mod tests {
         // Multibyte chars: byte-based style lookup would misattribute these.
         let syntax = vec![(s1, "あa".to_string()), (s2, "bc\n".to_string())];
         let matches = vec![(0usize, 3usize)];
-        let mut buf = Vec::new();
-        let spans = apply_search_highlighting(
-            &syntax,
-            "あabc",
-            0,
-            1,
-            &matches,
-            &[],
-            None,
-            (0, 1),
-            &mut buf,
-        );
+        let spans = apply_search_highlighting(&syntax, "あabc", 0, 1, &matches, &[], None, (0, 1));
         let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, vec!["あa", "b", "c"]);
         assert_eq!(spans[0].style, s1);
@@ -1591,5 +1768,141 @@ mod tests {
         // Row 2 is the continuation row; it must start with the 21st 'あ'
         // (display col 40 = char 20).
         assert_eq!(buf[(0, 2)].symbol(), "あ");
+    }
+    #[test]
+    fn wrapped_window_slicing_matches_full_line_at_every_row_boundary() {
+        let spans = vec![
+            Span::styled(
+                "界e\u{301} xyz ".repeat(20),
+                Style::default().fg(Color::Red),
+            ),
+            Span::styled(
+                "👩‍💻\u{301} abc界".repeat(20),
+                Style::default().fg(Color::Blue),
+            ),
+        ];
+        for width in 1..=15 {
+            for first in 0..20 {
+                let start = first * width;
+                let visible = group_chars_into_spans(&collect_span_chars_range(
+                    &spans,
+                    start,
+                    start + 5 * width,
+                ));
+                for row in 0..5 {
+                    assert_eq!(
+                        collect_span_chars_range(&visible, row * width, (row + 1) * width),
+                        collect_span_chars_range(
+                            &spans,
+                            start + row * width,
+                            start + (row + 1) * width
+                        ),
+                        "width={width}, first={first}, row={row}",
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn unaffected_lines_stay_cached_as_search_and_selection_move() {
+        let mut editor = Editor::new_buffer();
+        editor.rope = ropey::Rope::from_str("alpha needle\n界 beta\nneedle gamma\n");
+        sync_render_cache(&mut editor, false);
+        let base = rendered_line(&mut editor, 1, false, None, 0);
+        assert!(editor.perform_find("needle"));
+        let unchanged = rendered_line(&mut editor, 1, false, Some((0, 3)), 6);
+        assert!(Rc::ptr_eq(&base, &unchanged));
+        for pattern in ["needle", "beta", "alpha", "absent", ""] {
+            editor.perform_find(pattern);
+            for selection in [
+                None,
+                Some((0, 0)),
+                Some((0, 5)),
+                Some((2, 20)),
+                Some((13, 14)),
+                Some((0, 40)),
+            ] {
+                for current in [Some(0), Some(1), None] {
+                    editor.search.current_match_index = current;
+                    for line in 0..3 {
+                        let actual = rendered_line(
+                            &mut editor,
+                            line,
+                            false,
+                            selection,
+                            pattern.chars().count(),
+                        );
+                        let saved = RENDER_CACHE.with(|c| c.borrow_mut().lines.remove(&line));
+                        let fresh = rendered_line(
+                            &mut editor,
+                            line,
+                            false,
+                            selection,
+                            pattern.chars().count(),
+                        );
+                        assert_eq!(
+                            actual.spans, fresh.spans,
+                            "{pattern:?}, {selection:?}, {current:?}, line={line}"
+                        );
+                        if let Some(saved) = saved {
+                            RENDER_CACHE.with(|c| c.borrow_mut().lines.insert(line, saved));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn local_edits_reuse_unchanged_rendered_lines() {
+        for operation in 0..4 {
+            let mut tabs = TabManager::new_for_test();
+            let old = {
+                let e = tabs.active_editor_mut();
+                e.rope = ropey::Rope::from_str("first line\nsecond line\nthird line\n");
+                e.viewport.cursor_pos = (0, 3);
+                sync_render_cache(e, false);
+                (0..3)
+                    .map(|line| rendered_line(e, line, false, None, 0))
+                    .collect::<Vec<_>>()
+            };
+            match operation {
+                0 => tabs.active_editor_mut().insert_char('x'),
+                1 => tabs.active_editor_mut().delete_char(),
+                2 => tabs.active_editor_mut().delete_char_forward(),
+                _ => tabs.handle_tab_insertion(),
+            }
+            let e = tabs.active_editor_mut();
+            assert_eq!((e.dirty_from_line, e.dirty_to_line), (0, 1));
+            sync_render_cache(e, false);
+            assert!(!Rc::ptr_eq(&old[0], &rendered_line(e, 0, false, None, 0)));
+            for (line, cached) in old.iter().enumerate().skip(1) {
+                assert!(Rc::ptr_eq(cached, &rendered_line(e, line, false, None, 0)));
+            }
+        }
+    }
+
+    #[test]
+    fn dirty_ranges_accumulate_and_reset_after_structural_edits() {
+        let mut e = Editor::new_buffer();
+        e.rope = ropey::Rope::from_str("zero\none\ntwo\nthree\nfour\n");
+        sync_render_cache(&mut e, false);
+        let last = rendered_line(&mut e, 4, false, None, 0);
+        for line in [1, 3] {
+            e.viewport.cursor_pos = (line, 0);
+            e.insert_char('x');
+        }
+        assert_eq!((e.dirty_from_line, e.dirty_to_line), (1, 4));
+        sync_render_cache(&mut e, false);
+        assert_eq!((e.dirty_from_line, e.dirty_to_line), (usize::MAX, 0));
+        assert!(Rc::ptr_eq(&last, &rendered_line(&mut e, 4, false, None, 0)));
+        e.viewport.cursor_pos = (1, 0);
+        e.insert_newline(false);
+        assert_eq!(e.dirty_to_line, usize::MAX);
+        sync_render_cache(&mut e, false);
+        let last = rendered_line(&mut e, 5, false, None, 0);
+        e.viewport.cursor_pos = (1, 0);
+        e.insert_char('y');
+        sync_render_cache(&mut e, false);
+        assert!(Rc::ptr_eq(&last, &rendered_line(&mut e, 5, false, None, 0)));
     }
 }

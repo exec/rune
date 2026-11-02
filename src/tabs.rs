@@ -1,9 +1,11 @@
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::borrow::Cow;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::config::{self, Config};
 use crate::constants;
 use crate::editor::{Editor, InputMode};
+use crate::file_io::same_file;
 
 /// What to do after the filename prompt successfully saves an untitled buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +52,21 @@ impl Default for TabManager {
 
 impl TabManager {
     pub fn new() -> Self {
-        let config = config::load_config();
+        Self::with_config(config::load_config(), config::config_path())
+    }
+
+    pub fn new_with_config_file(path: PathBuf) -> anyhow::Result<Self> {
+        Ok(Self::with_config(
+            config::load_config_file(&path)?,
+            Some(path),
+        ))
+    }
+
+    pub fn new_for_test() -> Self {
+        Self::with_config(Config::default(), None)
+    }
+
+    fn with_config(config: Config, config_path: Option<PathBuf>) -> Self {
         let initial_tab = Editor::new_buffer();
         Self {
             tabs: vec![initial_tab],
@@ -73,34 +89,7 @@ impl TabManager {
             pending_command: None,
             read_only: false,
             editor_width: 0,
-            config_path: config::config_path(),
-        }
-    }
-
-    pub fn new_for_test() -> Self {
-        let initial_tab = Editor::new_for_test();
-        Self {
-            tabs: vec![initial_tab],
-            active_tab: 0,
-            config: Config::default(),
-            clipboard: Vec::new(),
-            last_cut_line: None,
-            input_mode: InputMode::Normal,
-            status_message: String::new(),
-            status_message_time: None,
-            status_message_timeout: constants::STATUS_MESSAGE_TIMEOUT,
-            input_buffer: String::new(),
-            pending_after_save: None,
-
-            needs_redraw: true,
-            fuzzy_query: String::new(),
-            fuzzy_selected: 0,
-            fuzzy_candidates: Vec::new(),
-            tab_scroll_offset: 0,
-            pending_command: None,
-            read_only: false,
-            editor_width: 0,
-            config_path: None,
+            config_path,
         }
     }
 
@@ -382,75 +371,12 @@ impl TabManager {
     }
 
     pub fn perform_save(&mut self, path: PathBuf) -> anyhow::Result<()> {
-        let write_path =
-            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-                std::fs::canonicalize(&path)?
-            } else {
-                path.clone()
-            };
-        let editor = self.active_editor();
-        let same_target = editor
-            .file_path
-            .as_ref()
-            .is_some_and(|original| same_file(original, &path));
-        match (same_target, &editor.saved_content) {
-            (true, Some(saved)) => {
-                anyhow::ensure!(
-                    disk_matches(&write_path, saved)?,
-                    "File changed on disk; use Save As to preserve your edits"
-                );
-            }
-            _ if write_path.exists() => anyhow::ensure!(
-                self.input_mode == InputMode::ConfirmOverwrite,
-                "Destination already exists; use Save As to confirm overwriting it"
-            ),
-            _ => {}
-        }
-
-        let created_parent: Option<PathBuf> = match path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => {
-                let missing = !parent.is_dir();
-                std::fs::create_dir_all(parent)?;
-                if missing {
-                    Some(parent.to_path_buf())
-                } else {
-                    None
-                }
-            }
-            _ => None,
+        let options = crate::file_io::SaveOptions {
+            backup: self.config.backup_on_save,
+            overwrite: self.input_mode == InputMode::ConfirmOverwrite,
         };
-
-        // Create backup if enabled. This runs BEFORE the atomic swap so it
-        // still reads the old file (which exists until the rename below).
-        if self.config.backup_on_save && path.exists() {
-            let backup_path = PathBuf::from(format!("{}~", path.display()));
-            if let Err(e) = write_backup(&path, &backup_path) {
-                self.set_temporary_status_message(format!("Warning: backup failed: {e}"));
-            }
-        }
-
-        let editor = self.active_editor_mut();
-        atomic_write(&write_path, &editor.rope)?;
-        editor.saved_content = Some(editor.rope.clone());
-
-        editor.file_path = Some(path.clone());
-        editor.modified = false;
-
-        let first_line = editor
-            .rope
-            .line(0)
-            .as_str()
-            .map(|s| s.trim_end_matches('\n'));
-        editor.syntax_name = editor.highlighter.detect_syntax(Some(&path), first_line);
-        editor.highlighter.set_syntax(editor.syntax_name.as_deref());
-
-        // Update display name
-        editor.display_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "[untitled]".to_string());
-
-        match created_parent {
+        let outcome = crate::file_io::save(self.active_editor_mut(), &path, options)?;
+        match outcome.created_parent {
             Some(parent) => self.set_temporary_status_message(format!(
                 "Saved: {} (created new directory: {})",
                 path.display(),
@@ -760,7 +686,7 @@ impl TabManager {
                 return;
             }
             self.tabs[idx].save_undo_state();
-            let selected: String = self.tabs[idx].rope.slice(start..end).chars().collect();
+            let selected = String::from(self.tabs[idx].rope.slice(start..end));
             self.clipboard = vec![selected];
             self.last_cut_line = None;
             self.tabs[idx].rope.remove(start..end);
@@ -773,11 +699,11 @@ impl TabManager {
             let line = self.tabs[idx].rope.char_to_line(clamped);
             let line_start = self.tabs[idx].rope.line_to_char(line);
             let col_chars = start.saturating_sub(line_start);
+            self.tabs[idx].mark_document_changed(line);
             let display_col = self.tabs[idx].char_idx_to_display_col(line, col_chars);
             self.tabs[idx].viewport.cursor_pos = (line, display_col);
             self.tabs[idx].mark_anchor = None;
             self.tabs[idx].modified = true;
-            self.tabs[idx].mark_document_changed(line);
             self.needs_redraw = true;
         } else {
             self.cut_line();
@@ -800,11 +726,7 @@ impl TabManager {
             self.tabs[idx].rope.len_chars()
         };
 
-        let line_text: String = self.tabs[idx]
-            .rope
-            .slice(line_start..line_end)
-            .chars()
-            .collect();
+        let line_text = String::from(self.tabs[idx].rope.slice(line_start..line_end));
 
         // Accumulate if consecutive cut on adjacent line
         if self.last_cut_line == Some(line_idx) || self.last_cut_line == Some(line_idx + 1) {
@@ -837,7 +759,7 @@ impl TabManager {
                 self.copy_line();
                 return;
             }
-            let selected: String = self.tabs[idx].rope.slice(start..end).chars().collect();
+            let selected = String::from(self.tabs[idx].rope.slice(start..end));
             self.clipboard = vec![selected];
             self.last_cut_line = None;
             self.tabs[idx].mark_anchor = None;
@@ -861,11 +783,7 @@ impl TabManager {
             self.tabs[idx].rope.len_chars()
         };
 
-        let line_text: String = self.tabs[idx]
-            .rope
-            .slice(line_start..line_end)
-            .chars()
-            .collect();
+        let line_text = String::from(self.tabs[idx].rope.slice(line_start..line_end));
         self.clipboard = vec![line_text];
         self.last_cut_line = None;
 
@@ -878,7 +796,10 @@ impl TabManager {
             return;
         }
 
-        let paste_text: String = self.clipboard.join("");
+        let paste_text = match self.clipboard.as_slice() {
+            [text] => Cow::Borrowed(text.as_str()),
+            texts => Cow::Owned(texts.concat()),
+        };
         let idx = self.active_tab;
         self.tabs[idx].save_undo_state();
 
@@ -908,24 +829,11 @@ impl TabManager {
         if self.clipboard.is_empty() {
             return;
         }
-        let paste_text: String = self.clipboard.join("");
-        let idx = self.active_tab;
-        self.tabs[idx].save_undo_state();
-        self.tabs[idx].mark_anchor = None;
-        let insert_line = self.tabs[idx].viewport.cursor_pos.0;
-        let pos = self.tabs[idx].line_col_to_char_idx(
-            self.tabs[idx].viewport.cursor_pos.0,
-            self.tabs[idx].viewport.cursor_pos.1,
-        );
-        self.tabs[idx].rope.insert(pos, &paste_text);
-        self.tabs[idx].modified = true;
-        let end_pos = pos + paste_text.chars().count();
-        self.tabs[idx].mark_document_changed(insert_line);
-        let line = self.tabs[idx].rope.char_to_line(end_pos);
-        let line_start = self.tabs[idx].rope.line_to_char(line);
-        let col_chars = end_pos.saturating_sub(line_start);
-        let display_col = self.tabs[idx].char_idx_to_display_col(line, col_chars);
-        self.tabs[idx].viewport.cursor_pos = (line, display_col);
+        let paste_text = match self.clipboard.as_slice() {
+            [text] => Cow::Borrowed(text.as_str()),
+            texts => Cow::Owned(texts.concat()),
+        };
+        self.tabs[self.active_tab].insert_text(&paste_text);
         self.needs_redraw = true;
     }
 
@@ -949,12 +857,7 @@ impl TabManager {
 
         let indent: String = " ".repeat(tab_width);
 
-        for line_idx in (start_line..=end_line).rev() {
-            if line_idx < editor.rope.len_lines() {
-                let line_start = editor.rope.line_to_char(line_idx);
-                editor.rope.insert(line_start, &indent);
-            }
-        }
+        editor.edit_line_prefixes(start_line, end_line, &indent, |_, _| (0, 0));
 
         editor.mark_anchor = None;
         editor.modified = true;
@@ -971,32 +874,14 @@ impl TabManager {
         let (start_line, end_line) = editor.get_affected_lines();
         editor.save_undo_state();
 
-        for line_idx in (start_line..=end_line).rev() {
-            if line_idx < editor.rope.len_lines() {
-                let line_start = editor.rope.line_to_char(line_idx);
-                let mut spaces_to_remove = 0;
-                for ch in editor.rope.line(line_idx).chars() {
-                    if ch == ' ' && spaces_to_remove < tab_width {
-                        spaces_to_remove += 1;
-                    } else if ch == '\t' && spaces_to_remove == 0 {
-                        spaces_to_remove = 1;
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-                if spaces_to_remove > 0 {
-                    editor
-                        .rope
-                        .remove(line_start..line_start + spaces_to_remove);
-                }
-            }
-        }
+        editor.edit_line_prefixes(start_line, end_line, "", |_, line| {
+            (0, crate::editor::unindent_len(line, tab_width))
+        });
 
         editor.mark_anchor = None;
         editor.modified = true;
-        editor.clamp_cursor_to_line();
         editor.mark_document_changed(start_line);
+        editor.clamp_cursor_to_line();
     }
 
     pub fn toggle_comment(&mut self) {
@@ -1017,10 +902,29 @@ impl TabManager {
         // one undo step (insert_char would save an undo state per space).
         let spaces = " ".repeat(spaces_to_next_tab);
         let pos = editor.line_col_to_char_idx(line, current_col);
+        let old_line_count = editor.rope.len_lines();
         editor.rope.insert(pos, &spaces);
         editor.viewport.cursor_pos.1 += spaces_to_next_tab;
         editor.modified = true;
-        editor.mark_document_changed(line);
+        editor.mark_local_edit(line, pos, old_line_count);
+    }
+
+    /// Update the text viewport for the terminal layout; return the line-number gutter width.
+    pub fn update_viewport(&mut self, width: u16, height: u16) -> usize {
+        self.editor_width = width as usize;
+        let line_num_width = if self.config.show_line_numbers {
+            self.active_editor().rope.len_lines().to_string().len() + 1
+        } else {
+            0
+        };
+        let word_wrap = self.config.word_wrap;
+        self.active_editor_mut().update_viewport_for_size(
+            height.saturating_sub(3) as usize,
+            width as usize,
+            line_num_width,
+            word_wrap,
+        );
+        line_num_width
     }
 
     pub fn insert_newline(&mut self) {
@@ -1034,6 +938,16 @@ impl TabManager {
         terminal_height: usize,
     ) {
         use crossterm::event::MouseEventKind;
+
+        if !matches!(
+            event.kind,
+            MouseEventKind::Down(_)
+                | MouseEventKind::Drag(_)
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollUp
+        ) {
+            return;
+        }
 
         // Row 0 is the tab bar -- only respond to clicks, not hover/drag
         let mut adjusted = event;
@@ -1178,166 +1092,6 @@ impl TabManager {
             col += title_len;
         }
     }
-}
-
-/// Copy `path`'s current contents to `backup_path` before it is overwritten.
-///
-/// Deliberately *not* `fs::copy`. `fs::copy` opens the destination with
-/// create+truncate semantics, which follows whatever is already sitting at
-/// `backup_path`:
-///
-/// - A pre-existing regular file owned by another user is truncated **in place**,
-///   preserving their inode, so the contents of a 0600 file land in a file they
-///   own and can then `chmod` and read.
-/// - A FIFO blocks forever in `open(O_WRONLY)` waiting for a reader, hanging the
-///   editor's UI thread on save with no timeout.
-///
-/// Unlinking first and then opening with `create_new` (O_CREAT|O_EXCL) fixes both
-/// and closes the TOCTOU window in the old symlink-only guard: if an attacker
-/// re-plants anything between the unlink and the open, `create_new` fails with
-/// `AlreadyExists` rather than writing through it. O_EXCL also refuses to follow
-/// a symlink, so the separate symlink check is no longer needed.
-fn disk_matches(path: &Path, saved: &ropey::Rope) -> std::io::Result<bool> {
-    use std::io::Read;
-    let mut disk = std::io::BufReader::new(std::fs::File::open(path)?);
-    let mut buffer = Vec::new();
-    for chunk in saved.chunks() {
-        buffer.resize(chunk.len(), 0);
-        match disk.read_exact(&mut buffer) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
-            Err(e) => return Err(e),
-        }
-        if buffer != chunk.as_bytes() {
-            return Ok(false);
-        }
-    }
-    Ok(disk.read(&mut [0])? == 0)
-}
-
-fn same_file(a: &Path, b: &Path) -> bool {
-    a == b
-        || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        }
-}
-
-fn write_backup(path: &Path, backup_path: &Path) -> std::io::Result<()> {
-    // Replacing the previous backup is the intended behaviour, and a missing
-    // path is equally fine. Errors are deliberately ignored here: whatever the
-    // reason the unlink failed, the `create_new` below refuses to write through
-    // whatever remains, so it reports the problem without ever following it.
-    let _ = std::fs::remove_file(backup_path);
-
-    let mut src = std::fs::File::open(path)?;
-    let mut dst = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(backup_path)?;
-
-    // Same ordering rule as `atomic_write`: tighten the mode while the file is
-    // still empty, so a secret file's contents are never briefly world-readable
-    // under the umask default.
-    #[cfg(unix)]
-    {
-        if let Ok(meta) = src.metadata() {
-            let _ = dst.set_permissions(meta.permissions());
-        }
-    }
-
-    // Streamed rather than buffered: the backup of a large file should not need
-    // a second full copy of it in memory.
-    std::io::copy(&mut src, &mut dst)?;
-    dst.sync_all()?;
-    Ok(())
-}
-
-/// Atomically write `rope` to `path` using the standard temp-file + rename
-/// pattern. This protects the user's file from partial writes caused by
-/// crashes, power loss, or `kill -9` mid-write.
-///
-/// Steps:
-/// 1. Create a temp file in the same directory as `path` (so rename is on
-///    the same filesystem — cross-FS rename is not atomic). The temp is
-///    created with `O_EXCL` (`create_new`) so it can never follow or
-///    truncate a pre-existing path (e.g. an attacker-planted symlink in a
-///    shared directory).
-/// 2. On Unix, when overwriting an existing file, tighten the (still empty)
-///    temp file's permissions to match the target *before* writing any
-///    bytes — see the in-body comment for why this ordering matters.
-/// 3. Write bytes, then `sync_all()` to flush to disk before rename.
-/// 4. `fs::rename(temp, path)` — POSIX rename is atomic within a filesystem.
-/// 5. On any error between steps 1 and 4, best-effort remove the temp file.
-fn atomic_write(path: &Path, rope: &ropey::Rope) -> std::io::Result<()> {
-    let dir = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-
-    let stem = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "rune-save".to_string());
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let temp_name = format!(".{stem}.rune-tmp.{pid}.{nanos}");
-    let temp_path = dir.join(temp_name);
-
-    // From here on, any early return must best-effort clean up temp_path.
-    let result: std::io::Result<()> = (|| {
-        // `create_new(true)` => O_EXCL: fail rather than open an existing
-        // path. Combined with the pid+nanos name this prevents a symlink or
-        // collision at `temp_path` from redirecting/clobbering the write.
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)?;
-
-        // On Unix, preserve the target file's permissions across the rename.
-        // `fs::rename` replaces the target inode with the temp file's inode,
-        // so without this a restrictive mode (e.g. 0o600) on the original
-        // file could be weakened to the umask-default applied at temp creation.
-        //
-        // Crucially, apply the mode to the *empty* temp file BEFORE writing
-        // the contents. The file is created at the umask default (often
-        // world-readable 0o644); if we wrote the data first and tightened
-        // afterwards, a copy of a secret file's contents would be briefly
-        // readable by other local users. Tightening while the file is still
-        // empty closes that window. The already-open write handle keeps
-        // working even if we set a read-only mode like 0o400, because Unix
-        // checks permissions at open() time, not on each write().
-        #[cfg(unix)]
-        {
-            if let Ok(meta) = std::fs::metadata(path) {
-                // Best-effort: don't fail the save if we can't apply perms.
-                let _ = file.set_permissions(meta.permissions());
-            }
-        }
-
-        {
-            use std::io::Write;
-            let mut writer = std::io::BufWriter::new(&mut file);
-            rope.write_to(&mut writer)?;
-            writer.flush()?;
-        }
-        file.sync_all()?;
-        drop(file);
-
-        std::fs::rename(&temp_path, path)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        // Best-effort cleanup; ignore removal errors.
-        let _ = std::fs::remove_file(&temp_path);
-    }
-
-    result
 }
 
 #[cfg(test)]
