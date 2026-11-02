@@ -34,6 +34,9 @@ A nano-inspired text editor that bridges the gap between simplicity and capabili
 
 ## Installation
 
+[GitHub Releases](https://github.com/exec/rune/releases/latest) provides the
+authoritative release binaries. Homebrew and AUR synchronization is manual.
+
 ### Quick Install
 The fastest way to install rune. Auto-detects your platform and installs the latest release binary.
 ```bash

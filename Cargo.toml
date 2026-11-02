@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "rune"
-version = "1.7.0"
+version = "1.8.0"
 authors = ["exec"]
 description = "A modern CLI text editor that bridges the gap between nano's simplicity and advanced features"
 license = "MIT"

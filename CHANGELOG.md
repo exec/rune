@@ -6,6 +6,8 @@ All notable changes to rune are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-02
+
 ### Changed
 
 - Extract shared documents, undo, safe file I/O, search, and neutral syntax into the independent `rune-core` workspace crate. Rune retains compatibility imports; terminal styles and mouse-event adaptation remain in the terminal frontend. Etch can depend directly on the engine.

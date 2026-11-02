@@ -1,13 +1,13 @@
 # Using rune-core from Etch
 
-The dependency structure is Rune → rune-core and IDE → Etch's GUI library →
-rune-core. The shared engine lives in `crates/rune-core` in Rune's workspace.
+Rune and Etch's GUI library both depend on rune-core. The shared engine lives in
+`crates/rune-core` in Rune's workspace.
 Etch depends directly on that crate, with a dependency alias preserving its
 existing `etch::rune` re-export:
 
 ```toml
 [dependencies]
-rune = { package = "rune-core", path = "../rune/crates/rune-core", version = "0.1.0" }
+rune = { package = "rune-core", git = "https://github.com/exec/rune", tag = "core-v0.1.0", version = "0.1.0" }
 ```
 
 A new consumer can name the dependency `rune-core` and import `rune_core::Document`.
@@ -54,8 +54,8 @@ or cheap rope snapshots; avoid converting the whole file to a String each frame.
 Only edit through the document API so undo, revisions, and invalidation stay
 consistent. The legacy `rune::editor::Editor` remains available for terminal callers;
 its viewport/cursor APIs use terminal display columns and should not drive GUI
-positions. The first extraction keeps those implementations in hidden core
-modules; splitting storage from legacy viewport state is a later step.
+positions. Those compatibility implementations remain in hidden core modules;
+the Document API is the supported boundary for new consumers.
 
 `id()` identifies the loaded buffer, `revision()` changes on text edits, and
 `take_changed_lines()` consumes coalesced dirty lines. Its exclusive end may be
