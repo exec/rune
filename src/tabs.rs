@@ -1048,7 +1048,7 @@ impl TabManager {
                     }
                 }
             } else {
-                editor.handle_mouse_event(adjusted, editor_height, line_num_width);
+                crate::editor::handle_mouse_event(editor, adjusted, editor_height, line_num_width);
             }
             editor.viewport.manual_scroll = true;
         }

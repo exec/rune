@@ -1,5 +1,5 @@
 //! Shared safe file saving; frontends own prompts and presentation.
-use crate::editor::Editor;
+use crate::{editor::EditorBuffer, syntax::HighlightTheme};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -52,8 +52,8 @@ impl From<std::io::Error> for SaveError {
     }
 }
 
-pub fn save(
-    editor: &mut Editor,
+pub fn save<T: HighlightTheme>(
+    editor: &mut EditorBuffer<T>,
     path: &Path,
     options: SaveOptions,
 ) -> Result<SaveOutcome, SaveError> {
@@ -127,7 +127,8 @@ fn disk_matches(path: &Path, saved: &ropey::Rope) -> std::io::Result<bool> {
     Ok(disk.read(&mut [0])? == 0)
 }
 
-pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+/// Compare paths lexically or by their canonical targets.
+pub fn same_file(a: &Path, b: &Path) -> bool {
     a == b
         || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
             (Ok(a), Ok(b)) => a == b,

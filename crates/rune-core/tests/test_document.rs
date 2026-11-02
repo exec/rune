@@ -1,4 +1,4 @@
-use rune::{
+use rune_core::{
     file_io::{SaveError, SaveOptions},
     Document, EditError, Selection,
 };
@@ -115,7 +115,7 @@ fn load_save_failure_and_search_work_without_settings_or_terminal_state() {
     doc.load_file(path).unwrap();
     assert_eq!(doc.selection(), Selection::default());
     assert!(!doc.undo());
-    let mut search = rune::search::SearchState::default();
+    let mut search = rune_core::search::SearchState::default();
     search.search_buffer = "external".into();
     assert_eq!(search.find_all_match_spans(doc.text()), [(0, 0, 8)]);
 }

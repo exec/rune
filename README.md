@@ -94,8 +94,9 @@ rune
 
 ## Embedding
 
-Rune can also be embedded without its terminal frontend. See
-[using Rune from Etch](docs/embedding.md) for the document API and feature flags.
+Rune and Etch share the independent [rune-core](crates/rune-core) editing engine.
+See [embedding the engine](docs/embedding.md) for its document API and the
+compatibility imports retained by Rune.
 
 ## Performance comparisons
 

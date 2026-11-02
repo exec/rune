@@ -1,38 +1,31 @@
-pub mod constants {
-    use std::time::Duration;
+pub use rune_core::{document, file_io, get_line_str, search, Document, EditError, Selection};
 
-    pub const DEFAULT_TAB_WIDTH: usize = 4;
+pub mod constants {
+    pub use rune_core::constants::{
+        DEFAULT_TAB_WIDTH, FALLBACK_TERMINAL_HEIGHT, SEARCH_HISTORY_LIMIT, UNDO_STACK_LIMIT,
+    };
+    use std::time::Duration;
     pub const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
-    pub const FALLBACK_TERMINAL_HEIGHT: usize = 24;
     pub const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
     pub const SCROLL_SPEED: usize = 3;
-    pub const SEARCH_HISTORY_LIMIT: usize = 50;
-    pub const UNDO_STACK_LIMIT: usize = 100;
-}
-
-/// Get a line's text content as a String, handling chunk boundaries in the rope.
-pub fn get_line_str(rope: &ropey::Rope, line: usize) -> String {
-    let rope_line = rope.line(line);
-    match rope_line.as_str() {
-        Some(s) => s.to_string(),
-        None => rope_line.chars().collect(),
-    }
 }
 
 #[cfg(feature = "terminal")]
 pub mod backend;
 #[cfg(feature = "terminal")]
 pub mod config;
-pub mod document;
-pub use document::{Document, EditError, Selection};
+#[cfg(feature = "terminal")]
 pub mod editor;
-pub mod file_io;
+#[cfg(not(feature = "terminal"))]
+pub use rune_core::editor;
 pub mod fuzzy;
 pub mod hex;
 #[cfg(feature = "terminal")]
 pub mod input;
-pub mod search;
+#[cfg(feature = "terminal")]
 pub mod syntax;
+#[cfg(not(feature = "terminal"))]
+pub use rune_core::syntax;
 #[cfg(feature = "terminal")]
 pub mod tabs;
 #[cfg(feature = "terminal")]

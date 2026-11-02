@@ -1112,15 +1112,27 @@ dependencies = [
  "crossterm",
  "dirs",
  "ignore",
- "phf",
  "ratatui",
  "regex",
  "ropey",
+ "rune-core",
  "serde",
  "tempfile",
  "toml",
  "unicode-width 0.2.0",
  "ureq",
+]
+
+[[package]]
+name = "rune-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phf",
+ "regex",
+ "ropey",
+ "tempfile",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

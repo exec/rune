@@ -1,4 +1,4 @@
-use rune::{Document, Selection};
+use rune_core::{Document, Selection};
 
 fn document(text: &str, selection: Selection) -> Document {
     let mut doc = Document::new();
